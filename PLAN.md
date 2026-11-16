@@ -253,6 +253,53 @@ The precise mechanism linking the two is not fully explained by the diff; the
 
 ---
 
+## 4c. Relocatable configuration folder  *(done 2026-11-17)*
+
+**Goal:** let the user choose where PuTTY-beter keeps its configuration instead
+of always using `~/.putty`.
+
+**Base location** (`unix/storage.c`, `make_filename(INDEX_DIR)`), unchanged from
+upstream, in priority order:
+
+1. `$PUTTYDIR`
+2. `$XDG_CONFIG_HOME/putty` or `~/.config/putty` — **only if already present**
+3. `~/.putty`  ← what this machine uses
+4. home-from-`getpwuid()`/.putty, then `/.putty`
+
+**How it works**
+
+| Piece | Where |
+|---|---|
+| Redirect file | `<base>/config-location` — comments allowed, first other line is the absolute path |
+| Reads it | `unix/storage.c`, so `putty`, `plink`, `pscp`, `psftp`, `puttygen` all follow it; a missing or invalid target is ignored with a debug trace |
+| Writes it | `char *config_location_set(const char *dir)` — normalises `~`/relative paths, creates the target, **moves** `sessions/`, `sshhostkeys`, `sshhostkeys.tmp`, `sshhostcas/`, `randomseed`, then writes the file at the base |
+| Dialog | `unix/config-location.c`, GTK only, called from `main-gtk-simple.c` and `main-gtk-application.c` |
+
+**When the dialog appears:** the configuration is missing (no `sessions`
+subdirectory), **or** Option/Alt is held at launch (`CGEventSourceFlagsState`,
+via `-framework ApplicationServices`), **or** `PUTTY_CONFIG_RELOCATE=1`.
+
+Default proposal: `$HOME/Documents/putty-beter-config`.
+
+**Safety rules baked in**
+- Nothing is deleted unless it was copied successfully first (cross-filesystem
+  `EXDEV` fallback: recursive copy, then remove).
+- An item that already exists in the destination is **left alone**; the old copy
+  stays where it was. No merging, no overwriting.
+- Cancelling the dialog records the current folder as configured, so the dialog
+  really is one-shot.
+- Choosing the base location again removes the redirect file.
+
+**Debug:** `PUTTY_CONFIG_DEBUG=1` traces base/effective/configured/forced/moves.
+
+**Verified:** redirect read (valid / broken / configured), move within a volume,
+move across volumes, never-overwrite, reset-to-base, dialog rendering (normal and
+forced), and that a real `~/.putty` installation is left alone.
+
+**Not verified:** the physical Option-key test (needs a human key press).
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.

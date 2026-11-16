@@ -183,6 +183,25 @@ void trivial_post_dialog_fn(void *vctx, int result);
 void initial_config_box(Conf *conf, post_dialog_fn_t after, void *afterctx);
 void new_session_window(Conf *conf, const char *geometry_string);
 
+/* PuTTY-beter: relocatable configuration directory.
+ *
+ * storage.c works out the configuration directory (normally ~/.putty) and
+ * follows a `config-location' redirect file found there. These helpers let
+ * the GUI show and change that choice; plink, pscp and psftp have no GUI
+ * and simply follow whatever the file says. */
+char *config_location_base(void);       /* where the redirect file lives */
+char *config_location_current(void);    /* where the config actually is */
+char *config_location_default_dir(void); /* ~/Documents/putty-beter-config */
+bool config_location_is_redirected(void);
+bool config_location_is_configured(void);
+char *config_location_set(const char *dirtext); /* NULL on success */
+void config_location_invalidate(void);
+
+/* config-location.c: show the relocation dialog if the configuration is
+ * missing, or if the user held Option/Alt at launch, or if the environment
+ * variable PUTTY_CONFIG_RELOCATE is set. Safe to call more than once. */
+void config_location_init(void);
+
 /* Defined in main-gtk-*.c */
 void launch_duplicate_session(Conf *conf);
 void launch_new_session(void);

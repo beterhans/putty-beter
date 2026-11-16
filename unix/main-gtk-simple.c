@@ -622,6 +622,15 @@ int main(int argc, char **argv)
     gtkcomm_setup();
 
     /*
+     * PuTTY-beter: offer to choose the configuration folder before anything
+     * reads it (do_defaults below loads the saved session list). GTK has to
+     * be up for the dialog, which gtk_init above has arranged. pterm has no
+     * saved sessions and no configuration directory, so it is skipped.
+     */
+    if (saved_sessions)
+        config_location_init();
+
+    /*
      * Block SIGPIPE: if we attempt Duplicate Session or similar and
      * it falls over in some way, we certainly don't want SIGPIPE
      * terminating the main pterm/PuTTY. However, we'll have to

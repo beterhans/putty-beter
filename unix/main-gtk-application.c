@@ -261,6 +261,15 @@ void window_setup_error(const char *errmsg)
 static void activate(GApplication *app,
                      gpointer      user_data)
 {
+    /*
+     * PuTTY-beter: choose the configuration folder before the first window
+     * reads the saved-session list. This runs on every application
+     * activation, but config_location_init() only ever acts once per
+     * process. pterm has no configuration directory, so it is skipped.
+     */
+    if (saved_sessions)
+        config_location_init();
+
     new_app_win(GTK_APPLICATION(app));
 }
 

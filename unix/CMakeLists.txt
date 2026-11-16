@@ -144,7 +144,21 @@ if(GTK_FOUND)
     utils/string_width.c
     columns.c)
   add_sources_from_current_dir(guiterminal
-    window.c unifont.c dialog.c config-gtk.c gtk-common.c config-unix.c unicode.c printing.c)
+    window.c unifont.c dialog.c config-gtk.c gtk-common.c config-unix.c unicode.c
+    printing.c
+    # PuTTY-beter: the configuration-folder dialog. It lives in the shared
+    # library so that the plain pterm target links too; pterm never calls it.
+    config-location.c)
+
+if(APPLE)
+  # config-location.c asks CoreGraphics whether Option/Alt was held when
+  # PuTTY launched, which GDK cannot report before the first key event.
+  # Linked through guiterminal so every GTK front end resolves it.
+  find_library(APPLICATION_SERVICES_FRAMEWORK ApplicationServices)
+  if(APPLICATION_SERVICES_FRAMEWORK)
+    target_link_libraries(guiterminal ${APPLICATION_SERVICES_FRAMEWORK})
+  endif()
+endif()
   add_dependencies(guiterminal generated_licence_h) # dialog.c uses licence.h
 
   add_executable(pterm

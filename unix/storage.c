@@ -78,6 +78,12 @@ static void decode_session_filename(const char *in, strbuf *out)
     }
 }
 
+/*
+ * PuTTY-beter: apply any config-location redirect to a base directory.
+ * Defined below, next to the rest of the relocatable-config code.
+ */
+static char *config_effective_dir_for(char *base);
+
 static char *make_filename(int index, const char *subname)
 {
     char *env, *tmp, *ret;
@@ -117,11 +123,22 @@ static char *make_filename(int index, const char *subname)
             }
             xdg_dir = dupprintf("%s/.config/putty", tmp);
         }
-        if (xdg_dir && access(xdg_dir, F_OK) == 0) {
-            return xdg_dir;
-        }
 
+        /*
+         * These three are freed at the `out' label below, so initialise
+         * them before any of the gotos that lead there.
+         */
         old_dir = old_dir2 = old_dir3 = NULL;
+
+        if (xdg_dir && access(xdg_dir, F_OK) == 0) {
+            /*
+             * PuTTY-beter: go through `out' rather than returning directly,
+             * so that a config-location redirect file in this directory is
+             * honoured as well.
+             */
+            ret = xdg_dir;
+            goto out;
+        }
         if (home) {
             old_dir = dupprintf("%s/.putty", home);
         }
@@ -159,7 +176,13 @@ static char *make_filename(int index, const char *subname)
             sfree(old_dir3);
         if (ret != xdg_dir)
             sfree(xdg_dir);
-        return ret;
+        /*
+         * PuTTY-beter: the directory we have just worked out is the *base*
+         * location - the place PuTTY has always used. If it contains a
+         * config-location file, use the directory named in there instead.
+         * config_effective_dir_for takes ownership of ret.
+         */
+        return config_effective_dir_for(ret);
     }
     if (index == INDEX_SESSIONDIR) {
         env = getenv("PUTTYSESSIONS");
@@ -223,6 +246,501 @@ static char *make_filename(int index, const char *subname)
     ret = dupprintf("%s/ERROR", tmp);
     sfree(tmp);
     return ret;
+}
+
+/* ----------------------------------------------------------------------
+ * PuTTY-beter: relocatable configuration directory.
+ *
+ * The directory worked out above is the *base* location - the place PuTTY
+ * has always kept its configuration. A base location may contain a small
+ * text file called `config-location', holding the absolute path of the
+ * directory that really holds the sessions, host keys, CA records and so
+ * on. If it does, and the directory it names exists, that directory is
+ * used for everything instead.
+ *
+ * Keeping the indirection in a plain file rather than, say, a symlink
+ * means that plink, pscp and psftp - which link this file too, but have no
+ * GUI - follow the same redirection, and it can be edited by hand.
+ *
+ * None of this changes anything when the file is absent, so a stock
+ * ~/.putty tree behaves exactly as it always has.
+ *
+ * Set PUTTY_CONFIG_DEBUG=1 in the environment to trace what happens.
+ */
+
+#define CONFIG_REDIRECT_FILENAME "config-location"
+#define CONFIG_DEFAULT_SUBDIR "Documents/putty-beter-config"
+
+/* The pieces of a configuration that move with it. */
+static const char *const config_move_list[] = {
+    "sessions", "sshhostkeys", "sshhostkeys.tmp", "sshhostcas", "randomseed",
+    NULL
+};
+
+static bool config_debug_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = (getenv("PUTTY_CONFIG_DEBUG") != NULL);
+    return cached != 0;
+}
+
+/*
+ * Expand a leading "~" or "~/" using the current user's home directory.
+ * "~user" is deliberately unsupported: nobody types it, and resolving it
+ * would mean parsing getpwnam() output for no benefit.
+ */
+static char *config_expand_home(const char *path)
+{
+    if (path[0] == '~' && (path[1] == '\0' || path[1] == '/')) {
+        const char *home = getenv("HOME");
+        if (!home || !*home) {
+            struct passwd *pwd = getpwuid(getuid());
+            home = (pwd && pwd->pw_dir) ? pwd->pw_dir : NULL;
+        }
+        if (home)
+            return dupprintf("%s%s", home, path+1);
+    }
+    return dupstr(path);
+}
+
+/*
+ * Read the redirect file from a base directory. Returns the target
+ * directory (newly allocated) if the file exists, names a directory that
+ * is actually there, and has not been commented out; otherwise NULL.
+ */
+static char *config_redirect_read(const char *base)
+{
+    char *path, *line, *target = NULL;
+    FILE *fp;
+
+    path = dupprintf("%s/" CONFIG_REDIRECT_FILENAME, base);
+    fp = fopen(path, "r");
+    if (!fp) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] no redirect file %s (%s)\n",
+                    path, strerror(errno));
+        sfree(path);
+        return NULL;
+    }
+
+    while ((line = fgetline(fp)) != NULL) {
+        char *p = line;
+        line[strcspn(line, "\r\n")] = '\0';
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p && *p != '#') {
+            target = dupstr(p);
+            sfree(line);
+            break;
+        }
+        sfree(line);
+    }
+    fclose(fp);
+
+    if (!target) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] %s names no directory\n", path);
+        sfree(path);
+        return NULL;
+    }
+
+    char *expanded = config_expand_home(target);
+    sfree(target);
+
+    struct stat st;
+    if (stat(expanded, &st) < 0 || !S_ISDIR(st.st_mode)) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] %s names %s, which is not a "
+                    "directory; ignoring it\n", path, expanded);
+        sfree(expanded);
+        sfree(path);
+        return NULL;
+    }
+
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] %s redirects to %s\n",
+                path, expanded);
+    sfree(path);
+    return expanded;
+}
+
+/*
+ * Cached results. Remapping INDEX_DIR is on the hot path (every settings
+ * read and write goes through it), so avoid re-reading the redirect file
+ * every time. config_location_set() invalidates this.
+ */
+static char *config_base_cache = NULL;
+static char *config_effective_cache = NULL;
+
+static char *config_effective_dir_for(char *base)
+{
+    if (config_base_cache && config_effective_cache &&
+        !strcmp(config_base_cache, base)) {
+        sfree(base);
+        return dupstr(config_effective_cache);
+    }
+
+    sfree(config_base_cache);
+    sfree(config_effective_cache);
+    config_base_cache = config_effective_cache = NULL;
+
+    config_base_cache = dupstr(base);
+    char *redirect = config_redirect_read(base);
+    config_effective_cache = redirect ? redirect : dupstr(base);
+
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] base %s -> effective %s\n",
+                config_base_cache, config_effective_cache);
+
+    sfree(base);
+    return dupstr(config_effective_cache);
+}
+
+void config_location_invalidate(void)
+{
+    sfree(config_base_cache);
+    sfree(config_effective_cache);
+    config_base_cache = config_effective_cache = NULL;
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] cache invalidated\n");
+}
+
+/* The directory that holds the redirect file, ignoring any redirect. */
+char *config_location_base(void)
+{
+    const char *env = getenv("PUTTYDIR");
+    if (env)
+        return dupstr(env);
+
+    char *eff = make_filename(INDEX_DIR, NULL);
+    sfree(eff);
+    return dupstr(config_base_cache ? config_base_cache : ".");
+}
+
+/* The directory actually in use, after any redirect. */
+char *config_location_current(void)
+{
+    return make_filename(INDEX_DIR, NULL);
+}
+
+bool config_location_is_redirected(void)
+{
+    char *eff = make_filename(INDEX_DIR, NULL);
+    bool redirected = (config_base_cache && strcmp(eff, config_base_cache));
+    sfree(eff);
+    return redirected;
+}
+
+/* Proposed home for a fresh installation: $HOME/Documents/putty-beter-config */
+char *config_location_default_dir(void)
+{
+    const char *home = getenv("HOME");
+    struct passwd *pwd;
+
+    if (!home || !*home) {
+        pwd = getpwuid(getuid());
+        home = (pwd && pwd->pw_dir) ? pwd->pw_dir : NULL;
+    }
+    if (!home || !*home)
+        return NULL;
+
+    return dupprintf("%s/" CONFIG_DEFAULT_SUBDIR, home);
+}
+
+/*
+ * A configuration counts as present once it has a sessions subdirectory.
+ * That is the marker the relocation dialog leaves behind, so the dialog
+ * does not come back on every launch.
+ */
+bool config_location_is_configured(void)
+{
+    char *dir = config_location_current();
+    char *sessions = dupprintf("%s/sessions", dir);
+    bool configured = (access(sessions, F_OK) == 0);
+
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] %s is %sconfigured\n",
+                dir, configured ? "" : "not ");
+
+    sfree(sessions);
+    sfree(dir);
+    return configured;
+}
+
+/* --- moving an existing configuration ------------------------------- */
+
+static char *config_copy_file(const char *src, const char *dst, mode_t mode)
+{
+    int in = open(src, O_RDONLY);
+    if (in < 0)
+        return dupprintf("Unable to read %s: %s", src, strerror(errno));
+
+    int out = open(dst, O_WRONLY|O_CREAT|O_EXCL, mode & 0777);
+    if (out < 0) {
+        char *err = dupprintf("Unable to create %s: %s", dst, strerror(errno));
+        close(in);
+        return err;
+    }
+
+    char buf[8192];
+    ssize_t n;
+    char *err = NULL;
+
+    while (!err && (n = read(in, buf, sizeof(buf))) > 0) {
+        char *p = buf;
+        ssize_t left = n;
+        while (left > 0) {
+            ssize_t written = write(out, p, left);
+            if (written <= 0) {
+                err = dupprintf("Unable to write %s: %s", dst, strerror(errno));
+                break;
+            }
+            p += written;
+            left -= written;
+        }
+    }
+    if (!err && n < 0)
+        err = dupprintf("Unable to read %s: %s", src, strerror(errno));
+
+    close(in);
+    if (close(out) < 0 && !err)
+        err = dupprintf("Unable to write %s: %s", dst, strerror(errno));
+
+    if (err)
+        unlink(dst);
+    return err;
+}
+
+/*
+ * Recursive copy, used as the fallback when rename() reports EXDEV (the
+ * new configuration directory is on a different filesystem, which is
+ * easy to do by accident when $HOME/Documents is a symlink to a volume).
+ */
+static char *config_copy_path(const char *src, const char *dst)
+{
+    struct stat st;
+
+    if (lstat(src, &st) < 0)
+        return dupprintf("Unable to read %s: %s", src, strerror(errno));
+
+    if (S_ISDIR(st.st_mode)) {
+        char *err = NULL;
+        struct dirent *de;
+        DIR *dp;
+
+        if (mkdir(dst, st.st_mode & 0777) < 0 && errno != EEXIST)
+            return dupprintf("Unable to create %s: %s", dst, strerror(errno));
+
+        dp = opendir(src);
+        if (!dp)
+            return dupprintf("Unable to read %s: %s", src, strerror(errno));
+
+        while (!err && (de = readdir(dp)) != NULL) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                continue;
+            char *s = dupprintf("%s/%s", src, de->d_name);
+            char *d = dupprintf("%s/%s", dst, de->d_name);
+            err = config_copy_path(s, d);
+            sfree(s);
+            sfree(d);
+        }
+        closedir(dp);
+        return err;
+    }
+
+    if (S_ISLNK(st.st_mode)) {
+        char linkbuf[FNLEN];
+        ssize_t n = readlink(src, linkbuf, sizeof(linkbuf)-1);
+        if (n < 0)
+            return dupprintf("Unable to read link %s: %s", src, strerror(errno));
+        linkbuf[n] = '\0';
+        if (symlink(linkbuf, dst) < 0)
+            return dupprintf("Unable to create link %s: %s", dst, strerror(errno));
+        return NULL;
+    }
+
+    if (!S_ISREG(st.st_mode))
+        return dupprintf("Unable to move %s: unsupported file type", src);
+
+    return config_copy_file(src, dst, st.st_mode);
+}
+
+static char *config_remove_path(const char *path)
+{
+    struct stat st;
+
+    if (lstat(path, &st) < 0)
+        return (errno == ENOENT) ? NULL :
+            dupprintf("Unable to remove %s: %s", path, strerror(errno));
+
+    if (S_ISDIR(st.st_mode)) {
+        char *err = NULL;
+        struct dirent *de;
+        DIR *dp = opendir(path);
+
+        if (!dp)
+            return dupprintf("Unable to read %s: %s", path, strerror(errno));
+
+        while (!err && (de = readdir(dp)) != NULL) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                continue;
+            char *child = dupprintf("%s/%s", path, de->d_name);
+            err = config_remove_path(child);
+            sfree(child);
+        }
+        closedir(dp);
+
+        if (!err && rmdir(path) < 0)
+            err = dupprintf("Unable to remove %s: %s", path, strerror(errno));
+        return err;
+    }
+
+    if (unlink(path) < 0)
+        return dupprintf("Unable to remove %s: %s", path, strerror(errno));
+    return NULL;
+}
+
+/*
+ * Move the pieces of the configuration from src to dst. Individual items
+ * that already exist in dst are left alone rather than merged or
+ * overwritten, and nothing in src is deleted unless it was copied
+ * successfully first.
+ */
+static char *config_move_files(const char *src, const char *dst)
+{
+    char *err = NULL;
+
+    for (int i = 0; config_move_list[i]; i++) {
+        char *s = dupprintf("%s/%s", src, config_move_list[i]);
+        char *d = dupprintf("%s/%s", dst, config_move_list[i]);
+
+        if (access(s, F_OK) == 0) {
+            if (access(d, F_OK) == 0) {
+                /*
+                 * Destination already has one of these. Leave both alone:
+                 * silently merging or overwriting user data is worse than
+                 * leaving the old copy where it was.
+                 */
+                if (config_debug_enabled())
+                    fprintf(stderr, "[config-location] %s exists; leaving "
+                            "%s in place\n", d, s);
+            } else if (rename(s, d) < 0) {
+                if (errno == EXDEV) {
+                    if (config_debug_enabled())
+                        fprintf(stderr, "[config-location] %s is on another "
+                                "filesystem; copying\n", d);
+                    err = config_copy_path(s, d);
+                    if (!err)
+                        err = config_remove_path(s);
+                } else {
+                    err = dupprintf("Unable to move %s to %s: %s",
+                                    s, d, strerror(errno));
+                }
+            } else if (config_debug_enabled()) {
+                fprintf(stderr, "[config-location] moved %s -> %s\n", s, d);
+            }
+        }
+
+        sfree(s);
+        sfree(d);
+        if (err)
+            break;
+    }
+
+    return err;
+}
+
+/*
+ * Point the configuration at a new directory: normalise the name, move
+ * anything that is already saved, never overwrite anything, and then
+ * record the location in the redirect file at the base location.
+ *
+ * Returns NULL on success, or a user-presentable error message.
+ */
+char *config_location_set(const char *dirtext)
+{
+    char *err = NULL, *path = NULL, *base = NULL, *current = NULL;
+    char *redirect_path = NULL, *sessions = NULL;
+
+    if (!dirtext || !*dirtext)
+        return dupstr("Please specify a folder.");
+
+    path = config_expand_home(dirtext);
+    if (path[0] != '/') {
+        char cwd[FNLEN];
+        if (!getcwd(cwd, sizeof(cwd))) {
+            err = dupprintf("Unable to resolve the current directory: %s",
+                            strerror(errno));
+            goto out;
+        }
+        char *tmp = dupprintf("%s/%s", cwd, path);
+        sfree(path);
+        path = tmp;
+    }
+    { /* strip trailing slashes, but keep a bare "/" */
+        size_t len = strlen(path);
+        while (len > 1 && path[len-1] == '/')
+            path[--len] = '\0';
+    }
+
+    base = config_location_base();
+    current = config_location_current();
+
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] set: base=%s current=%s new=%s\n",
+                base, current, path);
+
+    if (strcmp(path, current) != 0) {
+        if ((err = make_dir_path(path, 0700)) != NULL)
+            goto out;
+        if ((err = config_move_files(current, path)) != NULL)
+            goto out;
+    }
+
+    /*
+     * Create the sessions subdirectory, which marks the folder as
+     * configured so that the first-run dialog does not appear again.
+     */
+    sessions = dupprintf("%s/sessions", path);
+    if ((err = make_dir_path(sessions, 0700)) != NULL)
+        goto out;
+
+    redirect_path = dupprintf("%s/" CONFIG_REDIRECT_FILENAME, base);
+
+    if (!strcmp(path, base)) {
+        /* Back at the base location: the redirect is not needed. */
+        if (unlink(redirect_path) < 0 && errno != ENOENT) {
+            err = dupprintf("Unable to remove %s: %s",
+                            redirect_path, strerror(errno));
+            goto out;
+        }
+    } else {
+        FILE *fp = fopen(redirect_path, "w");
+        if (!fp) {
+            err = dupprintf("Unable to write %s: %s",
+                            redirect_path, strerror(errno));
+            goto out;
+        }
+        fprintf(fp, "# PuTTY-beter configuration directory.\n");
+        fprintf(fp, "# Delete this file to go back to %s.\n", base);
+        fprintf(fp, "%s\n", path);
+        if (fclose(fp) < 0)
+            err = dupprintf("Unable to write %s: %s",
+                            redirect_path, strerror(errno));
+    }
+
+  out:
+    config_location_invalidate();
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] set: %s\n",
+                err ? err : "done");
+    sfree(redirect_path);
+    sfree(sessions);
+    sfree(base);
+    sfree(current);
+    sfree(path);
+    return err;
 }
 
 struct settings_w {

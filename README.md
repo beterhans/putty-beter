@@ -42,15 +42,34 @@ then computed the cursor column as `preedit_end - 1`, drawing the cursor one
 cell too far left, and read `chars[-1]` out of bounds. Fixed in
 `terminal/terminal.c`.
 
-### 4. Build tooling
+### 4. A configuration folder you can move
+
+PuTTY has always used `~/.putty`. This build offers, once, to keep the
+configuration somewhere else instead — `~/Documents/putty-beter-config` by
+default. Anything already saved is moved there, and the choice is recorded in
+`~/.putty/config-location`, a one-line text file.
+
+Nothing is deleted unless it was copied successfully, and nothing is
+overwritten: if the destination already holds one of these files, the old copy
+is simply left where it was. Deleting `config-location` returns to `~/.putty`.
+
+Hold **Option (⌥)** while launching PuTTY to reopen the dialog and move the
+folder again, or set `PUTTY_CONFIG_RELOCATE=1`.
+
+`plink`, `pscp`, `psftp` and `puttygen` read the same file, so saved host keys
+and CA records stay consistent. `PUTTYDIR` (upstream) still overrides
+everything.
+
+### 5. Build tooling
 
 `scripts/build-macos.sh`, `scripts/bundle-macos.sh` and `CMakePresets.json`
 build the binaries and a self-contained `PuTTY.app` with GTK bundled inside.
 
-### 5. Runtime diagnostics
+### 6. Runtime diagnostics
 
 `PUTTY_DIAG=1` traces key events, clipboard activity, font metrics and cursor
-placement to stderr. No effect when unset.
+placement to stderr. `PUTTY_CONFIG_DEBUG=1` traces the configuration folder
+resolution and relocation. Neither has any effect when unset.
 
 ---
 
