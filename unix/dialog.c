@@ -2710,7 +2710,7 @@ gint tree_focus(GtkContainer *container, GtkDirectionType direction,
  */
 static bool dialog_clipboard_key(GtkWidget *widget, GdkEventKey *event)
 {
-    enum { NOT_CLIP, CLIP_COPY, CLIP_PASTE, CLIP_CUT };
+    enum { NOT_CLIP, CLIP_COPY, CLIP_PASTE, CLIP_CUT, CLIP_SELECT_ALL };
     GtkWidget *focus;
     int what = NOT_CLIP;
     bool ctrl, shift;
@@ -2745,6 +2745,7 @@ static bool dialog_clipboard_key(GtkWidget *widget, GdkEventKey *event)
           case GDK_KEY_c: case GDK_KEY_C: what = CLIP_COPY; break;
           case GDK_KEY_v: case GDK_KEY_V: what = CLIP_PASTE; break;
           case GDK_KEY_x: case GDK_KEY_X: what = CLIP_CUT; break;
+          case GDK_KEY_a: case GDK_KEY_A: what = CLIP_SELECT_ALL; break;
         }
     }
 
@@ -2758,6 +2759,9 @@ static bool dialog_clipboard_key(GtkWidget *widget, GdkEventKey *event)
             break;
           case CLIP_PASTE:
             gtk_editable_paste_clipboard(GTK_EDITABLE(focus));
+            break;
+          case CLIP_SELECT_ALL:
+            gtk_editable_select_region(GTK_EDITABLE(focus), 0, -1);
             break;
           default:
             gtk_editable_cut_clipboard(GTK_EDITABLE(focus));

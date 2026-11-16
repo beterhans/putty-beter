@@ -1149,14 +1149,21 @@ static void drag_data_received(GtkWidget *widget, GdkDragContext *context,
  * GDK name contains "Insert", so the documented shortcut works whatever
  * keyboard is attached.
  */
-static bool is_insert_key(guint keyval)
+static bool is_insert_key(GdkEventKey *event)
 {
-    const char *name = gdk_keyval_name(keyval);
+    const char *name = gdk_keyval_name(event->keyval);
 
     if (name && strstr(name, "Insert"))
         return true;
 #ifdef __APPLE__
-    if (keyval == GDK_KEY_Help)
+    /*
+     * A PC keyboard's Insert key reaches macOS as virtual keycode 0x72,
+     * which is the Mac's "Help" key. GDK usually translates that to
+     * GDK_KEY_Help, but when the current keyboard layout does not map the
+     * key at all the keyval can come through as something useless, so check
+     * the physical key code too. 0x72 has no other meaning on macOS.
+     */
+    if (event->keyval == GDK_KEY_Help || event->hardware_keycode == 0x72)
         return true;
 #endif
     return false;
@@ -1468,7 +1475,7 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
          * test, because macOS report a PC Insert key as GDK_KEY_Help and a
          * keypad key as GDK_KEY_KP_Insert.
          */
-        if (is_insert_key(event->keyval) &&
+        if (is_insert_key(event) &&
             (event->state & GDK_SHIFT_MASK)) {
             int cfgval = conf_get_int(inst->conf, CONF_ctrlshiftins);
 
@@ -1498,7 +1505,7 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
                 break;
             }
         }
-        if (is_insert_key(event->keyval) &&
+        if (is_insert_key(event) &&
             (event->state & GDK_CONTROL_MASK)) {
             static const int clips_clipboard[] = { CLIP_CLIPBOARD };
             int cfgval = conf_get_int(inst->conf, CONF_ctrlshiftins);
