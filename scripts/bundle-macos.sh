@@ -41,9 +41,37 @@ for arg in "$@"; do
 done
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# gtk-mac-bundler is a separate checkout; override with BUNDLER_DIR if it is
-# not at the default location.
-BUNDLER_DIR="${BUNDLER_DIR:-$HOME/gtk-mac-bundler}"
+
+# ---------------------------------------------------------------------------
+# gtk-mac-bundler  (REQUIRED - not part of this project)
+#
+# This script needs the `gtk-mac-bundler` tool to assemble PuTTY.app. That tool
+# is what copies GTK and all its dependencies into the .app and rewrites their
+# install names to point inside the bundle. It is a separate project from GNOME
+# and is licensed GPL-2.0, so it is deliberately NOT vendored into this
+# MIT-licensed source tree - you have to provide a checkout of it.
+#
+# It is looked for in this order:
+#   1. $BUNDLER_DIR                       - explicit override
+#   2. $SRC_DIR/tools/gtk-mac-bundler     - in-project checkout (preferred)
+#   3. $HOME/gtk-mac-bundler              - global/fallback location
+#
+# To fetch it into the project:
+#   git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git \
+#       tools/gtk-mac-bundler
+# ---------------------------------------------------------------------------
+BUNDLER_DIR="${BUNDLER_DIR:-}"
+if [ -z "$BUNDLER_DIR" ]; then
+    for _candidate in "$SRC_DIR/tools/gtk-mac-bundler" "$HOME/gtk-mac-bundler"; do
+        if [ -f "$_candidate/bundler/main.py" ]; then
+            BUNDLER_DIR="$_candidate"
+            break
+        fi
+    done
+fi
+# Default to the in-project path, so the error message below names the
+# location we would prefer you to use.
+BUNDLER_DIR="${BUNDLER_DIR:-$SRC_DIR/tools/gtk-mac-bundler}"
 PYTHON="${PYTHON:-python3}"
 
 case "$ARCH" in
@@ -65,10 +93,16 @@ for f in "$BUILD_DIR/puttyapp" "$BUILD_DIR/osxlaunch"; do
     [ -x "$f" ] || { log "ERROR: missing binary: $f (run scripts/build-macos.sh first)"; exit 1; }
 done
 [ -f "$BUNDLER_DIR/bundler/main.py" ] || {
-    log "ERROR: gtk-mac-bundler not found at $BUNDLER_DIR"
-    log "       Clone it with:"
-    log "         git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git \$HOME/gtk-mac-bundler"
-    log "       or point BUNDLER_DIR at an existing checkout."
+    log "ERROR: gtk-mac-bundler not found."
+    log "       Looked in:"
+    log "         \$BUNDLER_DIR (unset or invalid)"
+    log "         $SRC_DIR/tools/gtk-mac-bundler"
+    log "         \$HOME/gtk-mac-bundler"
+    log
+    log "       gtk-mac-bundler is required to assemble the .app. Fetch it with:"
+    log "         git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git"
+    log "                   $SRC_DIR/tools/gtk-mac-bundler"
+    log "       or set BUNDLER_DIR to an existing checkout."
     exit 1
 }
 [ -f "$BREW_PREFIX/share/icons/Adwaita/index.theme" ] || {

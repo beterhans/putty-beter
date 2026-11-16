@@ -157,3 +157,6 @@ Makefile
 
 # Agent working notes (kept local; may contain machine-specific paths)
 /_agent/
+
+# gtk-mac-bundler checkout (GPL-2.0 third-party build tool; fetch it yourself - see tools/README.md)
+/tools/gtk-mac-bundler/

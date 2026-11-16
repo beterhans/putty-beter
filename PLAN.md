@@ -42,7 +42,7 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
 | pkg-config | 3.0.10 (pkgconf) | OK |
 | gtk+-3.0 | 3.24.52 | OK |
 | halibut | 1.3 | OK (`brew install halibut`) |
-| gtk-mac-bundler | GNOME gitlab `fbc6ffd` | a separate checkout, found via `$BUNDLER_DIR` (default `~/gtk-mac-bundler`) |
+| gtk-mac-bundler | GNOME gitlab `fbc6ffd` | `tools/gtk-mac-bundler` (in-project; git-ignored, GPL-2.0, see `tools/README.md`). Override with `$BUNDLER_DIR` |
 | perl | 5.34.1 | OK (needed by `licence.pl` for docs) |
 | git | 2.54.0 | OK |
 
