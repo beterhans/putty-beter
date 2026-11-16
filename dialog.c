@@ -167,6 +167,7 @@ struct controlset *ctrl_getset(struct controlbox *b, const char *path,
     s->ncolumns = 1;
     s->ncontrols = s->ctrlsize = 0;
     s->ctrls = NULL;
+    s->vexpand = false;
     sgrowarray(b->ctrlsets, b->ctrlsetsize, b->nctrlsets);
     if (index < b->nctrlsets)
         memmove(&b->ctrlsets[index+1], &b->ctrlsets[index],
@@ -216,6 +217,8 @@ static dlgcontrol *ctrl_new(struct controlset *s, int type,
      */
     c->type = type;
     c->delay_taborder = false;
+    c->vexpand = false;
+    c->force_left = false;
     c->column = COLUMN_FIELD(0, s->ncolumns);
     c->helpctx = helpctx;
     c->handler = handler;

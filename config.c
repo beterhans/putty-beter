@@ -1903,12 +1903,31 @@ void setup_config_box(struct controlbox *b, bool midsession,
     }
 
     /*
+     * PuTTY-beter: "Close window on exit" lives above the saved-session
+     * list rather than below it, so that the list can use the full height
+     * of the window.
+     */
+    s = ctrl_getset(b, "Session", "otheropts", NULL);
+    ctrl_radiobuttons(s, "Close window on exit:", 'x', 4,
+                      HELPCTX(session_coe),
+                      conf_radiobutton_handler,
+                      I(CONF_close_on_exit),
+                      "Always", I(FORCE_ON),
+                      "Never", I(FORCE_OFF),
+                      "Only on clean exit", I(AUTO));
+
+    /*
      * The Load/Save panel is available even in mid-session.
      */
     s = ctrl_getset(b, "Session", "savedsessions",
                     midsession ? "Save the current session settings" :
                     "Load, save or delete a stored session");
-    ctrl_columns(s, 2, 75, 25);
+    /*
+     * PuTTY-beter: this is the one controlset that absorbs spare vertical
+     * space, so the saved-session list grows when the window does.
+     */
+    s->vexpand = true;
+    ctrl_columns(s, 2, 80, 20);
     get_sesslist(&ssd->sesslist, true);
     ssd->editbox = ctrl_editbox(s, "Saved Sessions", 'e', 100,
                                 HELPCTX(session_saved),
@@ -1917,17 +1936,29 @@ void setup_config_box(struct controlbox *b, bool midsession,
     /* Reset columns so that the buttons are alongside the list, rather
      * than alongside that edit box. */
     ctrl_columns(s, 1, 100);
-    ctrl_columns(s, 2, 75, 25);
+    ctrl_columns(s, 2, 80, 20);
     ssd->listbox = ctrl_listbox(s, NULL, NO_SHORTCUT,
                                 HELPCTX(session_saved),
                                 sessionsaver_handler, P(ssd));
     ssd->listbox->column = 0;
     ssd->listbox->listbox.height = 7;
+    /*
+     * PuTTY-beter: seven rows stay the minimum, but the list is the
+     * control that takes any extra height the window has. Handy once a
+     * user has a long list of saved sessions.
+     */
+    ssd->listbox->vexpand = true;
     if (!midsession) {
         ssd->loadbutton = ctrl_pushbutton(s, "Load", 'l',
                                           HELPCTX(session_saved),
                                           sessionsaver_handler, P(ssd));
         ssd->loadbutton->column = 1;
+        /*
+         * PuTTY-beter: keep these buttons their natural width rather than
+         * stretching them across the column, which looks silly once the
+         * window is made wide.
+         */
+        ssd->loadbutton->force_left = true;
     } else {
         /* We can't offer the Load button mid-session, as it would allow the
          * user to load and subsequently save settings they can't see. (And
@@ -1940,25 +1971,24 @@ void setup_config_box(struct controlbox *b, bool midsession,
                                       HELPCTX(session_saved),
                                       sessionsaver_handler, P(ssd));
     ssd->savebutton->column = 1;
+    ssd->savebutton->force_left = true;
     if (!midsession) {
         ssd->delbutton = ctrl_pushbutton(s, "Delete", 'd',
                                          HELPCTX(session_saved),
                                          sessionsaver_handler, P(ssd));
         ssd->delbutton->column = 1;
+        ssd->delbutton->force_left = true;
     } else {
         /* Disable the Delete button mid-session too, for UI consistency. */
         ssd->delbutton = NULL;
     }
     ctrl_columns(s, 1, 100);
 
-    s = ctrl_getset(b, "Session", "otheropts", NULL);
-    ctrl_radiobuttons(s, "Close window on exit:", 'x', 4,
-                      HELPCTX(session_coe),
-                      conf_radiobutton_handler,
-                      I(CONF_close_on_exit),
-                      "Always", I(FORCE_ON),
-                      "Never", I(FORCE_OFF),
-                      "Only on clean exit", I(AUTO));
+    /*
+     * PuTTY-beter: "Close window on exit" used to be created here, after
+     * the saved-session list. It is now created above the list instead,
+     * so that the list can grow into the bottom of the window.
+     */
 
     /*
      * The Session/Logging panel.

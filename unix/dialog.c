@@ -2568,8 +2568,16 @@ GtkWidget *layout_ctrls(
         columns_add(cols, w,
                     COLUMN_START(ctrl->column),
                     COLUMN_SPAN(ctrl->column));
-        if (left)
+        /*
+         * PuTTY-beter: the control marked vexpand takes the spare height of
+         * the controlset (currently the saved-session list).
+         */
+        if (ctrl->vexpand)
+            columns_vexpand(cols, w);
+        if (left || ctrl->force_left)
             columns_force_left_align(cols, w);
+        if (ctrl->force_left)
+            columns_content_last_col(cols);
         if (ctrl->align_next_to) {
             struct uctrl *uc2 = dlg_find_byctrl(
                 dp, ctrl->align_next_to);
@@ -3084,6 +3092,61 @@ void treeview_map_event(GtkWidget *tree, gpointer data)
 }
 #endif
 
+/*
+ * PuTTY-beter: remember the size of the configuration box.
+ *
+ * The box is resizable, and its size is kept in <configuration folder>/
+ * gui-state so that it survives a restart. The size is tracked from
+ * configure events rather than read when the window is being destroyed,
+ * because by then the widget may already have been unrealised.
+ */
+#define CONFIG_BOX_STATE_FILE "gui-state"
+
+static int config_box_width, config_box_height;
+
+static gboolean config_box_configure(GtkWidget *widget,
+                                     GdkEventConfigure *event,
+                                     gpointer data)
+{
+    config_box_width = event->width;
+    config_box_height = event->height;
+    if (getenv("PUTTY_CONFIG_DEBUG"))
+        fprintf(stderr, "[config-dialog] size %dx%d\n",
+                config_box_width, config_box_height);
+    return false;                      /* let GTK do its own thing too */
+}
+
+static void config_box_save_size(GtkWidget *widget, gpointer data)
+{
+    /*
+     * pterm has no configuration folder, so there is nowhere sensible to
+     * keep this; leave its dialog out of it.
+     */
+    if (!saved_sessions)
+        return;
+
+    if (config_box_width > 0 && config_box_height > 0) {
+        config_state_set_int(CONFIG_BOX_STATE_FILE, "width", config_box_width);
+        config_state_set_int(CONFIG_BOX_STATE_FILE, "height",
+                             config_box_height);
+    }
+}
+
+static void config_box_restore_size(GtkWidget *window)
+{
+    int width, height;
+
+    gtk_window_set_resizable(GTK_WINDOW(window), true);
+
+    if (!saved_sessions)
+        return;
+
+    width = config_state_get_int(CONFIG_BOX_STATE_FILE, "width", 0);
+    height = config_state_get_int(CONFIG_BOX_STATE_FILE, "height", 0);
+    if (width > 200 && height > 200)
+        gtk_window_set_default_size(GTK_WINDOW(window), width, height);
+}
+
 GtkWidget *create_config_box(const char *title, Conf *conf,
                              bool midsession, int protcfginfo,
                              post_dialog_fn_t after, void *afterctx)
@@ -3119,6 +3182,13 @@ GtkWidget *create_config_box(const char *title, Conf *conf,
     }
 
     window = our_dialog_new();
+
+    /* PuTTY-beter: resizable, with a size remembered from last time. */
+    config_box_restore_size(window);
+    g_signal_connect(G_OBJECT(window), "configure-event",
+                     G_CALLBACK(config_box_configure), NULL);
+    g_signal_connect(G_OBJECT(window), "destroy",
+                     G_CALLBACK(config_box_save_size), NULL);
 
     dp->ctrlbox = ctrl_new_box();
     protocol = conf_get_int(conf, CONF_protocol);
@@ -3309,7 +3379,12 @@ GtkWidget *create_config_box(const char *title, Conf *conf,
 
             w = layout_ctrls(dp, selparams[nselparams-1],
                              &selparams[nselparams-1]->shortcuts, s, NULL);
-            gtk_box_pack_start(GTK_BOX(panelvbox), w, false, false, 0);
+            /*
+             * PuTTY-beter: a controlset marked vexpand takes the spare
+             * height of the panel, so the saved-session list can grow.
+             */
+            gtk_box_pack_start(GTK_BOX(panelvbox), w, s->vexpand, s->vexpand,
+                               0);
             gtk_widget_show(w);
         }
     }

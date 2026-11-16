@@ -39,6 +39,7 @@ fixes, so `git log` alone shows only the later work.
 | Clipboard | Copy/paste in the terminal and in dialogs, with Command and with Ctrl+Ins/Shift+Ins, on any keyboard. |
 | Keyboard input | IME pre-edit cursor offset fixed (upstream had an out-of-bounds read here). |
 | Configuration folder | The configuration directory can be moved, with a one-time dialog and a redirect file. |
+| Configuration box | Resizable, size remembered in the configuration folder, and the saved-session list grows with the window. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `CMakePresets.json`, a self-contained `PuTTY.app`. |
 | Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
@@ -52,21 +53,25 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | File | +/- | What changed |
 |---|---|---|
 | `conf.h` | +19 / -7 | Seven default values changed (see below) |
-| `config.c` | +5 / -1 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto |
+| `config.c` | +44 / -11 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
+| `dialog.h` | +20 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
+| `dialog.c` | +3 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` |
 | `settings.c` | +5 / -1 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform |
 | `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
 | `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
-| `unix/dialog.c` | +79 / -0 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields |
+| `unix/columns.c` | +54 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
+| `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
+| `unix/dialog.c` | +144 / -2 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
 | `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
-| `unix/platform.h` | +47 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder API |
+| `unix/platform.h` | +51 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
 | `unix/putty.bundle` | +20 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
-| `unix/storage.c` | +453 / -4 | Configuration-folder redirection and the `config_location_*` API |
+| `unix/storage.c` | +545 / -4 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
 | `unix/window.c` | +186 / -6 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
-| `.gitignore` | +12 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/` |
+| `.gitignore` | +14 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
 ## New files
@@ -185,7 +190,49 @@ Two follow-on changes were needed:
 
 `pterm` keeps `putty.log`: it has no saved sessions and no configuration folder.
 
-## 6. Build and packaging
+## 6. Configuration box layout and size
+
+The Session panel is reordered so the panel ends with the saved-session list
+instead of "Close window on exit", and the configuration box is resizable with
+its size remembered between runs. With a long list of saved sessions, and a
+window that stays the size you made it, the list is the natural thing to grow.
+
+* `config.c`: "Close window on exit" is created before the saved-sessions
+  controlset, so it appears above the list. The saved-sessions controlset is
+  marked `vexpand`, and its listbox is the control that takes the spare height;
+  seven rows remain the minimum.
+* `dialog.h` / `dialog.c`: two flags on `dlgcontrol` (`vexpand`,
+  `force_left`) and one on `controlset` (`vexpand`). Front ends that do not
+  implement them ignore them.
+* `unix/dialog.c`: a controlset marked `vexpand` is packed with `expand` in its
+  panel, and a control marked `vexpand` becomes the `columns_vexpand` child of
+  its `Columns`. `force_left` uses the existing `columns_force_left_align`, so
+  a control keeps its natural width — this is what stops the Load/Save/Delete
+  buttons turning into full-width bars when the window is wide.
+* `unix/columns.c`, `unix/columns.h`: `columns_content_last_col()` sizes the
+  last column of each block to its widest left-aligned child instead of its
+  percentage. Without it the button column would still reserve 20% of the
+  width and leave a gap; with it, the list reaches the buttons and the three
+  buttons stay the same width, flush with the right edge, at any window size
+  (checked headlessly at 600, 1000 and 2000 px: `list` 525/925/1925 px wide,
+  buttons always 71 px).
+* Window size: `create_config_box()` is now explicitly resizable, restores a
+  remembered size with `gtk_window_set_default_size()`, tracks configure events,
+  and writes the final size on `destroy`.
+* `unix/storage.c`: `config_state_get_int()` / `config_state_set_int()`, a tiny
+  key=value store used as `<configuration folder>/gui-state`:
+
+  ```
+  # PuTTY-beter: remembered GUI state.
+  width=1200
+  height=1000
+  ```
+
+  Reading is best-effort; writing rewrites the file through a temporary and a
+  `rename`, keeping any other keys. `pterm` is excluded: it has no
+  configuration folder, so `saved_sessions` is checked before reading or writing.
+
+## 7. Build and packaging
 
 * `scripts/build-macos.sh <arm64|x86_64>` — one CMake build per architecture.
 * `scripts/bundle-macos.sh <arch>` — runs gtk-mac-bundler and then repairs its
@@ -203,7 +250,7 @@ Two follow-on changes were needed:
   `/opt/homebrew` cannot produce an x86_64 GTK. **Not yet verified.** Note that
   Apple is retiring Rosetta (macOS 27 is the last release with it).
 
-## 7. Diagnostics
+## 8. Diagnostics
 
 Both are runtime switches and cost nothing when unset.
 

@@ -341,6 +341,40 @@ Remove those keys from the session file, or Load → adjust → Save in the GUI.
 
 ---
 
+## 4f. Configuration box layout and size  *(done 2026-11-17)*
+
+**Goal:** the box was unusable with a long session list — a fixed 7-row listbox
+with a gap, and a window that could not usefully be made bigger.
+
+**Changes**
+
+| Where | What |
+|---|---|
+| `config.c` | "Close window on exit" moved above the saved-session list; the saved-sessions controlset is marked `vexpand`; the listbox is its `vexpand` child (7 rows = minimum); the column split is 80/20; the Load/Save/Delete buttons are marked `force_left` |
+| `dialog.h`, `dialog.c` | `vexpand` on `struct controlset`; `vexpand` + `force_left` on `struct dlgcontrol`; initialised in `ctrl_getset()` / `ctrl_new()` |
+| `unix/dialog.c` | pack a vexpand controlset with `expand`; `columns_vexpand` for its control; `columns_force_left_align` + `columns_content_last_col` for `force_left` controls; window resizable, size restored with `gtk_window_set_default_size()`, saved on `destroy` |
+| `unix/columns.c/.h` | `columns_content_last_col()`: last column of each block is exactly as wide as its widest left-aligned child, and its children fill it; guarded so other dialogs are untouched |
+| `unix/storage.c` | `config_state_get_int()` / `config_state_set_int()` → `<config folder>/gui-state` (`width=`, `height=`) |
+
+**Why the Columns change was needed:** marking the buttons `force_left` alone
+made them natural width but the column kept its 20% share, leaving a gap
+between the list and the buttons. `content_last_col` moves the column boundary
+in to the buttons, so the list takes the rest.
+
+**Verified:** headless `Columns` allocation test (a standalone GTK program
+linking `libutils.a`), at widths 600/1000/2000 px — list width 525/925/1925,
+buttons always 71 px and flush with the right edge; entry row aligned with the
+list. Window size restore verified with a seeded `gui-state` (`1100x900` →
+`[config-dialog] size 1100x900` in the trace). The size *save* runs on `destroy`
+(Open/Cancel/⌘W); killing the process with SIGTERM does not run it.
+
+**Notes**
+- `pterm` is excluded from the size memory: it has no configuration folder, so
+  both the restore and the save check `saved_sessions`.
+- Mid-session "Change Settings" uses the same code, with only the Save button.
+
+---
+
 ## 4e. Clipboard: Insert keys and dialog copy/paste  *(done 2026-11-17)*
 
 **Symptom 1 — terminal:** `Ctrl+Ins` / `Shift+Ins` did nothing, while `Cmd+C` /

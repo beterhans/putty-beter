@@ -131,6 +131,20 @@ struct dlgcontrol {
      */
     bool delay_taborder;
     /*
+     * PuTTY-beter: when set, this control absorbs the spare vertical
+     * space in its controlset rather than being kept at its natural
+     * height. Only one control per controlset should set it. Ignored by
+     * front ends that do not implement it.
+     */
+    bool vexpand;
+    /*
+     * PuTTY-beter: when set, this control keeps its natural width and is
+     * left-aligned in its column, instead of being stretched to fill it.
+     * Used to stop push buttons growing into wide bars when the dialog is
+     * resized. Ignored by front ends that do not implement it.
+     */
+    bool force_left;
+    /*
      * Indicate which column(s) this control occupies. This can be
      * unpacked into starting column and column span by the COLUMN
      * macros above.
@@ -445,6 +459,12 @@ struct controlset {
     size_t ncontrols;                  /* number of `dlgcontrol' in array */
     size_t ctrlsize;                   /* allocated size of array */
     dlgcontrol **ctrls;                /* actual array */
+    /*
+     * PuTTY-beter: when set, this controlset should be given any spare
+     * vertical space in the panel instead of keeping its natural height.
+     * The front end is free to ignore it (the Windows one does).
+     */
+    bool vexpand;
 };
 
 typedef void (*ctrl_freefn_t)(void *);    /* used by ctrl_alloc_with_free */

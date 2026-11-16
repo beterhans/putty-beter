@@ -32,6 +32,15 @@ struct Columns_tag {
     GList *taborder;                   /* this just holds GtkWidgets */
     ColumnsChild *vexpand;
     gint spacing;
+    /*
+     * PuTTY-beter: when `content_last_col' is set, the last column of each
+     * multi-column block is sized to fit its widest left-aligned child
+     * rather than taking its stated percentage, so that a column of
+     * natural-width buttons stops wasting space in a wide dialog.
+     * `content_last_width' is that width, recomputed at allocation time.
+     */
+    bool content_last_col;
+    gint content_last_width;
 };
 
 struct ColumnsClass_tag {
@@ -65,6 +74,8 @@ void columns_taborder_last(Columns *cols, GtkWidget *child);
 void columns_force_left_align(Columns *cols, GtkWidget *child);
 void columns_align_next_to(Columns *cols, GtkWidget *ch1, GtkWidget *ch2);
 void columns_vexpand(Columns *cols, GtkWidget *child);
+/* PuTTY-beter: size the last column of each block to its content. */
+void columns_content_last_col(Columns *cols);
 
 #ifdef __cplusplus
 }

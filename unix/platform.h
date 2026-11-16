@@ -202,6 +202,11 @@ void config_location_invalidate(void);
  * variable PUTTY_CONFIG_RELOCATE is set. Safe to call more than once. */
 void config_location_init(void);
 
+/* Remembered GUI state, in a key=value file in the configuration folder.
+ * storage.c; used by unix/dialog.c to remember the configuration box size. */
+int config_state_get_int(const char *filename, const char *key, int defvalue);
+void config_state_set_int(const char *filename, const char *key, int value);
+
 /* Defined in main-gtk-*.c */
 void launch_duplicate_session(Conf *conf);
 void launch_new_session(void);

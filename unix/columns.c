@@ -163,6 +163,9 @@ static void columns_init(Columns *cols)
 
     cols->children = NULL;
     cols->spacing = 0;
+    /* PuTTY-beter: off unless columns_content_last_col() is called. */
+    cols->content_last_col = false;
+    cols->content_last_width = 0;
 }
 
 static void columns_child_free(gpointer vchild)
@@ -581,6 +584,20 @@ void columns_vexpand(Columns *cols, GtkWidget *widget)
 }
 
 /*
+ * PuTTY-beter: make the last column of each multi-column block exactly as
+ * wide as the widest left-aligned child in it, rather than the percentage it
+ * was given. Used for a column of push buttons that should keep their
+ * natural size while the rest of the dialog grows.
+ */
+void columns_content_last_col(Columns *cols)
+{
+    g_return_if_fail(cols != NULL);
+    g_return_if_fail(IS_COLUMNS(cols));
+
+    cols->content_last_col = true;
+}
+
+/*
  * Override GtkContainer's focus movement so the user can
  * explicitly specify the tab order.
  */
@@ -791,6 +808,19 @@ static void columns_alloc_horiz(Columns *cols, gint ourwidth,
                 colxpos[i+1] = (((ourwidth - 2*border) + cols->spacing)
                                 * percent / 100);
             }
+            /*
+             * PuTTY-beter: pull in the last column so that it is exactly as
+             * wide as the widest left-aligned child (see
+             * columns_content_last_col). The columns before it simply lose
+             * the space that would have been wasted. If the dialog is too
+             * narrow for that, leave the stated percentages alone.
+             */
+            if (cols->content_last_col && ncols > 1 &&
+                cols->content_last_width > 0) {
+                gint start = (ourwidth - 2*border) - cols->content_last_width;
+                if (start > colxpos[ncols-2])
+                    colxpos[ncols-1] = start;
+            }
             continue;
         }
 
@@ -809,7 +839,15 @@ static void columns_alloc_horiz(Columns *cols, gint ourwidth,
          * exactly the requisition width.
          */
         child->x = colxpos[child->colstart];
-        if (child->force_left)
+        /*
+         * PuTTY-beter: in a content-sized last column, keep the children
+         * filling it rather than at their own requisition widths, so a
+         * stack of buttons ends up the same width and flush with the right
+         * edge. The column is only as wide as the widest of them.
+         */
+        if (child->force_left &&
+            !(cols->content_last_col && child->colstart == ncols-1 &&
+              child->colspan == 1))
             child->w = childwidth;
         else
             child->w = (colxpos[child->colstart+colspan] -
@@ -1255,6 +1293,24 @@ static void columns_size_allocate(GtkWidget *widget, GtkAllocation *alloc)
     gtk_widget_set_allocation(widget, alloc);
 
     border = gtk_container_get_border_width(GTK_CONTAINER(cols));
+
+    /*
+     * PuTTY-beter: measure the widest left-aligned child, so that
+     * columns_alloc_horiz can size the last column to fit it.
+     */
+    if (cols->content_last_col) {
+        cols->content_last_width = 0;
+        for (children = cols->children;
+             children && (child = children->data);
+             children = children->next) {
+            if (child->widget && child->force_left &&
+                gtk_widget_get_visible(child->widget)) {
+                gint w = columns_gtk3_get_min_width(child);
+                if (w > cols->content_last_width)
+                    cols->content_last_width = w;
+            }
+        }
+    }
 
     columns_alloc_horiz(cols, alloc->width, columns_gtk3_get_min_width);
     columns_alloc_vert(cols, alloc->height, columns_gtk3_get_minfw_height);

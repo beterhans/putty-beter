@@ -743,6 +743,113 @@ char *config_location_set(const char *dirtext)
     return err;
 }
 
+/* ----------------------------------------------------------------------
+ * PuTTY-beter: small persistent state files in the configuration folder.
+ *
+ * These hold per-user GUI state that is not part of a saved session - the
+ * size of the configuration box, for instance. Each file is a list of
+ * key=value lines, so that adding another key later does not need another
+ * file. Anything unreadable is ignored: losing remembered window sizes is
+ * not important enough to complain about.
+ */
+
+static char *config_state_path(const char *filename)
+{
+    char *dir = make_filename(INDEX_DIR, NULL);
+    char *path = dupprintf("%s/%s", dir, filename);
+    sfree(dir);
+    return path;
+}
+
+int config_state_get_int(const char *filename, const char *key, int defvalue)
+{
+    char *path = config_state_path(filename);
+    FILE *fp = fopen(path, "r");
+    int result = defvalue;
+
+    if (fp) {
+        size_t keylen = strlen(key);
+        char *line;
+
+        while ((line = fgetline(fp)) != NULL) {
+            if (!strncmp(line, key, keylen) && line[keylen] == '=') {
+                result = atoi(line + keylen + 1);
+                sfree(line);
+                break;
+            }
+            sfree(line);
+        }
+        fclose(fp);
+    }
+
+    if (config_debug_enabled())
+        fprintf(stderr, "[config-location] %s: %s=%d\n",
+                path, key, result);
+
+    sfree(path);
+    return result;
+}
+
+void config_state_set_int(const char *filename, const char *key, int value)
+{
+    char *path = config_state_path(filename);
+    char *tmp = dupprintf("%s.tmp", path);
+    char *dir = make_filename(INDEX_DIR, NULL);
+    char *line, *err;
+    FILE *in, *out;
+    size_t keylen = strlen(key);
+    bool ok;
+
+    if ((err = make_dir_path(dir, 0700)) != NULL) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] cannot save %s: %s\n",
+                    path, err);
+        sfree(err);
+        goto out;
+    }
+
+    out = fopen(tmp, "w");
+    if (!out) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] cannot write %s: %s\n",
+                    tmp, strerror(errno));
+        goto out;
+    }
+
+    fprintf(out, "# PuTTY-beter: remembered GUI state.\n"
+                  "# Delete this file to go back to the defaults.\n");
+
+    in = fopen(path, "r");
+    if (in) {
+        while ((line = fgetline(in)) != NULL) {
+            /* Keep everything except an older value for this key. */
+            if (*line != '#' &&
+                !(!strncmp(line, key, keylen) && line[keylen] == '='))
+                fputs(line, out);
+            sfree(line);
+        }
+        fclose(in);
+    }
+
+    fprintf(out, "%s=%d\n", key, value);
+    ok = (fclose(out) == 0);
+
+    if (ok && rename(tmp, path) == 0) {
+        if (config_debug_enabled())
+            fprintf(stderr, "[config-location] %s: %s=%d saved\n",
+                    path, key, value);
+    } else if (config_debug_enabled()) {
+        fprintf(stderr, "[config-location] cannot save %s: %s\n",
+                path, strerror(errno));
+        unlink(tmp);
+    }
+
+  out:
+    sfree(tmp);
+    sfree(dir);
+    sfree(path);
+}
+
 struct settings_w {
     FILE *fp;
 };

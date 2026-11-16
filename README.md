@@ -81,9 +81,20 @@ build the binaries and a self-contained `PuTTY.app` with GTK bundled inside.
 
 `PUTTY_DIAG=1` traces key events, clipboard activity, font metrics and cursor
 placement to stderr. `PUTTY_CONFIG_DEBUG=1` traces the configuration folder
-resolution and relocation. Neither has any effect when unset.
+resolution and relocation, and the remembered configuration-box size. Neither
+has any effect when unset.
 
-### 7. Changed defaults
+### 7. Configuration box
+
+The box is resizable and remembers its size, which is kept in
+`<config folder>/gui-state` (delete that file to go back to the default).
+
+The Session panel puts "Close window on exit" above the saved-session list, and
+the list is the part that grows when the window does — useful once you have a
+lot of saved sessions. The Load/Save/Delete buttons keep their natural width,
+and the list runs right up to them, so no horizontal space is wasted either.
+
+### 8. Changed defaults
 
 These only affect **new** sessions, and settings a saved session already stores
 keep their saved values.
