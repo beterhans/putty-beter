@@ -341,6 +341,40 @@ Remove those keys from the session file, or Load → adjust → Save in the GUI.
 
 ---
 
+## 4e. Clipboard: Insert keys and dialog copy/paste  *(done 2026-11-17)*
+
+**Symptom 1 — terminal:** `Ctrl+Ins` / `Shift+Ins` did nothing, while `Cmd+C` /
+`Cmd+V` worked, even though the session had `CtrlShiftIns=explicit`.
+
+**Cause:** `key_event()` tested `event->keyval == GDK_KEY_Insert`. macOS has no
+PC Insert key; a PC keyboard's Insert arrives as virtual keycode 0x72
+(`kVK_Help`), which GDK reports as **`GDK_KEY_Help`**. Apple keyboards with a
+numeric keypad report the keypad key as `GDK_KEY_KP_Insert`. Neither matched.
+
+**Fix:** new `is_insert_key()` in `unix/window.c` accepts any keyval whose GDK
+name contains `Insert`, plus `GDK_KEY_Help` on macOS. Used by both the
+Shift+Ins and Ctrl+Ins branches, so the configured clipboard action
+(`CLIPUI_IMPLICIT/EXPLICIT/CUSTOM/NONE`) is honoured as before.
+
+**Symptom 2 — dialog:** copy/paste did not work in the configuration box's
+text fields.
+
+**Cause:** GTK binds entry copy/paste to `GDK_CONTROL_MASK`; on macOS Command is
+`GDK_MOD2_MASK`, and `GtkEntry` does not handle Command+C/V, so the key did
+nothing.
+
+**Fix:** `dialog_clipboard_key()` in `unix/dialog.c`, called from
+`win_key_press()`, handles Ctrl/Cmd + C/V/X plus Ctrl+Ins/Shift+Ins on the
+focused widget (`GtkEditable`, and selectable `GtkLabel` for copy).
+`GDK_MOD2` is treated as Command **only** under `__APPLE__`, since elsewhere it
+is usually Num Lock.
+
+**Not verified:** the physical key presses (needs a human). If the terminal
+side still fails, `PUTTY_DIAG=1` prints `key: keyval=0x.... (name) state=...`
+for every keystroke — that names the key macOS actually delivers.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.

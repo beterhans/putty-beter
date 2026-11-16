@@ -2695,9 +2695,94 @@ gint tree_focus(GtkContainer *container, GtkDirectionType direction,
 }
 #endif
 
+/*
+ * PuTTY-beter: copy and paste keys inside dialog boxes.
+ *
+ * GTK binds copy/paste in text entries and selectable labels to the Control
+ * modifier, but on macOS the modifier people use for that is Command, which
+ * GDK reports as GDK_MOD2_MASK. Accept both, plus Ctrl+Ins / Shift+Ins to go
+ * with the same pair in the terminal window. Returns true if the key was
+ * handled here.
+ *
+ * Note that GDK_MOD2 is only treated as Command on macOS: on other Unix
+ * systems it is usually Num Lock, where copying on NumLock+C would be very
+ * wrong.
+ */
+static bool dialog_clipboard_key(GtkWidget *widget, GdkEventKey *event)
+{
+    enum { NOT_CLIP, CLIP_COPY, CLIP_PASTE, CLIP_CUT };
+    GtkWidget *focus;
+    int what = NOT_CLIP;
+    bool ctrl, shift;
+
+    if (event->type != GDK_KEY_PRESS || !GTK_IS_WINDOW(widget))
+        return false;
+
+    focus = gtk_window_get_focus(GTK_WINDOW(widget));
+    if (!focus)
+        return false;
+
+    ctrl = (event->state & GDK_CONTROL_MASK) != 0;
+    shift = (event->state & GDK_SHIFT_MASK) != 0;
+
+    if (event->keyval == GDK_KEY_Insert ||
+        event->keyval == GDK_KEY_KP_Insert
+#ifdef __APPLE__
+        /* A PC keyboard's Insert key arrives as the Mac "Help" key. */
+        || event->keyval == GDK_KEY_Help
+#endif
+        ) {
+        if (ctrl)
+            what = CLIP_COPY;
+        else if (shift)
+            what = CLIP_PASTE;
+    } else if (ctrl
+#ifdef __APPLE__
+               || (event->state & GDK_MOD2_MASK)  /* Command */
+#endif
+               ) {
+        switch (event->keyval) {
+          case GDK_KEY_c: case GDK_KEY_C: what = CLIP_COPY; break;
+          case GDK_KEY_v: case GDK_KEY_V: what = CLIP_PASTE; break;
+          case GDK_KEY_x: case GDK_KEY_X: what = CLIP_CUT; break;
+        }
+    }
+
+    if (what == NOT_CLIP)
+        return false;
+
+    if (GTK_IS_EDITABLE(focus)) {
+        switch (what) {
+          case CLIP_COPY:
+            gtk_editable_copy_clipboard(GTK_EDITABLE(focus));
+            break;
+          case CLIP_PASTE:
+            gtk_editable_paste_clipboard(GTK_EDITABLE(focus));
+            break;
+          default:
+            gtk_editable_cut_clipboard(GTK_EDITABLE(focus));
+            break;
+        }
+        return true;
+    }
+
+    if (GTK_IS_LABEL(focus) && what == CLIP_COPY &&
+        gtk_label_get_selectable(GTK_LABEL(focus))) {
+        /* Message box text is a selectable label and can be copied out. */
+        g_signal_emit_by_name(G_OBJECT(focus), "copy-clipboard");
+        return true;
+    }
+
+    return false;
+}
+
 gint win_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
     struct dlgparam *dp = (struct dlgparam *)data;
+
+    /* PuTTY-beter: let copy and paste work in the dialog's text fields. */
+    if (dialog_clipboard_key(widget, event))
+        return true;
 
     if (event->keyval == GDK_KEY_Escape && dp->cancelbutton) {
         g_signal_emit_by_name(G_OBJECT(dp->cancelbutton), "clicked");

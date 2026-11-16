@@ -1138,6 +1138,30 @@ static void drag_data_received(GtkWidget *widget, GdkDragContext *context,
     gtk_drag_finish(context, TRUE, FALSE, time);
 }
 
+/*
+ * PuTTY-beter: which keys count as "Ins"?
+ *
+ * The Window/Selection panel offers "{Ctrl,Shift} + Ins", but a PC keyboard
+ * plugged into a Mac delivers its Insert key as virtual keycode 0x72, which
+ * is the Mac's "Help" key, so GDK reports GDK_KEY_Help rather than
+ * GDK_KEY_Insert. Apple keyboards with a numeric keypad report the keypad
+ * key as GDK_KEY_KP_Insert. Accept all of those, plus anything else whose
+ * GDK name contains "Insert", so the documented shortcut works whatever
+ * keyboard is attached.
+ */
+static bool is_insert_key(guint keyval)
+{
+    const char *name = gdk_keyval_name(keyval);
+
+    if (name && strstr(name, "Insert"))
+        return true;
+#ifdef __APPLE__
+    if (keyval == GDK_KEY_Help)
+        return true;
+#endif
+    return false;
+}
+
 gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
     GtkFrontend *inst = (GtkFrontend *)data;
@@ -1439,8 +1463,12 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
 
         /*
          * Neither do Shift-Ins or Ctrl-Ins (if enabled).
+         *
+         * PuTTY-beter: is_insert_key() rather than a bare GDK_KEY_Insert
+         * test, because macOS report a PC Insert key as GDK_KEY_Help and a
+         * keypad key as GDK_KEY_KP_Insert.
          */
-        if (event->keyval == GDK_KEY_Insert &&
+        if (is_insert_key(event->keyval) &&
             (event->state & GDK_SHIFT_MASK)) {
             int cfgval = conf_get_int(inst->conf, CONF_ctrlshiftins);
 
@@ -1470,7 +1498,7 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
                 break;
             }
         }
-        if (event->keyval == GDK_KEY_Insert &&
+        if (is_insert_key(event->keyval) &&
             (event->state & GDK_CONTROL_MASK)) {
             static const int clips_clipboard[] = { CLIP_CLIPBOARD };
             int cfgval = conf_get_int(inst->conf, CONF_ctrlshiftins);

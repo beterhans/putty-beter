@@ -25,6 +25,14 @@ Consequences of the fix:
 - **`Cmd+C` / `Cmd+V` work.** Without `OSX_META_KEY_CONFIG` there was no
   Command-key pass-through, so the terminal swallowed `Cmd`-modified keys
   before the menu accelerators could see them.
+- **`Ctrl+Ins` / `Shift+Ins` work** in the terminal, as the Window/Selection
+  panel documents. A PC keyboard's Insert key reaches macOS as virtual keycode
+  0x72, the Mac's "Help" key, so PuTTY was looking for `GDK_KEY_Insert` and
+  never saw it; keypad Insert (`GDK_KEY_KP_Insert`) had the same problem.
+- **Copy and paste work in dialog boxes** — the configuration box's text
+  fields, and selectable message text. GTK only binds these to Control, while
+  macOS users press Command; both are accepted now, plus `Ctrl+Ins` /
+  `Shift+Ins`.
 - The low-level `gdk_selection_*` code — which the source itself notes fails on
   macOS — is replaced by the `GtkClipboard` path.
 
