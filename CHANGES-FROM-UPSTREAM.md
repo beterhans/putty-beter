@@ -1,0 +1,236 @@
+# What this fork changes, compared with PuTTY 0.85
+
+Baseline: the official PuTTY 0.85 source tarball,
+<https://the.earth.li/~sgtatham/putty/0.85/putty-0.85.tar.gz>.
+
+Everything listed here was written for this fork and is MIT-licensed under the
+same terms as the rest of the tree (`LICENCE`). **No new external
+dependencies**, and no GPL/LGPL code has been added: the one GPL-2.0 tool this
+project uses, `gtk-mac-bundler`, is a build-time-only helper and is
+deliberately not vendored (`tools/README.md`).
+
+Everything not mentioned below is unmodified upstream PuTTY.
+
+---
+
+## Reproducing this diff
+
+```sh
+curl -O https://the.earth.li/~sgtatham/putty/0.85/putty-0.85.tar.gz
+tar xzf putty-0.85.tar.gz
+
+# which upstream files differ, and what has been added
+diff -rq putty-0.85 . -x '.git' -x 'build-*' -x '*.old' -x '_agent' -x 'issue' -x 'tools'
+
+# a specific file
+diff -u putty-0.85/unix/window.c unix/window.c
+```
+
+The first commit in this repository (`16c7c5b`) already contains the source
+fixes, so `git log` alone shows only the later work.
+
+---
+
+## Summary
+
+| Area | Change |
+|---|---|
+| macOS code paths | The CMake build never defined `OSX_GTK`, so every macOS-specific code path was silently compiled out. Now enabled, which is what makes clipboard support work at all. |
+| Clipboard | Copy/paste in the terminal and in dialogs, with Command and with Ctrl+Ins/Shift+Ins, on any keyboard. |
+| Keyboard input | IME pre-edit cursor offset fixed (upstream had an out-of-bounds read here). |
+| Configuration folder | The configuration directory can be moved, with a one-time dialog and a redirect file. |
+| Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
+| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `CMakePresets.json`, a self-contained `PuTTY.app`. |
+| Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
+
+---
+
+## Modified upstream files
+
+Line counts are `+added / -removed` against the 0.85 tarball.
+
+| File | +/- | What changed |
+|---|---|---|
+| `conf.h` | +19 / -7 | Seven default values changed (see below) |
+| `config.c` | +5 / -1 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto |
+| `settings.c` | +5 / -1 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform |
+| `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
+| `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
+| `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
+| `unix/dialog.c` | +79 / -0 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields |
+| `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
+| `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
+| `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
+| `unix/platform.h` | +47 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder API |
+| `unix/putty.bundle` | +20 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
+| `unix/storage.c` | +453 / -4 | Configuration-folder redirection and the `config_location_*` API |
+| `unix/window.c` | +186 / -6 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
+| `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
+| `.gitignore` | +12 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/` |
+| `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
+
+## New files
+
+| File | Purpose |
+|---|---|
+| `CMakePresets.json` | `arm64`, `x86_64`, `debug` presets |
+| `scripts/build-macos.sh` | Per-architecture build, one command |
+| `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, ad-hoc re-sign |
+| `unix/config-location.c` | The "where should the configuration live?" dialog |
+| `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
+| `PLAN.md` | Roadmap and the reasoning behind it |
+| `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
+
+---
+
+## 1. macOS code paths were disabled
+
+`unix/platform.h` had two `#ifdef OSX_GTK` blocks, and the CMake build never
+defined `OSX_GTK` (a leftover from the old Makefile-based build). Every
+macOS-specific tweak was compiled out and the generic X11 code was used
+instead. Both blocks now test `#if defined(OSX_GTK) || defined(__APPLE__)`.
+
+Consequences of the fix:
+
+| Tweak | Was off, so... | Now |
+|---|---|---|
+| `CLIPUI_DEFAULT_MOUSE`, `CLIPUI_DEFAULT_INS` | Mouse paste and Ctrl/Shift+Ins targeted the X11 `PRIMARY` selection, which does not exist on macOS | Target the system clipboard |
+| `OSX_META_KEY_CONFIG` | No Command-key pass-through: the terminal ate `Cmd+C`/`Cmd+V` before the menu accelerators ran | Command is handled as a system modifier and passed to GTK |
+| `JUST_USE_GTK_CLIPBOARD_UTF8` | The low-level `gdk_selection_*` code was used, which the source itself says fails on macOS | The `GtkClipboard` path, i.e. the macOS pasteboard |
+
+This also uncovered a latent compile error in `clipboard_text_received` that had
+never been built: `dup_mb_to_wc(…)` with four arguments, where four-argument
+form is `dup_mb_to_wc_c(…)`.
+
+## 2. Clipboard
+
+**Terminal.** `Cmd+C`/`Cmd+V` via menu accelerators; `Ctrl+Shift+C`/`Ctrl+Shift+V`
+(now defaulted to the system clipboard rather than to "do nothing");
+`Ctrl+Ins`/`Shift+Ins`; and Ctrl+right-click → Copy/Paste/Copy All.
+
+The `Ctrl+Ins` pair did not work upstream on macOS even with the setting turned
+on: `key_event()` tested `event->keyval == GDK_KEY_Insert`, but macOS has no
+Insert key — a PC keyboard's Insert arrives as virtual keycode 0x72
+(`kVK_Help`, the Mac's "Help" key, which GDK reports as `GDK_KEY_Help`), and a
+keypad Insert arrives as `GDK_KEY_KP_Insert`. `is_insert_key()` now accepts any
+keyval whose GDK name contains `Insert`, plus `GDK_KEY_Help` and hardware
+keycode 0x72 on macOS.
+
+**Dialogs.** Nothing could be pasted into the configuration box's text fields,
+because GTK binds entry copy/paste to Control while macOS users press Command
+(`GDK_MOD2_MASK`). `dialog_clipboard_key()`, called from `win_key_press()`, now
+handles Ctrl or Cmd + `C`/`V`/`X`/`A` and Ctrl+Ins/Shift+Ins on the focused
+`GtkEditable` (and copy from selectable message labels). `GDK_MOD2` is only
+treated as Command under `__APPLE__`, since on other Unix systems it is Num Lock.
+
+## 3. IME pre-edit cursor offset
+
+`term_set_preedit_text()` allocated the pre-edit line unconditionally, so an
+empty pre-edit string (which GTK on macOS supplies on ordinary keystrokes) left
+it non-`NULL` with zero columns. `do_paint()` then computed the cursor column as
+`preedit_end - 1` — one cell too far left — and read `chars[-1]` out of bounds.
+Fixed in `terminal/terminal.c`.
+
+## 4. Relocatable configuration folder
+
+PuTTY has always used `~/.putty`. This build offers, once, to keep the
+configuration somewhere else (`~/Documents/putty-beter-config` by default).
+
+* Base location resolution is unchanged: `$PUTTYDIR`, then an **existing**
+  `$XDG_CONFIG_HOME/putty` or `~/.config/putty`, then `~/.putty`, then
+  `pw_dir/.putty`, then `/.putty`.
+* A base location may contain `config-location`, a small text file whose first
+  non-comment line is the real configuration directory. `unix/storage.c` reads
+  it, so `putty`, `plink`, `pscp`, `psftp` and `puttygen` all follow the same
+  directory and saved host keys stay consistent. An invalid or missing target is
+  ignored (with a trace under `PUTTY_CONFIG_DEBUG=1`).
+* The dialog appears when there is no configuration yet (no `sessions`
+  subdirectory), or when Option/Alt is held at launch, or when
+  `PUTTY_CONFIG_RELOCATE=1`. On acceptance the existing `sessions`,
+  `sshhostkeys`, `sshhostkeys.tmp`, `sshhostcas` and `randomseed` are **moved**;
+  `rename()` is used where possible, `EXDEV` falls back to a recursive copy, and
+  the source is only removed once the copy succeeded.
+* Nothing is overwritten: an item that already exists in the destination is left
+  alone and the old copy stays where it was. Cancelling records the current
+  folder as configured, so the dialog is genuinely one-shot. Choosing the base
+  location again removes the redirect.
+* The Option-key test uses `CGEventSourceFlagsState()` (CoreGraphics, linked
+  through `guiterminal`), because GDK cannot report a modifier before the first
+  key event of the process.
+
+## 5. Changed defaults
+
+`conf.h` unless noted. These apply to **new** sessions; a saved session that
+stores a key keeps its own value.
+
+| Setting | Upstream | Here |
+|---|---|---|
+| Session logging | None | Printable output |
+| Log file name | `putty.log` | `<config folder>/logs/&Y-&M-&D_&T-&H.txt` (`unix/window.c`) |
+| If the log file exists | Ask | Always append |
+| Backspace key | Control-? | Control-H |
+| Function keys | `ESC[n~` (Linux) | VT100+ |
+| Window size | 80×24 | 128×36 |
+| Keepalive interval | 0 (off) | 120 s |
+| Internet protocol version | Auto | IPv4 |
+| Tunnels → IP version, new tunnel | Auto | IPv4 (`config.c`) |
+
+Two follow-on changes were needed:
+
+* `conf_new()` captures the log file name, so `config_location_init()` runs
+  before it in `main-gtk-simple.c`; otherwise the folder would be the
+  pre-relocation one.
+* PuTTY never creates a missing directory for a log file, so startup creates
+  `<config folder>/logs`.
+
+`pterm` keeps `putty.log`: it has no saved sessions and no configuration folder.
+
+## 6. Build and packaging
+
+* `scripts/build-macos.sh <arm64|x86_64>` — one CMake build per architecture.
+* `scripts/bundle-macos.sh <arch>` — runs gtk-mac-bundler and then repairs its
+  output: Homebrew `Cellar` paths are normalised to `opt`, dangling references
+  resolved, `loaders.cache` regenerated (the bundler wrote it before the
+  libraries were in place), and everything ad-hoc re-signed because
+  `install_name_tool` invalidates signatures.
+* `unix/osxlaunch.c` points `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` at
+  the caches inside the bundle. Without that, gdk-pixbuf and GTK fall back to
+  build-time absolute paths, which loads a **second copy of GLib** next to the
+  bundled one — duplicate Objective-C classes and undefined behaviour.
+* `unix/putty.bundle` lists the gdk-pixbuf loaders so the generated
+  `loaders.cache` points inside the app, and bundles `icons/PuTTY.icns`.
+* Intel (x86_64) needs an Intel Homebrew in `/usr/local`; the arm64 Homebrew in
+  `/opt/homebrew` cannot produce an x86_64 GTK. **Not yet verified.** Note that
+  Apple is retiring Rosetta (macOS 27 is the last release with it).
+
+## 7. Diagnostics
+
+Both are runtime switches and cost nothing when unset.
+
+* `PUTTY_DIAG=1` — key events (keyval, name, modifier state), clipboard
+  activity, font metrics, cursor placement.
+* `PUTTY_CONFIG_DEBUG=1` — configuration folder resolution and relocation, and
+  the resulting default log file name.
+
+---
+
+## Worth reporting upstream
+
+1. **`OSX_GTK` is never defined by the CMake build**, so every macOS-specific
+   code path in `unix/platform.h` is compiled out on macOS. This disables
+   clipboard support and Command-key handling in any CMake-built macOS PuTTY.
+2. **IME pre-edit out-of-bounds read and cursor offset**: an empty pre-edit
+   string leaves a zero-width pre-edit line, after which `do_paint()` reads
+   `chars[-1]` and places the cursor one cell to the left.
+3. **Ctrl+Ins/Shift+Ins cannot work on macOS** as written, because the code
+   matches `GDK_KEY_Insert` and macOS reports that key as `GDK_KEY_Help`.
+4. **Dialogs cannot be pasted into on macOS**: GTK's copy/paste bindings are
+   Control-based and nothing handles Command.
+
+## Deliberately not changed
+
+* Still GTK 3, as upstream. Only AppKit would be "universal" without bundling
+  every dependency, and that is a rewrite, not a fork.
+* No ZMODEM, session folders, saved passwords or MCP server yet — see `PLAN.md`.
+* Copy-on-select (`CLIPUI_DEFAULT_AUTOCOPY`) is still off, matching the macOS
+  Human Interface Guidelines.

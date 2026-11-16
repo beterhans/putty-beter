@@ -5,6 +5,10 @@ plus the fixes needed to make its GTK front end behave properly on macOS.
 
 Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICENCE`.
 
+A file-by-file account of every difference from the official PuTTY 0.85
+tarball, with the commands to reproduce the diff, is in
+[`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md).
+
 ---
 
 ## What this fork changes
@@ -214,9 +218,11 @@ applications. A native **arm64** build is the one that matters going forward.
   download, use right-click → **Open**, or
   `xattr -dr com.apple.quarantine PuTTY.app`.
 - Build output (`build-*/`) and the `gtk-mac-bundler` checkout are git-ignored.
-- The two defects fixed here — `OSX_GTK` never being defined, and the IME
+- The defects fixed here — `OSX_GTK` never being defined, and the IME
   pre-edit cursor offset with its out-of-bounds read — are upstream PuTTY bugs
-  and are worth reporting upstream.
+  and are worth reporting upstream. The full list is at the end of
+  [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md).
 
-See [`PLAN.md`](PLAN.md) for the remaining roadmap (universal `.app`,
-signing/notarization, and the planned features).
+See [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) for every difference
+from upstream PuTTY 0.85, and [`PLAN.md`](PLAN.md) for the remaining roadmap
+(universal `.app`, signing/notarization, and the planned features).
