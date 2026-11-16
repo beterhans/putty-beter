@@ -71,6 +71,23 @@ build the binaries and a self-contained `PuTTY.app` with GTK bundled inside.
 placement to stderr. `PUTTY_CONFIG_DEBUG=1` traces the configuration folder
 resolution and relocation. Neither has any effect when unset.
 
+### 7. Changed defaults
+
+These only affect **new** sessions, and settings a saved session already stores
+keep their saved values.
+
+| Setting | Upstream | This build |
+|---|---|---|
+| Session → Logging | None | **Printable output** |
+| Log file name | `putty.log` | `<config folder>/logs/&Y-&M-&D_&T-&H.txt` |
+| If the log file exists | Ask | **Always append** |
+| Terminal → Backspace key | Control-? | **Control-H** |
+| Terminal → Function keys | ESC[n~ (Linux) | **VT100+** |
+| Window size | 80×24 | **128×36** |
+| Keepalives (seconds) | 0 (off) | **120** |
+| Internet protocol version | Auto | **IPv4** |
+| Connection → Tunnels → IP version (new tunnel form) | Auto | **IPv4** |
+
 ---
 
 ## Requirements

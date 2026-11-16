@@ -1328,7 +1328,11 @@ static void portfwd_handler(dlgcontrol *ctrl, dlgparam *dlg,
             dlg_radiobutton_set(ctrl, dlg, 0);
 #ifndef NO_IPV6
         } else if (ctrl == pfd->addressfamily) {
-            dlg_radiobutton_set(ctrl, dlg, 0);
+            /*
+             * PuTTY-beter: new tunnels default to IPv4 rather than Auto.
+             * The radio buttons are "Auto", "IPv4", "IPv6" in that order.
+             */
+            dlg_radiobutton_set(ctrl, dlg, 1);
 #endif
         }
     } else if (event == EVENT_ACTION) {

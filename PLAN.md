@@ -300,6 +300,47 @@ forced), and that a real `~/.putty` installation is left alone.
 
 ---
 
+## 4d. Changed default settings  *(done 2026-11-17)*
+
+Defaults live in `conf.h` (`CONF_OPTION` / `DEFAULT_*`), so these are one-line
+changes; the tunnel form default is in `config.c`, the log file name in
+`unix/window.c`.
+
+| Key | Upstream | Now | Where |
+|---|---|---|---|
+| `LogType` | `LGTYP_NONE` | `LGTYP_ASCII` (Printable output) | `conf.h` |
+| `LogFileClash` | `LGXF_ASK` | `LGXF_APN` (always append) | `conf.h` |
+| `LogFileName` | `putty.log` | `<config>/logs/&Y-&M-&D_&T-&H.txt` | `unix/window.c:platform_default_filename` |
+| `BackspaceIsDelete` | `true` (^?) | `false` (^H) | `conf.h` |
+| `LinuxFunctionKeys` | `FUNKY_TILDE` | `FUNKY_VT100P` | `conf.h` |
+| `TermWidth` / `TermHeight` | 80 / 24 | 128 / 36 | `conf.h` |
+| `PingInterval` | 0 | 120 s | `conf.h` |
+| `AddressFamily` | `ADDRTYPE_UNSPEC` | `ADDRTYPE_IPV4` | `conf.h` |
+| tunnel form IP version | radio index 0 (Auto) | index 1 (IPv4) | `config.c:portfwd_handler` |
+
+**Log file name ordering matters.** `conf_new()` captures the `LogFileName`
+default, so `config_location_init()` must run **before** it — hence the call was
+moved to just after `gtk_init()`, before `conf = conf_new()`. The `logs`
+directory is created by `config_location_init()` (only when `saved_sessions`),
+because PuTTY does not create missing directories for log files.
+
+**pterm** keeps `putty.log`: `platform_default_filename` branches on
+`saved_sessions`.
+
+**Tests:** `test/test_conf.c` encodes the upstream defaults, so its expected
+values were updated for the seven changed keys (`test_conf` passes).
+
+**Verified:** `2026-11-17_010935-127.0.0.1.txt` written into
+`<config>/logs/` by a `-raw` session, whole content logged; `default log file:`
+trace under `PUTTY_CONFIG_DEBUG=1`.
+
+**Caveat:** a saved session that already stores these keys wins over the
+defaults — `MacMini2018.local` stores all of them (`AddressFamily=0`,
+`LogType=0`, `LogFileClash=-1`, `PingInterval=0`, `TermHeight=40`, ...).
+Remove those keys from the session file, or Load → adjust → Save in the GUI.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.

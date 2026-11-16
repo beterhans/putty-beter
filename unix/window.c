@@ -323,9 +323,30 @@ FontSpec *platform_default_fontspec(const char *name)
 
 Filename *platform_default_filename(const char *name)
 {
-    if (!strcmp(name, "LogFileName"))
+    if (!strcmp(name, "LogFileName")) {
+        /*
+         * PuTTY-beter: log into <configuration folder>/logs by default,
+         * with a dated, per-host file name. config_location_current()
+         * honours any config-location redirect, so the logs follow the
+         * configuration if the user moves it. The directory itself is
+         * created by config_location_init() at startup.
+         *
+         * pterm has no saved sessions and no configuration folder, so it
+         * keeps the old behaviour.
+         */
+        if (saved_sessions) {
+            char *dir = config_location_current();
+            char *path = dupprintf("%s/logs/&Y-&M-&D_&T-&H.txt", dir);
+            Filename *fn = filename_from_str(path);
+            if (getenv("PUTTY_CONFIG_DEBUG"))
+                fprintf(stderr, "[config-location] default log file: %s\n",
+                        path);
+            sfree(path);
+            sfree(dir);
+            return fn;
+        }
         return filename_from_str("putty.log");
-    else
+    } else
         return filename_from_str("");
 }
 

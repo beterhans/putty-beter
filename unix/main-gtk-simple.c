@@ -617,18 +617,19 @@ int main(int argc, char **argv)
         ngtkargs = oldargc - argc;
     }
 
-    conf = conf_new();
-
-    gtkcomm_setup();
-
     /*
-     * PuTTY-beter: offer to choose the configuration folder before anything
-     * reads it (do_defaults below loads the saved session list). GTK has to
-     * be up for the dialog, which gtk_init above has arranged. pterm has no
-     * saved sessions and no configuration directory, so it is skipped.
+     * PuTTY-beter: choose the configuration folder before conf_new(), because
+     * conf_new() captures the default log file name from it, and before
+     * anything reads the saved-session list. GTK has to be up for the dialog,
+     * which gtk_init above has arranged. pterm has no saved sessions and no
+     * configuration directory, so it is skipped.
      */
     if (saved_sessions)
         config_location_init();
+
+    conf = conf_new();
+
+    gtkcomm_setup();
 
     /*
      * Block SIGPIPE: if we attempt Duplicate Session or similar and

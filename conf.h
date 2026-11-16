@@ -48,7 +48,8 @@ CONF_OPTION(protocol,
 )
 CONF_OPTION(addressfamily,
     VALUE_TYPE(INT),
-    DEFAULT_INT(ADDRTYPE_UNSPEC),
+    /* PuTTY-beter: prefer IPv4 rather than "Auto". */
+    DEFAULT_INT(ADDRTYPE_IPV4),
     SAVE_KEYWORD("AddressFamily"),
     STORAGE_ENUM(addressfamily),
 )
@@ -65,6 +66,8 @@ CONF_OPTION(warn_on_close,
 )
 CONF_OPTION(ping_interval,
     VALUE_TYPE(INT), /* in seconds */
+    /* PuTTY-beter: keepalive every 120 seconds by default. */
+    DEFAULT_INT(120),
     LOAD_CUSTOM, SAVE_CUSTOM,
     /*
      * Saving/loading is handled by custom code because for historical
@@ -534,7 +537,11 @@ CONF_OPTION(supdup_scroll,
 /* Keyboard options */
 CONF_OPTION(bksp_is_delete,
     VALUE_TYPE(BOOL),
-    DEFAULT_BOOL(true),
+    /*
+     * PuTTY-beter: "Control-H" by default (Backspace sends ^H), rather
+     * than upstream's "Control-?" / Delete.
+     */
+    DEFAULT_BOOL(false),
     SAVE_KEYWORD("BackspaceIsDelete"),
 )
 CONF_OPTION(rxvt_homeend,
@@ -544,7 +551,8 @@ CONF_OPTION(rxvt_homeend,
 )
 CONF_OPTION(funky_type,
     VALUE_TYPE(INT),
-    DEFAULT_INT(FUNKY_TILDE),
+    /* PuTTY-beter: function keys and keypad send VT100+ sequences. */
+    DEFAULT_INT(FUNKY_VT100P),
     SAVE_KEYWORD("LinuxFunctionKeys"),
     STORAGE_ENUM(funky_type),
 )
@@ -819,12 +827,14 @@ CONF_OPTION(win_name_always,
 )
 CONF_OPTION(width,
     VALUE_TYPE(INT),
-    DEFAULT_INT(80),
+    /* PuTTY-beter: 128 columns by default. */
+    DEFAULT_INT(128),
     SAVE_KEYWORD("TermWidth"),
 )
 CONF_OPTION(height,
     VALUE_TYPE(INT),
-    DEFAULT_INT(24),
+    /* PuTTY-beter: 36 rows by default. */
+    DEFAULT_INT(36),
     SAVE_KEYWORD("TermHeight"),
 )
 CONF_OPTION(font,
@@ -843,13 +853,15 @@ CONF_OPTION(logfilename,
 )
 CONF_OPTION(logtype,
     VALUE_TYPE(INT),
-    DEFAULT_INT(LGTYP_NONE),
+    /* PuTTY-beter: log printable output by default. */
+    DEFAULT_INT(LGTYP_ASCII),
     SAVE_KEYWORD("LogType"),
     STORAGE_ENUM(log_type),
 )
 CONF_OPTION(logxfovr,
     VALUE_TYPE(INT),
-    DEFAULT_INT(LGXF_ASK),
+    /* PuTTY-beter: append to an existing log file rather than asking. */
+    DEFAULT_INT(LGXF_APN),
     SAVE_KEYWORD("LogFileClash"),
     STORAGE_ENUM(log_to_existing_file),
 )

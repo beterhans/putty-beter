@@ -680,7 +680,7 @@ static void load_prepare_socks4(settings_r *sr)
 void test_simple(void)
 {
     test_str_simple(CONF_host, "HostName", "");
-    test_int_translated(CONF_addressfamily, "AddressFamily", ADDRTYPE_UNSPEC,
+    test_int_translated(CONF_addressfamily, "AddressFamily", ADDRTYPE_IPV4,
                         ADDRTYPE_UNSPEC, 0, ADDRTYPE_IPV4, 1,
                         ADDRTYPE_IPV6, 2, -1);
     test_bool_simple(CONF_warn_on_close, "WarnOnClose", true);
@@ -740,9 +740,9 @@ void test_simple(void)
                         SUPDUP_CHARSET_WAITS, 2, -1);
     test_bool_simple(CONF_supdup_more, "SUPDUPMoreProcessing", false);
     test_bool_simple(CONF_supdup_scroll, "SUPDUPScrolling", false);
-    test_bool_simple(CONF_bksp_is_delete, "BackspaceIsDelete", true);
+    test_bool_simple(CONF_bksp_is_delete, "BackspaceIsDelete", false);
     test_bool_simple(CONF_rxvt_homeend, "RXVTHomeEnd", false);
-    test_int_translated(CONF_funky_type, "LinuxFunctionKeys", FUNKY_TILDE,
+    test_int_translated(CONF_funky_type, "LinuxFunctionKeys", FUNKY_VT100P,
                         FUNKY_TILDE, 0, FUNKY_LINUX, 1, FUNKY_XTERM, 2,
                         FUNKY_VT400, 3, FUNKY_VT100P, 4, FUNKY_SCO, 5,
                         FUNKY_XTERM_216, 6, -1);
@@ -803,18 +803,18 @@ void test_simple(void)
     test_bool_simple(CONF_bce, "BCE", true);
     test_bool_simple(CONF_blinktext, "BlinkText", false);
     test_bool_simple(CONF_win_name_always, "WinNameAlways", true);
-    test_int_simple(CONF_width, "TermWidth", 80);
-    test_int_simple(CONF_height, "TermHeight", 24);
+    test_int_simple(CONF_width, "TermWidth", 128);
+    test_int_simple(CONF_height, "TermHeight", 36);
     test_font_simple(CONF_font, "Font");
     test_int_translated(CONF_font_quality, "FontQuality", FQ_DEFAULT,
                         FQ_DEFAULT, 0, FQ_ANTIALIASED, 1, FQ_NONANTIALIASED, 2,
                         FQ_CLEARTYPE, 3, -1);
     test_file_simple(CONF_logfilename, "LogFileName");
-    test_int_translated(CONF_logtype, "LogType", LGTYP_NONE,
+    test_int_translated(CONF_logtype, "LogType", LGTYP_ASCII,
                         LGTYP_NONE, 0, LGTYP_ASCII, 1, LGTYP_DEBUG, 2,
                         LGTYP_PACKETS, 3, LGTYP_SSHRAW, 4, -1);
     /* FIXME: this won't work because -1 is also the terminator, darn */
-    test_int_translated(CONF_logxfovr, "LogFileClash", LGXF_ASK,
+    test_int_translated(CONF_logxfovr, "LogFileClash", LGXF_APN,
                         LGXF_OVR, 1, LGXF_APN, 0, LGXF_ASK, -1, -1);
     test_bool_simple(CONF_logflush, "LogFlush", true);
     test_bool_simple(CONF_logheader, "LogHeader", true);

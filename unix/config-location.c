@@ -230,6 +230,28 @@ static bool ask_dialog(bool forced)
     return changed;
 }
 
+/*
+ * Make sure <configuration folder>/logs exists, so that the default log
+ * file name (see platform_default_filename in window.c) can be opened.
+ * Failure is not fatal: logging just reports the error when it is used.
+ */
+static void ensure_logs_dir(void)
+{
+    char *dir = config_location_current();
+    char *logs = dupprintf("%s/logs", dir);
+    char *err = make_dir_path(logs, 0700);
+
+    if (err) {
+        if (cfg_debug())
+            fprintf(stderr, "[config-location] cannot create %s: %s\n",
+                    logs, err);
+        sfree(err);
+    }
+
+    sfree(logs);
+    sfree(dir);
+}
+
 void config_location_init(void)
 {
     static bool already_done = false;
@@ -254,8 +276,11 @@ void config_location_init(void)
         sfree(cur);
     }
 
-    if (!forced && configured)
+    if (!forced && configured) {
+        ensure_logs_dir();
         return;
+    }
 
     ask_dialog(forced);
+    ensure_logs_dir();
 }
