@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "arm64",
+      "displayName": "macOS arm64 (Apple Silicon) Release",
+      "description": "Native arm64 build. Uses the native Homebrew GTK (/opt/homebrew).",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
+      }
+    },
+    {
+      "name": "x86_64",
+      "displayName": "macOS x86_64 (Intel) Release",
+      "description": "Intel build. Requires a Rosetta Homebrew (/usr/local); run under 'arch -x86_64' so the x86_64 GTK is found. See scripts/build-macos.sh.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "macOS arm64 (Apple Silicon) Debug",
+      "description": "Native arm64 Debug build for development.",
+      "inherits": "arm64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "arm64",
+      "configurePreset": "arm64"
+    },
+    {
+      "name": "x86_64",
+      "configurePreset": "x86_64"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    }
+  ]
+}
