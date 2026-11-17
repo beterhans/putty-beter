@@ -590,8 +590,16 @@ static ZmGetResult zm_decode(Zmodem *zm, size_t *pos, unsigned char *out)
  */
 static bool zm_ignorable(unsigned char c)
 {
-    return c == ZPAD || c == (ZPAD | 0x80) ||
-        c == XON || c == 0x91 || c == XOFF || c == 0x93 || c == 0x00;
+    /*
+     * Compare with the 8th bit ignored. The reference says the receiver
+     * "strips the 8th bit" while hunting for a header, and it matters in
+     * practice: lrzsz's sz emits its hex-header trailer as CR, LF|0x80, XON,
+     * so the 0x8a has to be recognised as a line feed. Treating it as a stray
+     * byte costs an error and, worse, used to provoke a needless resync.
+     */
+    unsigned char d = c & 0x7F;
+    return d == ZPAD || d == XON || d == XOFF || d == 0x00 ||
+        d == 0x0D || d == 0x0A;
 }
 
 /*
@@ -703,10 +711,12 @@ static int zm_parse_header(Zmodem *zm, ZmHeader *hdr, size_t *consumed)
             return -1;
         }
 
-        /* CR LF, and possibly XON, follow. Tolerate extras. */
-        while (p < zm->inlen &&
-               (zm->in[p] == 0x0D || zm->in[p] == 0x0A ||
-                zm->in[p] == XON || zm->in[p] == XOFF || zm->in[p] == 0x00))
+        /*
+         * CR LF, and possibly XON, follow. zm_ignorable() tolerates the 8th
+         * bit being set, which lrzsz needs, and also padding of the next
+         * header, which is harmless to skip here.
+         */
+        while (p < zm->inlen && zm_ignorable(zm->in[p]))
             p++;
     } else {
         size_t q = p;
@@ -1407,7 +1417,14 @@ static void zm_run(Zmodem *zm)
                     return;
                 }
                 buf_consume(zm->in, &zm->inlen, 1);
-                if (zm->dir == ZMDIR_RECEIVE && zm->errors == 1)
+                /*
+                 * Ask for a resync only when a file is actually open. Before
+                 * that there is nothing to resync to, and a ZRPOS arriving
+                 * out of context makes the sender restart from zero - the
+                 * sender reads it after its next data frame, by which time it
+                 * has already moved on.
+                 */
+                if (zm->dir == ZMDIR_RECEIVE && zm->file && zm->errors == 1)
                     zm_send_hdr_pos(zm, ZRPOS, zm->rx_offset);
                 zm_out_flush(zm);
                 continue;
@@ -1428,12 +1445,22 @@ static void zm_run(Zmodem *zm)
                 if (sr == 0)
                     return;
                 /* sc is absolute, so it already covers the header too. */
-                buf_consume(zm->in, &zm->inlen, sc);
                 if (sr < 0) {
+                    if (++zm->errors > ZM_MAX_ERRORS) {
+                        zm_finish(zm, ZMOUT_FAILED, "too many bad subpackets");
+                        return;
+                    }
+                    /*
+                     * Drop the header as well: sc is not set on failure, and
+                     * consuming nothing would re-parse the same header for
+                     * ever.
+                     */
+                    buf_consume(zm->in, &zm->inlen, consumed);
                     zm_send_znak(zm);
                     zm_out_flush(zm);
                     continue;
                 }
+                buf_consume(zm->in, &zm->inlen, sc);
                 zm_rx_zfile(zm, &sp);
             } else {
                 buf_consume(zm->in, &zm->inlen, consumed);

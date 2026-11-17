@@ -131,6 +131,17 @@ add_executable(test_zmodem
   terminal/zmodem.c)
 target_link_libraries(test_zmodem utils ${platform_libraries})
 
+# PuTTY-beter: a real interoperability check for the ZMODEM engine. It runs the
+# system's own sz/rz over a pty and checks the file survives the trip, so it
+# needs lrzsz installed and is therefore built but not run by the normal test
+# sweep. macOS only, because it uses forkpty().
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  add_executable(test_zmodem_interop
+    test/test_zmodem_interop.c
+    terminal/zmodem.c)
+  target_link_libraries(test_zmodem_interop utils ${platform_libraries})
+endif()
+
 add_executable(bidi_gettype
   terminal/bidi_gettype.c)
 target_link_libraries(bidi_gettype guiterminal utils ${platform_libraries})
