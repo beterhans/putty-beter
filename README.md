@@ -1,7 +1,8 @@
 # PuTTY for macOS
 
 A macOS build of [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) 0.85,
-plus the fixes needed to make its GTK front end behave properly on macOS.
+plus the fixes needed to make its GTK front end behave properly on macOS, and
+**ZMODEM file transfer** (`sz`/`rz`) in both directions.
 
 Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICENCE`.
 
@@ -147,6 +148,48 @@ keep their saved values.
 | Internet protocol version | Auto | **IPv4** |
 | Connection → Tunnels → IP version (new tunnel form) | Auto | **IPv4** |
 
+### 11. ZMODEM file transfer
+
+`sz` and `rz` work in both directions — over SSH, and on a serial line. Type
+`rz` on the remote end to send a file up, or `sz <file>` to bring one down.
+
+The engine is written in-tree from the public-domain ZMODEM specification and
+Chuck Forsberg's original `rzsz`, and is MIT like the rest of this tree; no GPL
+component is involved. See
+[`docs/zmodem-protocol-notes.md`](docs/zmodem-protocol-notes.md) for the
+byte-exact protocol reference and the licence status of every source used.
+
+* **Downloads** need no prompt: the protocol carries the file name, so `sz`
+  just saves into the transfer folder.
+* **Uploads** open a file chooser with a full-path box.
+* **`Session → File transfer`** sets the folder for both directions, defaulting
+  to `~/Downloads`. It is written back after each transfer, so the last folder
+  you used sticks.
+* A small **progress window** shows the file name, bytes and percentage, with a
+  **Cancel** button. Ctrl-C in the terminal cancels too, as in `rzsz`.
+* **Cancelling reports a cancellation**, not a completion. One `rz` sends one
+  file; run `rz` again to send another.
+* A transfer cut short does **not** leave a truncated file behind.
+
+`./build-arm64/test_zmodem` runs the engine's own tests (135 checks), and
+`./build-arm64/test_zmodem_interop` drives the real `sz` and `rz` over a pty in
+both directions, byte-for-byte.
+
+### 12. File choosers, and dialog title bars
+
+Every place PuTTY asks for a file or a folder — the private key file, the
+certificate, the GSSAPI library, the log file name, the transfer folder, the
+`rz` upload, the configuration folder — uses **one chooser with a `Path:` box
+across the top**. Type a full path and press Return to use it, or type a folder
+and press Return to go there. GTK's own dialog keeps that behind Ctrl+L, which
+is not discoverable.
+
+GTK's dialog windows also had **see-through title bars** on macOS: GTK gives a
+`GtkDialog` a transparent window background, and macOS paints the title bar from
+it. Fixed with one line of ordinary GTK API per dialog (no Objective-C) — see
+`gtk_dialog_fix_macos_titlebar()` in `unix/gtkcompat.h`. The configuration box,
+About box and message boxes were never affected.
+
 ---
 
 ## Requirements
@@ -212,6 +255,15 @@ open build-arm64/bundle-stage/unix/PuTTY.app
 ./build-arm64/putty -load "Default Settings"
 ./build-arm64/plink --version
 ```
+
+> **The `.app` must be assembled with `bundle-macos.sh`.** The launcher inside
+> the bundle sets `XDG_DATA_DIRS` to the bundle, which overrides GLib's fallback
+> to the system GSettings schemas — so the bundle has to carry its own.
+> `bundle-macos.sh` compiles 38 of them into
+> `Contents/Resources/share/glib-2.0/schemas/`; without that, GTK's file chooser
+> cannot find `org.gtk.Settings.FileChooser` and **opening any file picker
+> aborts the process** (GLib calls `g_log_abort()`, SIGTRAP, exit 133). The bare
+> binaries above are unaffected — they find the system schemas normally.
 
 ### Build options
 

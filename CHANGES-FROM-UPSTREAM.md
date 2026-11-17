@@ -42,8 +42,11 @@ fixes, so `git log` alone shows only the later work.
 | Configuration box | Resizable, size remembered in the configuration folder, and the saved-session list grows with the window. |
 | Session folders | Sessions can be kept in folders, shown as a tree and moved by dragging. |
 | Session comments | A free-text note kept with each saved session, in a panel below Logging, with a multi-line UTF-8 box. |
+| ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
+| File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
+| Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
-| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon. |
+| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
 | Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
 
 ---
@@ -54,30 +57,34 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 
 | File | +/- | What changed |
 |---|---|---|
-| `conf.h` | +35 / -7 | Seven default values changed (see below); `session_comment` added |
-| `config.c` | +326 / -31 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added |
-| `dialog.h` | +69 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box (per front end; Windows ignores all of them) |
-| `dialog.c` | +5 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` |
-| `settings.c` | +115 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
-| `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
+| `conf.h` | +54 / -7 | Seven default values changed (see below); `session_comment` and `zmodem_dir` added |
+| `config.c` | +399 / -31 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added |
+| `dialog.h` | +75 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
+| `dialog.c` | +7 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
+| `settings.c` | +133 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
+| `terminal/terminal.c` | +69 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
-| `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
-| `unix/columns.c` | +54 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
+| `unix/CMakeLists.txt` | +16 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
+| `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
-| `unix/dialog.c` | +795 / -25 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box |
-| `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
-| `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
+| `unix/config-location.c` | new | See the new-files table |
+| `unix/dialog.c` | +970 / -40 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; every file selector routed through the shared chooser |
+| `unix/gtkcompat.h` | +26 / -0 | `gtk_dialog_fix_macos_titlebar()` — gives a `GtkDialog` an opaque title bar on macOS |
+| `unix/gtkmisc.h` | +10 / -0 | Declares `our_file_chooser_run()` |
+| `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
+| `unix/main-gtk-simple.c` | +10 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
-| `unix/platform.h` | +51 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
-| `unix/putty.bundle` | +20 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
-| `unix/storage.c` | +880 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
-| `unix/window.c` | +196 / -8 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
+| `unix/platform.h` | +54 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
+| `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
+| `unix/storage.c` | +1110 / -28 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
+| `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
+| `unix/window.c` | +760 / -16 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window) |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
-| `windows/controls.c` | +53 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index) |
-| `windows/storage.c` | +18 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
-| `storage.h` | +19 / -0 | Declarations for the folder operations and the name checks |
-| `CMakeLists.txt` | +7 / -0 | `test_sessions` target |
-| `.gitignore` | +16 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
+| `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
+| `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
+| `storage.h` | +26 / -0 | Declarations for the folder operations and the name checks |
+| `CMakeLists.txt` | +27 / -1 | `test_sessions`, `test_zmodem` and `test_zmodem_interop` targets |
+| `.gitignore` | +21 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
 ## New files
@@ -86,7 +93,13 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 |---|---|
 | `CMakePresets.json` | `arm64`, `x86_64`, `debug` presets |
 | `scripts/build-macos.sh` | Per-architecture build, one command |
-| `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, ad-hoc re-sign |
+| `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, **compile the GSettings schemas into the bundle**, ad-hoc re-sign |
+| `terminal/zmodem.c` | The ZMODEM engine: sender and receiver, written in-tree from the public-domain spec and Forsberg's original `rzsz`. Pure C with a callback interface, so it has no GTK, display or filesystem dependency and can be tested on its own |
+| `terminal/zmodem.h` | The `ZmodemCallbacks` interface it talks to the front end through |
+| `test/test_zmodem.c` | 135 checks: independent CRC vectors, a full loopback round trip, and the cancel / refused-file paths |
+| `test/test_zmodem_interop.c` | Drives the **real** `sz` and `rz` over a pty, both directions, byte-for-byte |
+| `docs/zmodem-protocol-notes.md` | Byte-exact protocol reference, with the licence status of every source it draws on |
+| `unix/utils/filechooser.c` | `our_file_chooser_run()` — the one file/folder chooser, with the full-path box |
 | `unix/config-location.c` | The "where should the configuration live?" dialog |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
@@ -255,6 +268,14 @@ window that stays the size you made it, the list is the natural thing to grow.
   bundled one — duplicate Objective-C classes and undefined behaviour.
 * `unix/putty.bundle` lists the gdk-pixbuf loaders so the generated
   `loaders.cache` points inside the app, and bundles `icons/PuTTY.icns`.
+* `scripts/bundle-macos.sh` also compiles the GSettings schemas into
+  `Contents/Resources/share/glib-2.0/schemas/` (38 of them) and runs
+  `glib-compile-schemas`. **Without this, opening any file chooser kills the
+  app**: GTK's file chooser looks up `org.gtk.Settings.FileChooser`, and the
+  launcher sets `XDG_DATA_DIRS` to the bundle, which overrides GLib's fallback
+  to the system schemas — so the lookup fails, GLib calls `g_log_abort()`, and
+  the process dies with SIGTRAP (exit 133). This was the cause of the "`rz`
+  crashes PuTTY" bug, and it also broke the configuration box's Browse button.
 * Intel (x86_64) needs an Intel Homebrew in `/usr/local`; the arm64 Homebrew in
   `/opt/homebrew` cannot produce an x86_64 GTK. **Not yet verified.** Note that
   Apple is retiring Rosetta (macOS 27 is the last release with it).
@@ -264,9 +285,13 @@ window that stays the size you made it, the list is the natural thing to grow.
 Both are runtime switches and cost nothing when unset.
 
 * `PUTTY_DIAG=1` — key events (keyval, name, modifier state), clipboard
-  activity, font metrics, cursor placement.
+  activity, font metrics, cursor placement, ZMODEM engine traces
+  (`[zmodem] …`) and file-chooser results (`[filechooser] "…" -> …`).
 * `PUTTY_CONFIG_DEBUG=1` — configuration folder resolution and relocation, and
   the resulting default log file name.
+* `ZMODEM_INTEROP_TRACE=1`, `ZMODEM_INTEROP_DUMP=1` (raw streams to
+  `/tmp/zm-in-*.bin` and `zm-out-*.bin`) and `ZMODEM_INTEROP_PRINTABLE=1` —
+  only for `test/test_zmodem_interop`.
 
 ---
 
@@ -408,6 +433,70 @@ comments including empty, multi-line, backslashes, UTF-8 bytes and a backslash
 at the end of a line.
 
 **Not verified by the test suite:** the widget itself, which needs a human.
+
+## 11. ZMODEM file transfer
+
+`sz` and `rz` now work in both directions, over SSH and on a serial line.
+
+The engine is `terminal/zmodem.c`, a new file. It is **pure C with a callback
+interface** (`ZmodemCallbacks` in `terminal/zmodem.h`) and depends on neither
+GTK nor the display nor the filesystem, so it is unit-testable and would suit
+any front end. It was written in-tree from the public-domain ZMODEM
+specification and Chuck Forsberg's original `rzsz`, and is MIT like the rest of
+this tree — no GPL component is involved. `docs/zmodem-protocol-notes.md`
+records exactly which sources were used and the licence status of each;
+`lrzsz` was deliberately never consulted.
+
+* **Inbound interception** happens in `gtk_seat_output()`, on stdout only, so
+  the engine gets first refusal on the stream. Everything it does not consume
+  is handed back through `terminal_output`, which means that with no transfer
+  running the bytes reach the terminal emulator exactly as before.
+* **Outbound** goes through `backend_send()`, not `ldisc_send()`, so it does not
+  go through the line editor.
+* **Typed input** is held back while a transfer is running, except Ctrl-C, which
+  cancels — the same key `rzsz` uses.
+* A **transfer folder** setting (`Session → File transfer`) holds both
+  directions: downloads are saved into it under the name the protocol carries
+  in its `ZFILE` header, with no prompt, and the upload chooser starts there.
+  It is written back after each transfer, so the last folder used sticks.
+* A small **non-modal progress window** shows the file name, bytes and
+  percentage, with a **Cancel** button.
+* **Cancelling** reports `ZMODEM transfer cancelled` rather than completing: a
+  file chooser that is cancelled aborts the transfer (CAN), and it is only
+  treated as "no more files" — the ordinary end of a session — once a file has
+  actually been sent. One `rz` sends one file; run `rz` again for another.
+* A transfer cut short does **not** leave a truncated file behind.
+
+**Tests.** `test/test_zmodem.c` (135 checks) covers CRC vectors from the spec, a
+full loopback round trip, and the cancel and refused-file paths.
+`test/test_zmodem_interop.c` drives the **real** `sz` and `rz` over a pty in both
+directions and compares 250000 bytes byte-for-byte.
+
+## 12. One file chooser, and dialog title bars on macOS
+
+Two GTK-on-macOS problems, both fixed in a way that applies to the whole app.
+
+**Every file picker now has a full-path box.** GTK's `GtkFileChooserDialog` does
+have a location bar, but it is hidden behind Ctrl+L, so there was no obvious way
+to say "use this exact path" — and it is the same dialog for every file setting
+in the box. `unix/utils/filechooser.c` replaces it with one chooser used
+everywhere: a `Path:` entry across the top (type a full path and press Return to
+use it, type a folder and press Return to go there), sane sizing, centred on its
+parent, and keyboard focus taken properly. It covers the private key file and
+certificate under Auth/Credentials, the GSSAPI library path, the session log
+file, the transfer folder, the `rz` upload chooser and the
+configuration-folder dialog.
+
+**Dialog title bars are no longer see-through.** GTK 3 on macOS creates a
+`GtkDialog`'s `NSWindow` with an **RGBA visual**, so the window is not opaque and
+its background is fully transparent — and macOS paints the title bar *from that
+background*. The result was traffic lights and a title drawn over whatever was
+behind the window. A plain `GtkWindow`, which is what `our_dialog_new()` returns
+for the configuration box, the About box and every message box, was never
+affected. `gtk_dialog_fix_macos_titlebar()` in `unix/gtkcompat.h` asks for the
+screen's plain system visual before the dialog is realized, which makes the
+window opaque again. That is one line of ordinary GTK API at each of the few
+real `GtkDialog` sites — no Objective-C and no AppKit internals.
 
 ## Worth reporting upstream
 

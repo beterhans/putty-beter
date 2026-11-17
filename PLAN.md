@@ -1,10 +1,11 @@
 # putty-beter — Development Plan
 
-Status: **in development.** Phases 0 and 1a are done and most of Phase 2 is
-done: a native arm64 `.app` builds and bundles, with session folders,
-per-session comments, a relocatable configuration folder and a reworked
-configuration box. The universal (Intel + ARM) `.app`, ZMODEM and MCP are still
-to come — see the milestones at the end.
+Status: **in development.** Phases 0, 1a, most of 2 and all of 3 are done: a
+native arm64 `.app` builds and bundles, with session folders, per-session
+comments, a relocatable configuration folder, a reworked configuration box, and
+ZMODEM `sz`/`rz` file transfer working in both directions. The universal
+(Intel + ARM) signed `.app` and MCP are still to come — see the milestones at
+the end.
 
 Base: vanilla **PuTTY 0.85** source, MIT-licensed.
 Repo: <https://github.com/beterhans/putty-beter>
@@ -538,7 +539,7 @@ upstream-merge friction in `dialog.c` (medium).
 
 ---
 
-## 6. Phase 3 — T2: ZMODEM (`sz`/`rz`)
+## 6. Phase 3 — T2: ZMODEM (`sz`/`rz`)  *(done 2026-11-17)*
 
 **Goal:** `sz` on the remote host downloads a file; `rz` uploads one — over SSH, serial, telnet.
 
@@ -600,11 +601,24 @@ PuTTY is **MIT**. MIT can absorb *permissive* code, so the ZMODEM component must
 | LGPL | ⚠️ Awkward | Static C linking needs relinkable objects; upstream won't accept |
 | AGPL | ❌ No | Worse than GPL |
 
-**Key fact:** the **original** ZMODEM spec and Forsberg's Unix `rz`/`sz` source are
-**public domain** ("No licensing, trademark, or copyright restrictions apply to the use of
-the protocol, the Unix rz/sz source code and the ZMODEM name."). `lrzsz` is GPL-2.0 **only
-because of Uwe Ohse's modifications** — its own README says it is built from the
-public-domain rzsz package.
+**Key fact — and a correction.** The sources actually used are permissively licensed, but
+the evidence has to be quoted accurately. The well-known sentence *"No licensing, trademark,
+or copyright restrictions apply to the use of the protocol, the Unix rz/sz source code and
+the ZMODEM name."* is from the later **`lrzsz`** README, **not** from the original archive,
+and an earlier version of this plan attributed it to the original `rzsz` in error. The
+original package carries no such blanket statement. What it does carry:
+
+- the specification (`zmodem.txt`): *"This file may be redistributed without restriction
+  provided the text is not altered."*
+- `CRC.C` / `CRCTAB.C`: *"Copyright (C) 1986 Gary S. Brown. You may use this program, or
+  code or tables extracted from it, as desired without restriction."*
+- the `updcrc` macro: *"Programmers may incorporate any or all code into their programs,
+  giving proper credit within the source"* (Satchell / Forsberg)
+- the `RZ.C` TAR helpers: *"Public Domain TAR by John Gilmore"*
+- `RZ.C`, `SZ.C` and `ZM.C` themselves carry **no** licence notice.
+
+`lrzsz` is GPL-2.0 because of Uwe Ohse's modifications, and was never consulted.
+`docs/zmodem-protocol-notes.md` records all of this source by source, with hashes.
 
 **Candidates**
 
@@ -620,6 +634,15 @@ public-domain rzsz package.
 source, licensed MIT.** No licence change, no dependency, and it is the *only* option that
 stays upstream-compatible (upstream accepts MIT contributions only).
 Fallback: port NuttX (Apache-2.0) with a `NOTICE`.
+
+**As built (2026-11-17):** the engine landed in `terminal/zmodem.c` as planned, but the
+front-end interception went into `unix/window.c` rather than `terminal/terminal.c` /
+`ldisc.c` — inbound at `gtk_seat_output()` (stdout only, everything unconsumed handed
+back through `terminal_output`, so an idle engine is byte-identical to upstream), and
+outbound through `backend_send()`. The front end holds back typed input while a transfer
+runs and forwards Ctrl-C to the engine. Tests are `test/test_zmodem.c` (135 checks) and
+`test/test_zmodem_interop.c` (the real `sz`/`rz` over a pty, both directions,
+byte-for-byte). Full write-up in `CHANGES-FROM-UPSTREAM.md` §11.
 
 **Files:** new `terminal/zmodem.c` + `terminal/zmodem.h` (or `zmodem/`), edits to
 `terminal/terminal.c`, `ldisc.c`, GTK dialogs in `unix/dialog.c`, CMakeLists.
@@ -773,7 +796,8 @@ crates*, not a port of PuTTY:
 - [ ] **M1** — universal signed `.app` runs on Intel + ARM (Phase 1, T1) — 1a done, 1b/1c not started
 - [x] **M2** — session folders + comments (Phase 2, O1 part 1)
 - [ ] **M3** — session password via Keychain (Phase 2, O1 part 2)
-- [ ] **M4** — ZMODEM download works over SSH (Phase 3, T2)
-- [ ] **M5** — ZMODEM upload + cancel + serial (Phase 3, T2)
+- [x] **M4** — ZMODEM download works over SSH (Phase 3, T2)
+- [x] **M5** — ZMODEM upload + cancel (Phase 3, T2) — both directions verified against real
+      `lrzsz`, 250000 bytes byte-for-byte; **serial untested**
 - [ ] **M6** — MCP: AI drives session, human-in-the-loop at prompts (Phase 4, O2)
 - [ ] **M7** *(optional)* — native macOS UI evaluation (Phase 5, O3)
