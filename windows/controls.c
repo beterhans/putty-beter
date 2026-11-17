@@ -2347,6 +2347,20 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index)
 }
 
 /*
+ * PuTTY-beter: ask a question with a few buttons. This front end has no
+ * equivalent of the GTK message box's button list, so the first button is
+ * the one that is offered.
+ */
+void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
+                 const char *title, const char *msg,
+                 const char *const *buttons, int nbuttons,
+                 dlg_confirm_fn cb, void *ctx)
+{
+    if (cb)
+        cb(ctx, 0);
+}
+
+/*
  * PuTTY-beter: selecting by id rather than row index, for tree list boxes.
  * This front end does not implement tree list boxes (it shows the entries as
  * a flat list), so an id is simply a row index here.

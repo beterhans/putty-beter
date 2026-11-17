@@ -82,6 +82,10 @@ void del_settings(const char *sessionname);
 char *session_mkdir(const char *name);
 char *session_move(const char *oldname, const char *newname);
 char *session_rmdir(const char *name);
+/* How many things are in a folder, or -1 if it is not a folder. */
+int session_folder_entries(const char *name);
+/* Remove a folder and everything in it; ask the user first. */
+char *session_rmdir_force(const char *name);
 
 /* False if a name is empty or has an empty, "." or ".." component. */
 bool session_name_is_valid(const char *name);

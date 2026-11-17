@@ -295,9 +295,21 @@ configuration box, and moved between folders by dragging.
 * In tree mode the GTK front end builds the hierarchy from the `/` in the
   names, keeps a folder flag in an extra, undisplayed model column, shows
   folders in bold, expands them as they gain children, and drags rows onto
-  folder rows. GTK does the move in the model and `listbox_drag_received()`
-  reports where the row ended up; storage then performs the real move and the
-  list is refreshed, so a refused move springs back.
+  folder rows.
+* The drop destination is worked out in `listbox_drag_motion()`, from the row
+  under the pointer, **not** from the model afterwards: GtkTreeStore's own
+  drop inserts the dragged row as a *sibling* of the row it was dropped on
+  (the parent of the destination path), so dropping onto a top-level folder
+  would land the row at the top level and look as if nothing happened.
+  `listbox_drag_received()` then calls the control's `drag_handler`, storage
+  performs the real move, and the list is rebuilt from disk — always, even if
+  the move was a no-op, so that the display cannot drift from storage.
+* Deleting a folder that still has sessions in it asks first, with a
+  "Delete All" / "Cancel" message box (`dlg_confirm()`, a new small core API
+  implemented with the GTK message-box machinery). Escape takes the safe
+  answer, and no button is the Return default, since the destructive answer
+  should not be one keypress away. `session_rmdir_force()` removes the folder
+  and its contents, and refuses anything that is not a folder.
 * The Windows front end shows a flat list and gets `dlg_listbox_selected_id()`
   / `dlg_listbox_select_id()` implemented in terms of row indices, plus
   folder operations that report "not supported".
@@ -311,7 +323,8 @@ folders, `../evil` being refused, and the drag-target name computation.
 
 **Not verified:** the drag gesture itself needs a human; everything either
 side of it (the move in storage, the target-name computation, the tree
-display) is covered.
+display) is covered. The same goes for the delete confirmation, which needs a
+click on Delete.
 
 **Not implemented yet:** renaming a folder, remembering which folders are
 expanded, and per-folder metadata (comments, saved passwords) — see

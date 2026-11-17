@@ -792,10 +792,76 @@ static bool tree_find_id_rec(GtkTreeModel *model, GtkTreeIter *parent,
 }
 
 /*
- * PuTTY-beter: the source row of a drag, remembered between drag-begin and
- * the drop. There is only ever one drag at a time.
+ * PuTTY-beter: a question with a few buttons, for the configuration box.
+ *
+ * The GTK message box machinery takes its buttons in a fixed array, so a
+ * small trampoline is used to pass the caller's callback and to keep the
+ * arrays alive until the dialog has gone.
+ */
+struct dlg_confirm_ctx {
+    dlg_confirm_fn cb;
+    void *ctx;
+    struct message_box_button *buttons;
+};
+
+static void dlg_confirm_done(void *vctx, int result)
+{
+    struct dlg_confirm_ctx *c = (struct dlg_confirm_ctx *)vctx;
+
+    if (c->cb)
+        c->cb(c->ctx, result);
+
+    sfree(c->buttons);
+    sfree(c);
+}
+
+void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
+                 const char *title, const char *msg,
+                 const char *const *buttons, int nbuttons,
+                 dlg_confirm_fn cb, void *ctx)
+{
+    struct dlg_confirm_ctx *c = snew(struct dlg_confirm_ctx);
+    struct message_box_buttons mbb;
+    GtkWidget *parent = dp ? GTK_WIDGET(dp->window) : NULL;
+
+    c->cb = cb;
+    c->ctx = ctx;
+    c->buttons = snewn(nbuttons, struct message_box_button);
+
+    for (int i = 0; i < nbuttons; i++) {
+        c->buttons[i].title = buttons[i];
+        c->buttons[i].shortcut = NO_SHORTCUT;
+        /*
+         * No button gets a positive type, so none of them is the default
+         * action for Return: for a question like "delete all of this?" the
+         * safe answer should not be one keypress away. The smallest type is
+         * the one Escape takes, which is why the caller is expected to put
+         * its safe answer last.
+         */
+        c->buttons[i].type = -i;
+        c->buttons[i].value = i;
+    }
+
+    mbb.buttons = c->buttons;
+    mbb.nbuttons = nbuttons;
+
+    create_message_box(parent, title, msg, string_width(msg), false, &mbb,
+                       dlg_confirm_done, c);
+}
+
+/*
+ * PuTTY-beter: the row a drag started from, and the folder it is being
+ * dropped on. Both are remembered while the drag is in progress, because
+ * there is only ever one drag at a time.
+ *
+ * The destination has to be worked out from where the pointer is, during
+ * drag-motion, rather than from the model after the drop: GtkTreeStore's
+ * built-in drop inserts the row as a *sibling* of the row it was dropped on
+ * (the parent of the destination path), so a drop on a top-level folder
+ * lands at the top level rather than inside it.
  */
 static int listbox_drag_source_id = -1;
+static int listbox_drag_dest_id = -1;
 
 static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
                                gpointer vdp)
@@ -804,6 +870,49 @@ static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
     dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
 
     listbox_drag_source_id = ctrl ? dlg_listbox_selected_id(ctrl, dp) : -1;
+    listbox_drag_dest_id = -1;
+}
+
+static void listbox_drag_motion(GtkWidget *widget, GdkDragContext *ctx,
+                                gint x, gint y, guint time, gpointer vdp)
+{
+    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+    GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(widget));
+    GtkTreePath *path = NULL;
+    GtkTreeViewDropPosition pos;
+    int folder_col;
+
+    listbox_drag_dest_id = -1;         /* the top level, unless a row is under */
+
+    if (!ctrl)
+        return;
+
+    if (!gtk_tree_view_get_dest_row_at_pos(GTK_TREE_VIEW(widget), x, y,
+                                           &path, &pos))
+        return;
+
+    folder_col = 1 + (ctrl->listbox.ncols ? ctrl->listbox.ncols : 1);
+
+    {
+        GtkTreeIter iter, parent;
+        bool is_folder = false;
+
+        gtk_tree_model_get_iter(model, &iter, path);
+        gtk_tree_model_get(model, &iter, folder_col, &is_folder, -1);
+
+        if (is_folder) {
+            /* Dropped on a folder: put it inside. */
+            gtk_tree_model_get(model, &iter, 0, &listbox_drag_dest_id, -1);
+        } else if (gtk_tree_model_iter_parent(model, &parent, &iter)) {
+            /*
+             * Dropped next to a session: put it in the folder that session
+             * is in.
+             */
+            gtk_tree_model_get(model, &parent, 0, &listbox_drag_dest_id, -1);
+        }
+    }
+
+    gtk_tree_path_free(path);
 }
 
 static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
@@ -812,23 +921,14 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
 {
     struct dlgparam *dp = (struct dlgparam *)vdp;
     dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
-    GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(widget));
-    GtkTreeIter iter, parent;
-    int dst_id = -1;
 
     if (!ctrl || !ctrl->listbox.drag_handler || listbox_drag_source_id < 0)
         return;
 
-    /*
-     * GTK has already moved the row in the model, so where it now sits says
-     * where it was dropped: inside a folder row, or at the top level.
-     */
-    if (tree_find_id_rec(model, NULL, listbox_drag_source_id, &iter) &&
-        gtk_tree_model_iter_parent(model, &parent, &iter))
-        gtk_tree_model_get(model, &parent, 0, &dst_id, -1);
-
-    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id, dst_id);
+    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id,
+                               listbox_drag_dest_id);
     listbox_drag_source_id = -1;
+    listbox_drag_dest_id = -1;
 }
 
 int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
@@ -2709,6 +2809,8 @@ GtkWidget *layout_ctrls(
                         GDK_ACTION_MOVE);
                     g_signal_connect(G_OBJECT(w), "drag-begin",
                                      G_CALLBACK(listbox_drag_begin), dp);
+                    g_signal_connect(G_OBJECT(w), "drag-motion",
+                                     G_CALLBACK(listbox_drag_motion), dp);
                     g_signal_connect_after(G_OBJECT(w), "drag-data-received",
                                            G_CALLBACK(listbox_drag_received),
                                            dp);

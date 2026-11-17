@@ -631,6 +631,16 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index);
  */
 int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp);
 void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id);
+/*
+ * PuTTY-beter: ask a question with a few buttons. The callback is given the
+ * index of the button chosen, or -1 if the dialog was dismissed some other
+ * way. Front ends that cannot offer a choice call back with 0.
+ */
+typedef void (*dlg_confirm_fn)(void *ctx, int button);
+void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
+                 const char *title, const char *msg,
+                 const char *const *buttons, int nbuttons,
+                 dlg_confirm_fn cb, void *ctx);
 void dlg_text_set(dlgcontrol *ctrl, dlgparam *dp, char const *text);
 void dlg_filesel_set(dlgcontrol *ctrl, dlgparam *dp, Filename *fn);
 Filename *dlg_filesel_get(dlgcontrol *ctrl, dlgparam *dp);

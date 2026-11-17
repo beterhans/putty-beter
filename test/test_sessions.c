@@ -324,6 +324,46 @@ int main(void)
     save("Default Settings", "default.example.com");
     expect_listed("Default Settings", true);
 
+    /* Force-removing a folder and everything in it. */
+    {
+        char *err;
+        int n;
+
+        err = session_mkdir("Doomed");
+        if (err) { fail("session_mkdir(Doomed): %s", err); sfree(err); }
+        save("Doomed/one", "one.example.com");
+        save("Doomed/two", "two.example.com");
+        err = session_mkdir("Doomed/Inner");
+        if (err) { fail("session_mkdir(Doomed/Inner): %s", err); sfree(err); }
+        save("Doomed/Inner/three", "three.example.com");
+
+        n = session_folder_entries("Doomed/");
+        if (n != 3)
+            fail("Doomed should hold 3 things, counted %d", n);
+        if (session_folder_entries("Alpha") != -1)
+            fail("a session should not count as a folder");
+        if (session_folder_entries("No Such Folder") != -1)
+            fail("a missing folder should count as -1");
+
+        /* Plain rmdir refuses while it has anything in it. */
+        expect_err("session_rmdir(Doomed)", session_rmdir("Doomed"));
+        expect_listed("Doomed/one", true);
+
+        /* The forced version takes the lot. */
+        err = session_rmdir_force("Doomed/");
+        if (err) { fail("session_rmdir_force(Doomed/): %s", err); sfree(err); }
+        expect_listed("Doomed/", false);
+        expect_listed("Doomed/one", false);
+        expect_listed("Doomed/Inner/three", false);
+        if (exists("Doomed"))
+            fail("the Doomed folder should be gone from disk");
+
+        /* And refuses a name that is not a folder. */
+        expect_err("session_rmdir_force(Alpha)", session_rmdir_force("Alpha"));
+        expect_err("session_rmdir_force(nothing)",
+                   session_rmdir_force("Not There"));
+    }
+
     /* The names a drag between rows would produce. */
     {
         static const struct {

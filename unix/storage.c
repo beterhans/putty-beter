@@ -1564,6 +1564,87 @@ char *session_move(const char *oldname, const char *newname)
     return err;
 }
 
+/*
+ * How many things are in a folder? -1 if `name` is not a folder at all.
+ * Used to decide whether removing it needs confirmation.
+ */
+int session_folder_entries(const char *name)
+{
+    char *stripped, *path;
+    DIR *dp;
+    struct dirent *de;
+    int n = 0;
+
+    if (!name || !*name)
+        return -1;
+
+    stripped = session_name_strip(name);
+    if (!*stripped) {
+        sfree(stripped);
+        return -1;
+    }
+
+    path = make_filename(INDEX_SESSION, stripped);
+    dp = opendir(path);
+    if (!dp) {
+        sfree(path);
+        sfree(stripped);
+        return -1;
+    }
+
+    while ((de = readdir(dp)) != NULL) {
+        if (strcmp(de->d_name, ".") && strcmp(de->d_name, ".."))
+            n++;
+    }
+    closedir(dp);
+
+    sfree(path);
+    sfree(stripped);
+    return n;
+}
+
+/*
+ * Remove a folder and everything in it. Only called after the user has been
+ * asked, because it can throw away saved sessions. Nothing outside the
+ * sessions directory can be reached, because the name has already been
+ * validated and the path built from it.
+ */
+char *session_rmdir_force(const char *name)
+{
+    char *stripped, *path, *err;
+    struct stat st;
+
+    if (!name || !*name)
+        return dupstr("Bad folder name.");
+
+    stripped = session_name_strip(name);
+    if (!*stripped) {
+        sfree(stripped);
+        return dupstr("Bad folder name.");
+    }
+
+    path = make_filename(INDEX_SESSION, stripped);
+    if (lstat(path, &st) < 0) {
+        err = dupprintf("There is no folder called \"%s\".", stripped);
+    } else if (!S_ISDIR(st.st_mode)) {
+        /*
+         * Refuse a session, even though this is only ever called for names
+         * the caller has already identified as folders: a "remove
+         * everything" call must not be able to delete a single session.
+         */
+        err = dupprintf("\"%s\" is not a folder.", stripped);
+    } else {
+        err = config_remove_path(path);
+        if (err)
+            err = dupprintf("Unable to remove folder \"%s\": %s",
+                            stripped, err);
+    }
+
+    sfree(path);
+    sfree(stripped);
+    return err;
+}
+
 char *session_rmdir(const char *name)
 {
     char *stripped, *path, *err = NULL;

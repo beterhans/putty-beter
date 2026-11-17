@@ -104,8 +104,8 @@ In the configuration box the session list is a **collapsible tree**: folders
 are in bold with a disclosure triangle, and a session is moved into a folder
 by dragging its row onto it. Under the list are **Load**, **Save**, **Delete**
 and **New Folder**; New Folder takes the name from the Saved Sessions box, the
-same way Save does. Delete removes a folder only when it is empty, so it
-cannot throw sessions away by accident.
+same way Save does. Delete on a folder that still has sessions in it asks
+first, with a "Delete All" / "Cancel" box — Escape cancels.
 
 You can also just type a name with a slash: saving as `Work/beta` creates the
 folder as it goes. Names are checked, so a session name can never escape the

@@ -823,6 +823,37 @@ static char *selected_session_name(struct sessionsaver_data *ssd,
 }
 
 /*
+ * PuTTY-beter: deleting a folder that still has sessions in it asks first,
+ * because that is the one action here that can throw work away.
+ */
+struct delfolder_ctx {
+    struct sessionsaver_data *ssd;
+    dlgparam *dlg;
+    char *name;
+};
+
+static void delfolder_answer(void *vctx, int button)
+{
+    struct delfolder_ctx *c = (struct delfolder_ctx *)vctx;
+    char *err = NULL;
+
+    if (button == 0) {                 /* "Delete All" */
+        err = session_rmdir_force(c->name);
+        if (err) {
+            dlg_error_msg(c->dlg, err);
+            sfree(err);
+        }
+    }
+
+    get_sesslist(&c->ssd->sesslist, false);
+    get_sesslist(&c->ssd->sesslist, true);
+    dlg_refresh(c->ssd->listbox, c->dlg);
+
+    sfree(c->name);
+    sfree(c);
+}
+
+/*
  * PuTTY-beter: move a session, or a whole folder, as the result of a drag in
  * the list. `dst_id` is the folder it was dropped on, or -1 for the top
  * level.
@@ -852,19 +883,23 @@ static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg,
     newname = session_move_target_name(src, dst);
 
     if (!strcmp(newname, src)) {
-        /* Dropped where it already was. */
+        /* Dropped where it already was: nothing to move. */
         sfree(newname);
-        return;
+    } else {
+        err = session_move(src, newname);
+        sfree(newname);
+
+        if (err) {
+            dlg_error_msg(dlg, err);
+            sfree(err);
+        }
     }
 
-    err = session_move(src, newname);
-    sfree(newname);
-
-    if (err) {
-        dlg_error_msg(dlg, err);
-        sfree(err);
-    }
-
+    /*
+     * The list is rebuilt from storage either way. The front end has already
+     * moved the row in its own model, and that move is only as good as the
+     * drop position, so this puts the display back in step with the disk.
+     */
     get_sesslist(&ssd->sesslist, false);
     get_sesslist(&ssd->sesslist, true);
     dlg_refresh(ssd->listbox, dlg);
@@ -1008,14 +1043,39 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
                 /* Nothing selected, or "Default Settings". */
                 dlg_beep(dlg);
             } else if (sesslist_is_folder(name)) {
-                /*
-                 * A folder is removed only when it is empty, so that this
-                 * button cannot throw away sessions by accident.
-                 */
-                err = session_rmdir(name);
-                if (err) {
-                    dlg_error_msg(dlg, err);
-                    sfree(err);
+                int entries = session_folder_entries(name);
+
+                if (entries == 0) {
+                    err = session_rmdir(name);
+                    if (err) {
+                        dlg_error_msg(dlg, err);
+                        sfree(err);
+                    }
+                } else if (entries > 0) {
+                    /*
+                     * A folder with sessions in it is only removed after the
+                     * user has been asked, since that throws them away.
+                     */
+                    static const char *const buttons[] = {
+                        "Delete All", "Cancel",
+                    };
+                    struct delfolder_ctx *c = snew(struct delfolder_ctx);
+                    char *question = dupprintf(
+                        "The folder \"%s\" contains %d item%s. "
+                        "Delete the folder and everything in it?",
+                        name, entries, entries == 1 ? "" : "s");
+
+                    c->ssd = ssd;
+                    c->dlg = dlg;
+                    c->name = name;    /* handed over to the callback */
+                    name = NULL;
+
+                    dlg_confirm(ssd->delbutton, dlg, "Delete Folder",
+                                question, buttons, 2, delfolder_answer, c);
+                    sfree(question);
+                    return;            /* the callback refreshes the list */
+                } else {
+                    dlg_error_msg(dlg, "That folder no longer exists.");
                 }
             } else {
                 del_settings(name);
