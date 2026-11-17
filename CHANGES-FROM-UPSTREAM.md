@@ -41,8 +41,9 @@ fixes, so `git log` alone shows only the later work.
 | Configuration folder | The configuration directory can be moved, with a one-time dialog and a redirect file. |
 | Configuration box | Resizable, size remembered in the configuration folder, and the saved-session list grows with the window. |
 | Session folders | Sessions can be kept in folders, shown as a tree and moved by dragging. |
+| Session comments | A free-text note kept with each saved session, in a panel below Logging, with a multi-line UTF-8 box. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
-| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `CMakePresets.json`, a self-contained `PuTTY.app`. |
+| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon. |
 | Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
 
 ---
@@ -53,17 +54,17 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 
 | File | +/- | What changed |
 |---|---|---|
-| `conf.h` | +19 / -7 | Seven default values changed (see below) |
-| `config.c` | +294 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
-| `dialog.h` | +62 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
-| `dialog.c` | +3 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` |
-| `settings.c` | +42 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level |
+| `conf.h` | +35 / -7 | Seven default values changed (see below); `session_comment` added |
+| `config.c` | +326 / -31 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added |
+| `dialog.h` | +69 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box (per front end; Windows ignores all of them) |
+| `dialog.c` | +5 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` |
+| `settings.c` | +115 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
 | `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
 | `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
 | `unix/columns.c` | +54 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
-| `unix/dialog.c` | +519 / -14 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
+| `unix/dialog.c` | +795 / -25 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box |
 | `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
@@ -76,7 +77,7 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `windows/storage.c` | +18 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
 | `storage.h` | +19 / -0 | Declarations for the folder operations and the name checks |
 | `CMakeLists.txt` | +7 / -0 | `test_sessions` target |
-| `.gitignore` | +14 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store` |
+| `.gitignore` | +16 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
 ## New files
@@ -91,6 +92,8 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
+| `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
+| `scripts/make-icns.sh` | PNG → `.icns` using only `sips` and `iconutil` |
 
 ---
 
@@ -363,10 +366,48 @@ display) is covered. The same goes for the delete confirmation, which needs a
 click on Delete.
 
 **Not implemented yet:** renaming a folder, remembering which folders are
-expanded, and per-folder metadata (comments, saved passwords) — see
-`PLAN.md` Phase 2.
+expanded, and per-session saved passwords — see `PLAN.md` Phase 2. (A
+per-session comment is now implemented: see section 10.)
 
 ---
+
+## 10. Session comments
+
+A saved session can carry a free-text note about itself. It lives in a panel of
+its own, **Session → Comment**, directly below Logging, because it needs a box
+big enough to type a paragraph into.
+
+* `conf.h` gains `session_comment`, a `VALUE_TYPE(STR)` option. It is
+  `LOAD_CUSTOM, SAVE_CUSTOM`, because the settings file format is one
+  `key=value` per line and a comment can run to several lines. `settings.c`
+  escapes `\`, newline and CR as `\\`, `\n` and `\r` on the way out and undoes
+  it on the way in, so a comment survives a round trip intact.
+* It is written to the session file only when it is not empty, so ordinary
+  session files are unchanged. Vanilla PuTTY reading such a session ignores the
+  unknown `SessionComment` key.
+* Note that a `LOAD_CUSTOM` option is skipped by the automatic loop in
+  `load_open_settings()`, so its empty default has to be set explicitly - a
+  `Conf` entry has to exist before `conf_get_str()` can be asked for it.
+* `dialog.h` gains a `multiline` flag on the edit box. `unix/dialog.c` makes a
+  multi-line box a `GtkTextView` in a scrolled window: word-char wrapping,
+  `accepts-tab` off so Tab still moves the focus, and a minimum of eight lines
+  (the box is marked `vexpand`, so it grows into the panel's spare height).
+  Return inserts a newline rather than activating the default button, and
+  changes are reported by the text buffer, so it gets neither `editbox_changed`
+  nor `editbox_key`.
+* The value is always UTF-8, because that is what the front ends' edit boxes
+  deal in.
+* A `GtkTextView` is the one widget in `unix/dialog.c` that is not a plain
+  `GtkEntry`, and it needs one extra line: `gtk_widget_show()` does **not**
+  recurse in GTK 3, so showing only the surrounding scrolled window leaves the
+  view invisible - an empty sunken frame that cannot be typed into, because an
+  invisible widget never receives the click that would focus it.
+
+**Verified:** the storage round trip, in `test/test_sessions.c`, over six
+comments including empty, multi-line, backslashes, UTF-8 bytes and a backslash
+at the end of a line.
+
+**Not verified by the test suite:** the widget itself, which needs a human.
 
 ## Worth reporting upstream
 

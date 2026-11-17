@@ -76,6 +76,9 @@ everything.
 
 `scripts/build-macos.sh`, `scripts/bundle-macos.sh` and `CMakePresets.json`
 build the binaries and a self-contained `PuTTY.app` with GTK bundled inside.
+`scripts/make-icns.sh` turns `icons/putty-beter-icon.png` into the app icon
+using only `sips` and `iconutil`, and `bundle-macos.sh` runs it whenever the
+PNG is newer than the `.icns`.
 
 ### 6. Runtime diagnostics
 
@@ -114,7 +117,20 @@ You can also just type a name with a slash: saving as `Work/beta` creates the
 folder as it goes. Names are checked, so a session name can never escape the
 sessions directory.
 
-### 9. Changed defaults
+### 9. Session comments
+
+A saved session can carry a free-text note about itself, in
+**Session → Comment** — a panel of its own, directly below Logging, so that
+the box can be big enough to type a paragraph into. Return gives a newline,
+Tab moves to the next control, and the box grows when the window does. The
+text is UTF-8 and is stored with the session, so a note like
+"prod box, ask Dana before touching" travels with the session file.
+
+It is written to the session file as `SessionComment=`, only when there is
+one. Newlines are escaped as `\n` on disk, since the settings file format is
+one `key=value` per line.
+
+### 10. Changed defaults
 
 These only affect **new** sessions, and settings a saved session already stores
 keep their saved values.
