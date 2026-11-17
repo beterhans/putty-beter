@@ -298,6 +298,15 @@ configuration box, and moved between folders by dragging.
   dragged into a folder together, or deleted together. `dlg_listbox_selected_id()`
   falls back to the row under the cursor when several are selected, so Load
   and Save still act on something sensible.
+* Dragging several rows needs one more workaround: GtkTreeView's own press
+  handler calls `gtk_tree_view_real_set_cursor()` with `CLEAR_AND_SELECT` for
+  an unmodified press, so pressing on one of several selected rows throws the
+  rest of the selection away before any drag starts. The press signal on the
+  widget is emitted *before* the tree view's (bubble phase) gesture, so the
+  selection is snapshotted there and put back when the drag begins —
+  `listbox_press_event()` / `listbox_restore_selection()` in `unix/dialog.c`.
+  The snapshot is only restored if the press was on one of the selected rows,
+  so dragging an unselected row still moves just that row.
 * `sessioncmp()` puts **folders before sessions at every level** (then
   compares component by component, so a folder's contents stay together),
   which is what makes the tree show folders at the top of each level.

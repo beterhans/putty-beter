@@ -849,6 +849,107 @@ void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
                        dlg_confirm_done, c);
 }
 
+/*
+ * PuTTY-beter: keep a multi-selection alive across the start of a drag.
+ *
+ * GtkTreeView's own press handler calls gtk_tree_view_real_set_cursor() with
+ * CLEAR_AND_SELECT when the press has no modifier, so pressing on one of
+ * several selected rows throws the rest of the selection away - which would
+ * make dragging several rows impossible. The press signal on the widget is
+ * emitted before the tree view's (bubble phase) gesture, so the selection can
+ * be snapshotted there and put back when the drag actually starts.
+ */
+static int *listbox_press_ids = NULL;
+static int listbox_press_nids = 0;
+static int listbox_press_id = -1;      /* the row the press was on */
+
+static void listbox_press_forget(void)
+{
+    sfree(listbox_press_ids);
+    listbox_press_ids = NULL;
+    listbox_press_nids = 0;
+    listbox_press_id = -1;
+}
+
+static gboolean listbox_press_event(GtkWidget *widget, GdkEventButton *event,
+                                    gpointer vdp)
+{
+    struct dlgparam *dp = (struct dlgparam *)vdp;
+    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+    GtkTreePath *path = NULL;
+    gint bx, by;
+
+    listbox_press_forget();
+
+    if (!ctrl || !ctrl->listbox.tree || event->button != 1)
+        return false;                  /* let the tree view get on with it */
+
+    gtk_tree_view_convert_widget_to_bin_window_coords(GTK_TREE_VIEW(widget),
+                                                      event->x, event->y,
+                                                      &bx, &by);
+    if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget), bx, by,
+                                      &path, NULL, NULL, NULL)) {
+        GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(widget));
+        GtkTreeIter iter;
+
+        if (gtk_tree_model_get_iter(model, &iter, path))
+            gtk_tree_model_get(model, &iter, 0, &listbox_press_id, -1);
+        gtk_tree_path_free(path);
+    }
+
+    listbox_press_nids = dlg_listbox_selected_ids(ctrl, dp, &listbox_press_ids);
+
+    return false;                      /* the tree view still does its thing */
+}
+
+static gboolean listbox_release_event(GtkWidget *widget, GdkEventButton *event,
+                                      gpointer vdp)
+{
+    if (event->button == 1)
+        listbox_press_forget();        /* a plain click: nothing to restore */
+
+    return false;
+}
+
+/*
+ * Put the snapshot back, but only if the press was on one of the rows that
+ * were selected - dragging an unselected row should move just that row.
+ */
+static void listbox_restore_selection(dlgcontrol *ctrl, dlgparam *dp)
+{
+    struct uctrl *uc;
+    GtkTreeSelection *sel;
+    GtkTreeModel *model;
+    bool pressed_was_selected = false;
+
+    if (listbox_press_nids < 2)
+        goto done;
+
+    for (int i = 0; i < listbox_press_nids; i++)
+        if (listbox_press_ids[i] == listbox_press_id)
+            pressed_was_selected = true;
+
+    if (!pressed_was_selected)
+        goto done;
+
+    uc = dlg_find_byctrl(dp, ctrl);
+    if (!uc->treeview)
+        goto done;
+
+    sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
+    model = gtk_tree_view_get_model(GTK_TREE_VIEW(uc->treeview));
+
+    for (int i = 0; i < listbox_press_nids; i++) {
+        GtkTreeIter iter;
+
+        if (tree_find_id_rec(model, NULL, listbox_press_ids[i], &iter))
+            gtk_tree_selection_select_iter(sel, &iter);
+    }
+
+  done:
+    listbox_press_forget();
+}
+
 static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
                                   gint x, gint y, GtkSelectionData *data,
                                   guint info, guint time, gpointer vdp)
@@ -871,8 +972,17 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
      * folder"; any other row means "put it in the folder that row is in";
      * and empty space below the list means the top level.
      */
-    if (gtk_widget_translate_coordinates(widget, view, x, y, &tx, &ty) &&
-        gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view), tx, ty, &path,
+    if (gtk_widget_translate_coordinates(widget, view, x, y, &tx, &ty)) {
+        /*
+         * gtk_tree_view_get_path_at_pos() wants bin window coordinates, not
+         * widget ones; with the header hidden the two are usually the same,
+         * but do it properly.
+         */
+        gtk_tree_view_convert_widget_to_bin_window_coords(
+            GTK_TREE_VIEW(view), tx, ty, &tx, &ty);
+    }
+
+    if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view), tx, ty, &path,
                                       NULL, NULL, NULL)) {
         GtkTreeIter iter, parent;
         bool is_folder = false;
@@ -889,6 +999,9 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
 
         gtk_tree_path_free(path);
     }
+
+    /* The selection GTK collapsed when the drag started comes back first. */
+    listbox_restore_selection(ctrl, dp);
 
     ctrl->listbox.drag_handler(ctrl, dp, dest_id);
 }
@@ -2884,6 +2997,12 @@ GtkWidget *layout_ctrls(
                         g_object_set_data(G_OBJECT(scroll), "putty-ctrl",
                                           ctrl);
                         g_object_set_data(G_OBJECT(scroll), "putty-tree", w);
+                        g_object_set_data(G_OBJECT(w), "putty-ctrl", ctrl);
+
+                        g_signal_connect(G_OBJECT(w), "button-press-event",
+                                         G_CALLBACK(listbox_press_event), dp);
+                        g_signal_connect(G_OBJECT(w), "button-release-event",
+                                         G_CALLBACK(listbox_release_event), dp);
 
                         gtk_tree_view_enable_model_drag_source(
                             GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,
