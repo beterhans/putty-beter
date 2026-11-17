@@ -408,6 +408,8 @@ dlgcontrol *ctrl_filesel(struct controlset *s, const char *label,
     c->fileselect.for_writing = write;
     c->fileselect.title = dupstr(title);
     c->fileselect.just_button = false;
+    /* PuTTY-beter: only set at the call site, for a folder-typed setting. */
+    c->fileselect.for_directory = false;
     return c;
 }
 

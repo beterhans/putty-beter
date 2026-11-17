@@ -2362,13 +2362,30 @@ static void filefont_clicked(GtkButton *button, gpointer data)
          * FIXME: do something about uc->ctrl->fileselect.filter
          */
 #ifdef USE_GTK_FILE_CHOOSER_DIALOG
+        /*
+         * PuTTY-beter: a folder-typed setting (fileselect.for_directory,
+         * which is what the ZMODEM transfer folder uses) needs a directory
+         * chooser rather than an open/save one. The upstream expression
+         * this replaces was:
+         *
+         *     (uc->ctrl->fileselect.for_writing ?
+         *      GTK_FILE_CHOOSER_ACTION_SAVE :
+         *      GTK_FILE_CHOOSER_ACTION_OPEN),
+         */
+        GtkFileChooserAction action;
+        if (uc->ctrl->fileselect.for_directory)
+            action = GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER;
+        else if (uc->ctrl->fileselect.for_writing)
+            action = GTK_FILE_CHOOSER_ACTION_SAVE;
+        else
+            action = GTK_FILE_CHOOSER_ACTION_OPEN;
+
         GtkWidget *filechoose = gtk_file_chooser_dialog_new(
             uc->ctrl->fileselect.title, GTK_WINDOW(dp->window),
-            (uc->ctrl->fileselect.for_writing ?
-             GTK_FILE_CHOOSER_ACTION_SAVE :
-             GTK_FILE_CHOOSER_ACTION_OPEN),
+            action,
             STANDARD_CANCEL_LABEL, GTK_RESPONSE_CANCEL,
-            STANDARD_OPEN_LABEL, GTK_RESPONSE_ACCEPT,
+            uc->ctrl->fileselect.for_directory ?
+            "Choose" : STANDARD_OPEN_LABEL, GTK_RESPONSE_ACCEPT,
             (const gchar *)NULL);
         gtk_window_set_modal(GTK_WINDOW(filechoose), true);
         g_object_set_data(G_OBJECT(filechoose), "user-data", (gpointer)uc);

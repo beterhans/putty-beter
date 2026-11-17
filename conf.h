@@ -901,6 +901,25 @@ CONF_OPTION(session_comment,
      * edit boxes deal in.
      */
 )
+CONF_OPTION(zmodem_dir,
+    VALUE_TYPE(FILENAME),
+    SAVE_KEYWORD("ZmodemDirectory"),
+    /*
+     * PuTTY-beter: the folder ZMODEM file transfers use. Downloads land
+     * here (the protocol carries the remote file name, so there is nothing
+     * to ask), and it is where the upload file chooser starts.
+     *
+     * There is deliberately no DEFAULT_STR: a FILENAME option's default is
+     * produced by platform_default_filename() in the front end, which is
+     * where the per-platform path lives. unix/window.c supplies
+     * <home>/Downloads, since that exists on every macOS install and is in
+     * the Finder sidebar.
+     *
+     * The front end writes the folder actually used back into this setting
+     * after each transfer, so it also serves as "the folder I used last".
+     * Saving it unconditionally is what makes it sticky.
+     */
+)
 CONF_OPTION(hide_mouseptr,
     VALUE_TYPE(BOOL),
     DEFAULT_BOOL(false),

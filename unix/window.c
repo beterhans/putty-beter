@@ -346,6 +346,29 @@ Filename *platform_default_filename(const char *name)
             return fn;
         }
         return filename_from_str("putty.log");
+    } else if (!strcmp(name, "ZmodemDirectory")) {
+        /*
+         * PuTTY-beter: ZMODEM transfers default to the user's Downloads
+         * folder. Every macOS install has one, it is in the Finder sidebar,
+         * and it does not move if the configuration folder is relocated -
+         * which the log folder deliberately does, and is exactly what you
+         * do not want a download to do.
+         *
+         * This is only the starting point: the front end writes back the
+         * folder actually used after each transfer.
+         *
+         * macOS protects ~/Desktop, ~/Documents and ~/Downloads with TCC, so
+         * the first transfer may raise a one-time "access your Downloads
+         * folder" prompt. That is normal for a non-sandboxed app, and it is
+         * why the setting is changeable.
+         */
+        const char *home = g_get_home_dir();
+        char *path = dupprintf("%s/Downloads", home ? home : "/tmp");
+        Filename *fn = filename_from_str(path);
+        if (getenv("PUTTY_DIAG"))
+            fprintf(stderr, "[zmodem] default transfer folder: %s\n", path);
+        sfree(path);
+        return fn;
     } else
         return filename_from_str("");
 }

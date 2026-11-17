@@ -399,6 +399,12 @@ struct dlgcontrol {
              */
             bool for_writing;
             /*
+             * PuTTY-beter: some settings name a folder rather than a file,
+             * so the file selector has to pick a directory instead. Front
+             * ends that cannot do this ignore the flag (see unix/dialog.c).
+             */
+            bool for_directory;
+            /*
              * On at least some platforms, the file selector is a
              * separate dialog box, and contains a user-settable
              * title.

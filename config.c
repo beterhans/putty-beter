@@ -2358,6 +2358,35 @@ void setup_config_box(struct controlbox *b, bool midsession,
     }
 
     /*
+     * PuTTY-beter: where ZMODEM file transfers read and write files.
+     *
+     * One folder serves both directions. A download (remote `sz`) is saved
+     * straight into it, because the protocol carries the file name and there
+     * is nothing to ask; an upload (remote `rz`) opens its file chooser
+     * there, since only the local side can say which file to send.
+     */
+    ctrl_settitle(b, "Session/File transfer",
+                  "Where ZMODEM file transfers put files");
+
+    s = ctrl_getset(b, "Session/File transfer", "main", NULL);
+    {
+        dlgcontrol *c = ctrl_filesel(s, "Transfer folder:", NO_SHORTCUT,
+                                     FILTER_ALL_FILES, false,
+                                     "Select the folder for ZMODEM transfers",
+                                     HELPCTX(no_help),
+                                     conf_filesel_handler, I(CONF_zmodem_dir));
+        /*
+         * PuTTY-beter: this names a folder, not a file, so the Browse
+         * button has to open a directory chooser.
+         */
+        c->fileselect.for_directory = true;
+    }
+    ctrl_text(s, "(Downloads are saved here, and the upload chooser starts"
+              " here. The folder is remembered after each transfer, so this"
+              " is only the starting point. Default: your Downloads folder.)",
+              HELPCTX(no_help));
+
+    /*
      * The Terminal panel.
      */
     ctrl_settitle(b, "Terminal", "Options controlling the terminal emulation");
