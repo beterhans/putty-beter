@@ -131,6 +131,13 @@ add_executable(test_zmodem
   terminal/zmodem.c)
 target_link_libraries(test_zmodem utils ${platform_libraries})
 
+# PuTTY-beter: the MCP capture buffer. Like the ZMODEM engine it has no front
+# end, so the test needs only utils and no display or socket.
+add_executable(test_mcp_buffer
+  test/test_mcp_buffer.c
+  unix/mcp-buffer.c)
+target_link_libraries(test_mcp_buffer utils ${platform_libraries})
+
 # PuTTY-beter: a real interoperability check for the ZMODEM engine. It runs the
 # system's own sz/rz over a pty and checks the file survives the trip, so it
 # needs lrzsz installed and is therefore built but not run by the normal test
