@@ -546,11 +546,36 @@ upstream-merge friction in `dialog.c` (medium).
 references anywhere). The terminal must detect the transfer start, suspend normal display
 passthrough, run the protocol bidirectionally over the channel, then resume.
 
-**Hook points**
-- `term_data()` (~`terminal/terminal.c:7876`) — data *from* the server.
-- `term_keyinput()` / `term_keyinputw()` — data *to* the server.
+**Hook points**  *(line numbers verified 2026-11-17, arm64 tree)*
+- **Inbound**, data *from* the server: `gtk_seat_output()` at `unix/window.c:382`.
+  It is currently a bare `return term_data(inst->term, data, len);`, so it is the
+  one place where the stream can be diverted before the terminal emulator sees it.
+- **Outbound**, data *to* the server: `backend_send(inst->backend, buf, len)`.
+  `backend_send` is a `static inline` in `putty.h:770`; `GtkFrontend` holds
+  `Backend *backend`. During a transfer the engine needs this **raw** path, not
+  `ldisc_send()`, because ldisc would apply local echo and line editing to binary
+  data.
+- **Keyboard**: every path funnels into `term_keyinput()` / `term_keyinputw()` at
+  `unix/window.c:2131–2198`, so a single check there covers keys, the numeric
+  keypad and IME commit. During a transfer almost all of it is swallowed; only the
+  cancel key should reach the engine.
 - `ldisc.c` — line discipline / local echo interaction.
 - Backends: `ssh/` (SSH channel), `unix/serial.c`, `proxy/telnet.c`.
+
+**Placement decision:** the protocol engine goes in `terminal/zmodem.c` as **pure
+C with callbacks and no GTK dependency**, so it can be unit-tested in `test/`
+without a display or a server. The front end supplies the callbacks (send raw
+bytes, open/save/rename a file, ask about an existing file, report progress).
+The interception itself lives in `unix/window.c`. This keeps the engine
+front-end-agnostic, so the Windows front end could adopt it unchanged.
+
+**Transfer folder**  *(decided 2026-11-17)*
+`CONF_zmodem_dir`, one folder for both directions, defaulting to
+`<home>/Downloads` and remembered after each transfer. A download needs no
+prompt (the protocol carries the file name), so it lands in the folder directly;
+an upload opens its chooser there. Implemented ahead of the engine, since it is
+the one part of Phase 3 that does not depend on the protocol — see `PLAN.md`
+section 6a.
 
 **Design sketch**
 1. Watch the incoming stream for the ZMODEM init header `**\x18B00` (ZRQINIT, hex header).
@@ -605,6 +630,54 @@ Fallback: port NuttX (Apache-2.0) with a `NOTICE`.
 **Risks:** protocol correctness (high), licensing (high — decide first), flow control over SSH
 (medium), interaction with local echo/line editing (medium), scope creep into `zssh`-style
 menu-driven mode (avoid).
+
+---
+
+## 6a. ZMODEM transfer folder  *(done 2026-11-17)*
+
+**Goal:** give ZMODEM transfers somewhere to put files, before the protocol
+engine exists. This is the one part of Phase 3 that does not depend on the
+protocol, so it landed first.
+
+**Decision:** **one** folder for both directions, defaulting to
+`<home>/Downloads`, and **remembered after every transfer**.
+
+| Direction | Behaviour | Why |
+|---|---|---|
+| Download (remote `sz`) | Saved straight into the folder, no prompt | The protocol carries the file name in its `ZFILE` header, so there is nothing to ask. This is the whole point of ZMODEM. |
+| Upload (remote `rz`) | File chooser *starts* in the folder | `rz` cannot name a local file — the remote just waits — so only the local side can choose. |
+
+`Downloads` beats the log folder on three counts: it exists on every macOS
+install, it is in the Finder sidebar, and it does **not** move when the
+configuration folder is relocated. The log folder deliberately does follow the
+config folder, which is exactly what a download should not do. The cost is that
+macOS protects `~/Desktop`, `~/Documents` and `~/Downloads` with TCC, so the
+first transfer may raise a one-time access prompt; that is normal for a
+non-sandboxed app, and it is why the setting is changeable.
+
+| Where | What |
+|---|---|
+| `conf.h` | `CONF_zmodem_dir`, `VALUE_TYPE(FILENAME)`, `SAVE_KEYWORD("ZmodemDirectory")` |
+| `unix/window.c` | `platform_default_filename("ZmodemDirectory")` → `<home>/Downloads` |
+| `config.c` | the `Session/File transfer` panel, directly after `Session/Comment` |
+| `dialog.h`, `dialog.c` | `fileselect.for_directory`, set at the call site, false by default |
+| `unix/dialog.c` | a directory chooser (`GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER`) and a "Choose" label when `for_directory` |
+
+**Worth remembering — the opposite of the `session_comment` lesson.** A
+`FILENAME` option must have **no** `DEFAULT_STR` and needs **no** manual wiring:
+`gppfile()` in the automatic loop of `load_open_settings()` (`settings.c:848`)
+calls `platform_default_filename(save_keyword)`, so the default has to be
+implemented in the front end, because the path is platform-dependent. That is
+how `logfilename` already gets `<config>/logs/`. A `LOAD_CUSTOM` **`STR`**
+option (like `session_comment`) is the other way round: the loop skips it, so its
+default must be set by hand.
+
+**Verified:** builds clean; 11 standalone tests and cryptsuite 90/90 pass;
+`PUTTY_DIAG=1` prints `[zmodem] default transfer folder: /Users/hans/Downloads`;
+no asserts with the panel constructed (the config box builds every panel at
+startup, so a bad `conf_get_filename` would crash there). **Not verified:** the
+field's contents and the Browse button opening a directory chooser — both need a
+human click.
 
 ---
 
