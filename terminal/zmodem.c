@@ -224,6 +224,7 @@ struct Zmodem {
     uint64_t tx_in_window;
     bool tx_hdr_sent;       /* a ZDATA header is open for the current burst */
     bool tx_first_frame;    /* the next frame is the first of a burst */
+    bool tx_sent_any;       /* a file has been sent in this transfer */
 
     /*
      * Frame check sequence widths. These are two different questions and
@@ -1086,6 +1087,7 @@ static bool zm_tx_open_file(Zmodem *zm)
 
     zm->tx_size = size;
     zm->tx_offset = 0;
+    zm->tx_sent_any = true;
     zm->tx_in_window = 0;
     zm->tx_hdr_sent = false;
     zm->tx_first_frame = true;
@@ -1253,8 +1255,29 @@ static void zm_tx_header(Zmodem *zm, ZmHeader *hdr)
                 zm->cbs.send_close(zm->cbs.ctx, zm->file);
                 zm->file = NULL;
             }
-            if (!zm_tx_open_file(zm))
+            if (!zm_tx_open_file(zm)) {
+                /*
+                 * No file to send - which is two different things, and the
+                 * caller cannot tell them apart, so the state has to:
+                 *
+                 *  - nothing has been sent yet, so the user refused the file
+                 *    (or it could not be opened). That is an abort. Ending
+                 *    with ZFIN instead - as this used to - tells the peer the
+                 *    transfer completed, it answers ZFIN, and the user is told
+                 *    that a transfer which never happened was "complete".
+                 *
+                 *  - a file has already been sent and the peer is asking for
+                 *    another one. That is an ordinary end of session, and ZFIN
+                 *    is exactly right.
+                 */
+                if (!zm->tx_sent_any) {
+                    zmtrace(zm, "no file to send: aborting");
+                    zm_send_can(zm);
+                    zm_finish(zm, ZMOUT_CANCELLED, "no file was sent");
+                    return;
+                }
                 zm_tx_all_done(zm);
+            }
         }
         /* A repeat while mid-file is an echo: ignore it. */
         break;
@@ -1549,6 +1572,7 @@ static void zm_reset(Zmodem *zm)
     zm->prolen = 0;
     zm->cans = 0;
     zm->errors = 0;
+    zm->tx_sent_any = false;
     zm->finished_called = false;
     zm->state = ZMST_IDLE;
 }

@@ -700,6 +700,74 @@ static void test_cancel(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7. A refused file                                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A refused file must not be reported as a completed transfer.
+ *
+ * The front end answers "no more files" by returning NULL from send_open -
+ * and that is the same answer it gives when the user cancels the file chooser.
+ * If nothing has been sent yet, the transfer has to be reported as cancelled
+ * and the session aborted. Ending it with ZFIN instead, which is what this
+ * used to do, makes the peer answer ZFIN, and the user is then told that a
+ * transfer which never happened "completed".
+ */
+static void test_refuse_file(void)
+{
+    Cap tx, rx;
+    ZmodemCallbacks cbt, cbr;
+    Zmodem *ztx, *zrx;
+    unsigned char zrinit[BIG];
+    unsigned char d[4];
+    size_t n, i;
+    int steps = 0, run = 0, found = 0;
+
+    cap_init(&tx);
+    cap_init(&rx);
+    tx.srcname = "refused.bin";
+    tx.src[0] = 'x';
+    tx.srclen = 1;
+    tx.src_used = true;         /* the front end refuses the file outright */
+
+    cbt = callbacks_for(&tx);
+    cbr = callbacks_for(&rx);
+    ztx = zmodem_new(&cbt);
+    zrx = zmodem_new(&cbr);
+    tx.zm = ztx;
+    rx.zm = zrx;
+
+    /*
+     * Prime a receiver so that it emits the ZRINIT our sender waits for, and
+     * pass that straight to the sender, which is then asked for a file it
+     * will not provide.
+     */
+    d[0] = d[1] = d[2] = d[3] = 0;
+    n = build_hex_hdr(zrinit, 0 /* ZRQINIT */, d);
+    zmodem_feed_in(zrx, zrinit, n);
+    pump(&rx, ztx, &steps);
+
+    CHECK(tx.finished && tx.outcome == ZMOUT_CANCELLED,
+          "refused file reported (%d, %s), want cancelled",
+          (int)tx.outcome, tx.message);
+    CHECK(!zmodem_active(ztx), "engine still active after a refused file");
+
+    /* The abort sequence - ten CANs - rather than a ZFIN. */
+    for (i = 0; i < tx.sentlen; i++) {
+        if (tx.sent[i] == 0x18) {
+            if (++run == 10) { found = 1; break; }
+        } else {
+            run = 0;
+        }
+    }
+    CHECK(found, "no ten-CAN abort sequence in %lu bytes of output",
+          (unsigned long)tx.sentlen);
+
+    zmodem_free(ztx);
+    zmodem_free(zrx);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void)
 {
@@ -715,6 +783,7 @@ int main(void)
     printf("  [test] zrinit_bytes\n");    test_zrinit_bytes();
     printf("  [test] receive\n");         test_receive();
     printf("  [test] cancel\n");          test_cancel();
+    printf("  [test] refuse_file\n");     test_refuse_file();
 
     printf("  [test] round_trip 1\n");       round_trip(1);
     printf("  [test] round_trip 1024\n");    round_trip(1024);

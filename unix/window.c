@@ -190,6 +190,7 @@ struct GtkFrontend {
     char *zm_path;                  /* its path */
     GtkWidget *zm_dialog, *zm_label, *zm_bar;
     bool zm_receive;                /* direction, for the dialog's wording */
+    bool zm_sent_one;               /* a file has been sent in this transfer */
     uint64_t zm_total;
     Terminal *term;
     cmdline_get_passwd_input_state cmdline_get_passwd_state;
@@ -786,6 +787,7 @@ static ZmodemFile *zm_send_open(void *ctx, char **name, uint64_t *size,
     inst->zm_file = fp;
     inst->zm_receive = false;
     inst->zm_total = *size;
+    inst->zm_sent_one = true;
     zm_dialog_open(inst);
     zm_status(inst, "Sending %s", *name);
     return (ZmodemFile *)fp;
@@ -850,6 +852,9 @@ static void zm_finished(void *ctx, ZmodemOutcome outcome, const char *message)
 
     zm_dialog_close(inst);
 
+    /* The transfer is over, so the next one may prompt for a file again. */
+    inst->zm_sent_one = false;
+
     if (getenv("PUTTY_DIAG"))
         fprintf(stderr, "[zmodem] finished: %d (%s)\n", (int)outcome,
                 message ? message : "");
@@ -894,6 +899,7 @@ static void zm_stop(GtkFrontend *inst)
         inst->zmodem = NULL;
     }
     zm_dialog_close(inst);
+    inst->zm_sent_one = false;
     if (inst->zm_file) {
         fclose(inst->zm_file);
         inst->zm_file = NULL;
