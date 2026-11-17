@@ -850,18 +850,11 @@ void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
 }
 
 /*
- * PuTTY-beter: the row a drag started from, and the folder it is being
- * dropped on. Both are remembered while the drag is in progress, because
- * there is only ever one drag at a time.
- *
- * The destination has to be worked out from where the pointer is, during
- * drag-motion, rather than from the model after the drop: GtkTreeStore's
- * built-in drop inserts the row as a *sibling* of the row it was dropped on
- * (the parent of the destination path), so a drop on a top-level folder
- * lands at the top level rather than inside it.
+ * PuTTY-beter: the row a drag started from. There is only ever one drag at a
+ * time, so it is kept in a file-scope variable between the start of the drag
+ * and the drop.
  */
 static int listbox_drag_source_id = -1;
-static int listbox_drag_dest_id = -1;
 
 static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
                                gpointer vdp)
@@ -870,49 +863,6 @@ static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
     dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
 
     listbox_drag_source_id = ctrl ? dlg_listbox_selected_id(ctrl, dp) : -1;
-    listbox_drag_dest_id = -1;
-}
-
-static void listbox_drag_motion(GtkWidget *widget, GdkDragContext *ctx,
-                                gint x, gint y, guint time, gpointer vdp)
-{
-    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
-    GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(widget));
-    GtkTreePath *path = NULL;
-    GtkTreeViewDropPosition pos;
-    int folder_col;
-
-    listbox_drag_dest_id = -1;         /* the top level, unless a row is under */
-
-    if (!ctrl)
-        return;
-
-    if (!gtk_tree_view_get_dest_row_at_pos(GTK_TREE_VIEW(widget), x, y,
-                                           &path, &pos))
-        return;
-
-    folder_col = 1 + (ctrl->listbox.ncols ? ctrl->listbox.ncols : 1);
-
-    {
-        GtkTreeIter iter, parent;
-        bool is_folder = false;
-
-        gtk_tree_model_get_iter(model, &iter, path);
-        gtk_tree_model_get(model, &iter, folder_col, &is_folder, -1);
-
-        if (is_folder) {
-            /* Dropped on a folder: put it inside. */
-            gtk_tree_model_get(model, &iter, 0, &listbox_drag_dest_id, -1);
-        } else if (gtk_tree_model_iter_parent(model, &parent, &iter)) {
-            /*
-             * Dropped next to a session: put it in the folder that session
-             * is in.
-             */
-            gtk_tree_model_get(model, &parent, 0, &listbox_drag_dest_id, -1);
-        }
-    }
-
-    gtk_tree_path_free(path);
 }
 
 static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
@@ -921,14 +871,44 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
 {
     struct dlgparam *dp = (struct dlgparam *)vdp;
     dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+    GtkWidget *view = g_object_get_data(G_OBJECT(widget), "putty-tree");
+    GtkTreeModel *model;
+    GtkTreePath *path = NULL;
+    int dest_id = -1;
+    int tx, ty;
 
-    if (!ctrl || !ctrl->listbox.drag_handler || listbox_drag_source_id < 0)
+    if (!ctrl || !view || !ctrl->listbox.drag_handler ||
+        listbox_drag_source_id < 0)
         return;
 
-    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id,
-                               listbox_drag_dest_id);
+    model = gtk_tree_view_get_model(GTK_TREE_VIEW(view));
+
+    /*
+     * Which row was it dropped on? A folder row means "put it inside that
+     * folder"; any other row means "put it in the folder that row is in";
+     * and empty space below the list means the top level.
+     */
+    if (gtk_widget_translate_coordinates(widget, view, x, y, &tx, &ty) &&
+        gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view), tx, ty, &path,
+                                      NULL, NULL, NULL)) {
+        GtkTreeIter iter, parent;
+        bool is_folder = false;
+        int folder_col = 1 + (ctrl->listbox.ncols ? ctrl->listbox.ncols : 1);
+
+        gtk_tree_model_get_iter(model, &iter, path);
+        gtk_tree_model_get(model, &iter, folder_col, &is_folder, -1);
+
+        if (is_folder) {
+            gtk_tree_model_get(model, &iter, 0, &dest_id, -1);
+        } else if (gtk_tree_model_iter_parent(model, &parent, &iter)) {
+            gtk_tree_model_get(model, &parent, 0, &dest_id, -1);
+        }
+
+        gtk_tree_path_free(path);
+    }
+
+    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id, dest_id);
     listbox_drag_source_id = -1;
-    listbox_drag_dest_id = -1;
 }
 
 int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
@@ -2787,35 +2767,6 @@ GtkWidget *layout_ctrls(
                                      G_CALLBACK(listbox_reorder), dp);
                 }
 
-                if (ctrl->listbox.tree) {
-                    /*
-                     * PuTTY-beter: a row can be dragged onto a folder row to
-                     * move it there. GTK's model drag and drop does the move
-                     * in the model; listbox_drag_received() then reports
-                     * where the row ended up, and the control's drag_handler
-                     * does the same move in storage. The list is refreshed
-                     * afterwards, so a move that storage refuses springs
-                     * back.
-                     */
-                    static const GtkTargetEntry targets[] = {
-                        { (gchar *)"text/plain", GTK_TARGET_SAME_WIDGET, 0 },
-                    };
-                    g_object_set_data(G_OBJECT(w), "putty-ctrl", ctrl);
-                    gtk_tree_view_enable_model_drag_source(
-                        GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,
-                        lenof(targets), GDK_ACTION_MOVE);
-                    gtk_tree_view_enable_model_drag_dest(
-                        GTK_TREE_VIEW(w), targets, lenof(targets),
-                        GDK_ACTION_MOVE);
-                    g_signal_connect(G_OBJECT(w), "drag-begin",
-                                     G_CALLBACK(listbox_drag_begin), dp);
-                    g_signal_connect(G_OBJECT(w), "drag-motion",
-                                     G_CALLBACK(listbox_drag_motion), dp);
-                    g_signal_connect_after(G_OBJECT(w), "drag-data-received",
-                                           G_CALLBACK(listbox_drag_received),
-                                           dp);
-                }
-
                 {
                     int i;
                     int cols;
@@ -2864,6 +2815,52 @@ GtkWidget *layout_ctrls(
                     gtk_widget_set_size_request(
                         scroll, -1,
                         ctrl->listbox.height * get_listitemheight(w));
+
+                    if (ctrl->listbox.tree) {
+                        /*
+                         * PuTTY-beter: a row can be dragged onto a folder row
+                         * to move it there.
+                         *
+                         * The tree view is the drag *source*, but the drop
+                         * target is deliberately its scrolled window rather
+                         * than the tree view itself. If the tree view were
+                         * the target, GTK's own model drag and drop would do
+                         * the move in the model, and it inserts the dragged
+                         * row as a *sibling* of the row it was dropped on -
+                         * so a drop on a folder would land outside it, and
+                         * the tree view's own drag handlers consume the
+                         * signals, leaving no way to find out where the drop
+                         * happened. With the scrolled window as the target
+                         * the model is left alone, and the drop coordinates
+                         * can simply be turned into a row.
+                         */
+                        static const GtkTargetEntry targets[] = {
+                            { (gchar *)"text/plain", GTK_TARGET_SAME_APP, 0 },
+                        };
+
+                        /*
+                         * "putty-ctrl" on both: the drop handler runs on
+                         * the scrolled window, and drag-begin on the tree
+                         * view (the drag source).
+                         */
+                        g_object_set_data(G_OBJECT(scroll), "putty-ctrl",
+                                          ctrl);
+                        g_object_set_data(G_OBJECT(scroll), "putty-tree", w);
+                        g_object_set_data(G_OBJECT(w), "putty-ctrl", ctrl);
+
+                        gtk_tree_view_enable_model_drag_source(
+                            GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,
+                            lenof(targets), GDK_ACTION_MOVE);
+                        gtk_drag_dest_set(scroll, GTK_DEST_DEFAULT_ALL, targets,
+                                          lenof(targets), GDK_ACTION_MOVE);
+
+                        g_signal_connect(G_OBJECT(w), "drag-begin",
+                                         G_CALLBACK(listbox_drag_begin), dp);
+                        g_signal_connect(G_OBJECT(scroll),
+                                         "drag-data-received",
+                                         G_CALLBACK(listbox_drag_received),
+                                         dp);
+                    }
 
                     w = scroll;
                 }

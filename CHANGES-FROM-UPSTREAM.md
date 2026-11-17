@@ -296,14 +296,25 @@ configuration box, and moved between folders by dragging.
   names, keeps a folder flag in an extra, undisplayed model column, shows
   folders in bold, expands them as they gain children, and drags rows onto
   folder rows.
-* The drop destination is worked out in `listbox_drag_motion()`, from the row
-  under the pointer, **not** from the model afterwards: GtkTreeStore's own
-  drop inserts the dragged row as a *sibling* of the row it was dropped on
-  (the parent of the destination path), so dropping onto a top-level folder
-  would land the row at the top level and look as if nothing happened.
-  `listbox_drag_received()` then calls the control's `drag_handler`, storage
-  performs the real move, and the list is rebuilt from disk — always, even if
-  the move was a no-op, so that the display cannot drift from storage.
+* The tree view is the drag *source*, but the drop target is deliberately its
+  **scrolled window**, not the tree view. Two reasons, both found by reading
+  GTK's `gtktreeview.c`:
+  - the tree view's own drag class closures (`gtk_tree_view_drag_motion`,
+    `gtk_tree_view_drag_drop`) run first and, because the signal accumulator
+    stops emission when a handler returns TRUE, they consume the drag signals
+    — so a handler of ours could never see where the drop happened;
+  - GTK's model drop inserts the dragged row as a *sibling* of the row it was
+    dropped on (the parent of the destination path), so a drop on a top-level
+    folder lands outside it.
+  With the scrolled window as the target, GTK's model drop never runs, the
+  model is untouched, and `listbox_drag_received()` turns the drop
+  coordinates into a row with `gtk_tree_view_get_path_at_pos()` — not
+  `get_dest_row_at_pos()`, which is drag-specific and offsets the position to
+  allow for the dragged row being drawn under the cursor. The row it finds
+  decides the destination: a folder row means that folder, any other row
+  means the folder that row is in, and empty space below the list means the
+  top level. Storage then performs the real move, and the list is rebuilt
+  from disk — always, even for a no-op, so the display cannot drift.
 * Deleting a folder that still has sessions in it asks first, with a
   "Delete All" / "Cancel" message box (`dlg_confirm()`, a new small core API
   implemented with the GTK message-box machinery). Escape takes the safe
