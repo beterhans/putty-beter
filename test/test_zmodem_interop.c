@@ -83,12 +83,37 @@ typedef struct {
 static void cb_send(void *ctx, const void *data, size_t len)
 {
     Cap *c = ctx;
-    ssize_t n;
+    const unsigned char *p = data;
+    size_t left = len;
+
     if (dump_out)
         fwrite(data, 1, len, dump_out);
-    n = write(c->ptyfd, data, len);
-    if (n < 0 && errno != EAGAIN && errno != EINTR)
-        fprintf(stderr, "write to pty failed: %s\n", strerror(errno));
+
+    /*
+     * Write it all. A pty's input buffer is small, so a single non-blocking
+     * write can return short and silently truncate a frame - which looks
+     * exactly like a peer rejecting perfectly good data.
+     */
+    while (left) {
+        ssize_t n = write(c->ptyfd, p, left);
+        if (n > 0) {
+            p += n;
+            left -= (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            fd_set wf;
+            struct timeval tv;
+            FD_ZERO(&wf);
+            FD_SET(c->ptyfd, &wf);
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+            if (select(c->ptyfd + 1, NULL, &wf, NULL, &tv) <= 0)
+                break;
+            continue;
+        }
+        break;
+    }
 }
 
 static void cb_terminal(void *ctx, const void *data, size_t len)
@@ -251,10 +276,13 @@ static void run_one(const char *tool, bool we_receive)
 
     /* Fresh dump files for each direction, so they cannot contaminate. */
     if (getenv("ZMODEM_INTEROP_DUMP")) {
+        char q[64];
         if (dump_in) fclose(dump_in);
         if (dump_out) fclose(dump_out);
-        dump_in = fopen("/tmp/zm-in.bin", "wb");
-        dump_out = fopen("/tmp/zm-out.bin", "wb");
+        snprintf(q, sizeof(q), "/tmp/zm-in-%s.bin", tool);
+        dump_in = fopen(q, "wb");
+        snprintf(q, sizeof(q), "/tmp/zm-out-%s.bin", tool);
+        dump_out = fopen(q, "wb");
     }
 
     if (!mkdtemp(dir)) {
