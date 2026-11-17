@@ -6,6 +6,8 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <gtk/gtk.h>
 #if !GTK_CHECK_VERSION(3,0,0)
@@ -862,6 +864,28 @@ void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
 static int *listbox_press_ids = NULL;
 static int listbox_press_nids = 0;
 static int listbox_press_id = -1;      /* the row the press was on */
+/*
+ * True between drag-begin and drag-end. The release that belongs to a drag
+ * must not throw the snapshot away, or the drop would find nothing left to
+ * restore.
+ */
+static bool listbox_dragging = false;
+
+/*
+ * PuTTY-beter: the same PUTTY_DIAG switch the rest of the GTK front end
+ * uses, for tracing this drag.
+ */
+static int listbox_diag_flag = -1;
+static bool listbox_diag(void)
+{
+    if (listbox_diag_flag < 0)
+        listbox_diag_flag = (getenv("PUTTY_DIAG") != NULL);
+    return listbox_diag_flag;
+}
+#define LISTBOX_DIAG(...) do {                                          \
+        if (listbox_diag())                                             \
+            fprintf(stderr, "putty-diag: " __VA_ARGS__);                \
+    } while (0)
 
 static void listbox_press_forget(void)
 {
@@ -899,14 +923,21 @@ static gboolean listbox_press_event(GtkWidget *widget, GdkEventButton *event,
 
     listbox_press_nids = dlg_listbox_selected_ids(ctrl, dp, &listbox_press_ids);
 
+    LISTBOX_DIAG("listbox press on id %d, %d row(s) selected\n",
+                 listbox_press_id, listbox_press_nids);
+
     return false;                      /* the tree view still does its thing */
 }
 
 static gboolean listbox_release_event(GtkWidget *widget, GdkEventButton *event,
                                       gpointer vdp)
 {
-    if (event->button == 1)
-        listbox_press_forget();        /* a plain click: nothing to restore */
+    /*
+     * A plain click throws the snapshot away, but the release that ends a
+     * drag must not: it can arrive before the drop does.
+     */
+    if (event->button == 1 && !listbox_dragging)
+        listbox_press_forget();
 
     return false;
 }
@@ -923,18 +954,18 @@ static void listbox_restore_selection(dlgcontrol *ctrl, dlgparam *dp)
     bool pressed_was_selected = false;
 
     if (listbox_press_nids < 2)
-        goto done;
+        return;
 
     for (int i = 0; i < listbox_press_nids; i++)
         if (listbox_press_ids[i] == listbox_press_id)
             pressed_was_selected = true;
 
     if (!pressed_was_selected)
-        goto done;
+        return;
 
     uc = dlg_find_byctrl(dp, ctrl);
     if (!uc->treeview)
-        goto done;
+        return;
 
     sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
     model = gtk_tree_view_get_model(GTK_TREE_VIEW(uc->treeview));
@@ -946,7 +977,39 @@ static void listbox_restore_selection(dlgcontrol *ctrl, dlgparam *dp)
             gtk_tree_selection_select_iter(sel, &iter);
     }
 
-  done:
+    LISTBOX_DIAG("listbox restored %d row(s) of selection\n",
+                 listbox_press_nids);
+
+    /*
+     * The snapshot is deliberately kept: the drop handler asks for the
+     * selection again, and drag-end (or the next press) is what clears it.
+     */
+}
+
+/*
+ * The drag has actually started, which is *after* the press already collapsed
+ * the selection. Put the snapshot back now rather than at the drop, so the
+ * rows being dragged stay highlighted for the whole gesture.
+ */
+static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
+                               gpointer vdp)
+{
+    struct dlgparam *dp = (struct dlgparam *)vdp;
+    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+
+    listbox_dragging = true;
+
+    LISTBOX_DIAG("listbox drag begin, snapshot holds %d row(s)\n",
+                 listbox_press_nids);
+
+    if (ctrl)
+        listbox_restore_selection(ctrl, dp);
+}
+
+static void listbox_drag_end(GtkWidget *widget, GdkDragContext *ctx,
+                             gpointer vdp)
+{
+    listbox_dragging = false;
     listbox_press_forget();
 }
 
@@ -1002,6 +1065,8 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
 
     /* The selection GTK collapsed when the drag started comes back first. */
     listbox_restore_selection(ctrl, dp);
+
+    LISTBOX_DIAG("listbox drop on id %d\n", dest_id);
 
     ctrl->listbox.drag_handler(ctrl, dp, dest_id);
 }
@@ -3003,6 +3068,10 @@ GtkWidget *layout_ctrls(
                                          G_CALLBACK(listbox_press_event), dp);
                         g_signal_connect(G_OBJECT(w), "button-release-event",
                                          G_CALLBACK(listbox_release_event), dp);
+                        g_signal_connect(G_OBJECT(w), "drag-begin",
+                                         G_CALLBACK(listbox_drag_begin), dp);
+                        g_signal_connect(G_OBJECT(w), "drag-end",
+                                         G_CALLBACK(listbox_drag_end), dp);
 
                         gtk_tree_view_enable_model_drag_source(
                             GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,

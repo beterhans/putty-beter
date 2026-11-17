@@ -103,8 +103,8 @@ be empty.
 In the configuration box the session list is a **collapsible tree**: folders
 are in bold with a disclosure triangle and always sort to the top of their
 level. Select several rows (Shift-click or ⌘-click) and drag them onto a
-folder to move them all at once — the selection is kept while the drag
-starts, so the whole group moves. Under the list are **Load**, **Save**, **Delete**
+folder to move them all at once — the selection is restored as soon as the
+drag starts, so the whole group stays highlighted and all of it moves. Under the list are **Load**, **Save**, **Delete**
 and **New Folder**; New Folder takes the name from the Saved Sessions box, the
 same way Save does. Delete removes everything selected, and asks first if the
 selection includes sessions inside a folder, with a "Delete All" / "Cancel"

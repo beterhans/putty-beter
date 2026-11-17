@@ -301,10 +301,16 @@ configuration box, and moved between folders by dragging.
 * Dragging several rows needs one more workaround: GtkTreeView's own press
   handler calls `gtk_tree_view_real_set_cursor()` with `CLEAR_AND_SELECT` for
   an unmodified press, so pressing on one of several selected rows throws the
-  rest of the selection away before any drag starts. The press signal on the
-  widget is emitted *before* the tree view's (bubble phase) gesture, so the
-  selection is snapshotted there and put back when the drag begins —
-  `listbox_press_event()` / `listbox_restore_selection()` in `unix/dialog.c`.
+  rest of the selection away before any drag starts. `button-press-event` is
+  `G_SIGNAL_RUN_LAST` and the tree view's gesture runs from the class closure
+  in the *bubble* phase, so a plain `g_signal_connect()` handler sees the
+  selection intact: `listbox_press_event()` in `unix/dialog.c` snapshots it
+  there. The snapshot is put back by `listbox_restore_selection()` at
+  **drag-begin** — not only at the drop, since the collapse is otherwise
+  visible for the whole gesture — and again in the drop handler, which is what
+  the control's `drag_handler` reads. `drag-end` (or the next press) clears it;
+  `listbox_release_event()` deliberately does *not*, because the release that
+  ends a drag can arrive before the drop does.
   The snapshot is only restored if the press was on one of the selected rows,
   so dragging an unselected row still moves just that row.
 * `sessioncmp()` puts **folders before sessions at every level** (then
