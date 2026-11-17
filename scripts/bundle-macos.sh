@@ -242,6 +242,37 @@ if [ -d "$LOADERS_DIR" ] && [ -x "$QUERY_LOADERS" ]; then
     fi
 fi
 
+# ------------------------------------------------------------------ schemas
+# GTK's file chooser calls g_settings_new("org.gtk.Settings.FileChooser"), and
+# GLib aborts the whole process when that schema is not installed:
+#
+#   g_settings_set_property -> g_log_abort  (EXC_BREAKPOINT / SIGTRAP)
+#     <- _gtk_file_chooser_get_settings_for_widget
+#     <- gtk_file_chooser_widget_get_default_size
+#
+# gtk-mac-bundler copies libraries but not schemas, so without this every
+# GtkFileChooserDialog takes the application down with it - which means the
+# Browse button in the configuration box and the ZMODEM upload chooser.
+# The launcher already sets XDG_DATA_DIRS to Contents/Resources/share, so
+# putting the compiled schemas there is all that is needed.
+SCHEMA_DIR="Contents/Resources/share/glib-2.0/schemas"
+SCHEMA_SRC="$BREW_PREFIX/share/glib-2.0/schemas"
+COMPILE_SCHEMAS="$BREW_PREFIX/bin/glib-compile-schemas"
+if [ -d "$SCHEMA_SRC" ] && [ -x "$COMPILE_SCHEMAS" ]; then
+    log "installing GSettings schemas (GTK's file chooser needs them)"
+    mkdir -p "$SCHEMA_DIR"
+    cp "$SCHEMA_SRC"/*.gschema.xml "$SCHEMA_DIR/" 2>/dev/null || true
+    if "$COMPILE_SCHEMAS" "$SCHEMA_DIR" 2> "$STAGE/schemas.err"; then
+        dbg "schemas: $(ls "$SCHEMA_DIR"/*.gschema.xml | wc -l | tr -d ' ') source files compiled"
+    else
+        log "WARNING: glib-compile-schemas failed (see $STAGE/schemas.err)"
+        cat "$STAGE/schemas.err" >&2
+    fi
+else
+    log "WARNING: no GSettings schemas installed; the file chooser will crash"
+    log "         (looked for $SCHEMA_SRC and $COMPILE_SCHEMAS)"
+fi
+
 # ------------------------------------------------------------------ re-sign
 log "ad-hoc re-signing Mach-O files (install_name_tool invalidated signatures)"
 while IFS= read -r f; do
