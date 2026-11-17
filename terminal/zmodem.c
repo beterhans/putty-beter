@@ -1505,10 +1505,34 @@ static void zm_emit(Zmodem *zm, const void *data, size_t len)
         zm->cbs.terminal_output(zm->cbs.ctx, data, len);
 }
 
+/*
+ * Put the engine back to looking for a prologue. Called once the previous
+ * transfer has been reported, so that a session can carry more than one: the
+ * engine lives for the whole session, and without this it would sit in DONE
+ * and quietly swallow everything that followed.
+ */
+static void zm_reset(Zmodem *zm)
+{
+    assert(zm->file == NULL);   /* zm_finish() closed it */
+    sfree(zm->name);
+    zm->name = NULL;
+    zm->inlen = 0;
+    zm->sublen = 0;
+    zm->outlen = 0;
+    zm->prolen = 0;
+    zm->cans = 0;
+    zm->errors = 0;
+    zm->finished_called = false;
+    zm->state = ZMST_IDLE;
+}
+
 void zmodem_feed_in(Zmodem *zm, const void *vdata, size_t len)
 {
     const unsigned char *data = (const unsigned char *)vdata;
     size_t i = 0, run = 0;
+
+    if (zm->state == ZMST_DONE)
+        zm_reset(zm);
 
     if (zm->state != ZMST_IDLE) {
         /* Already in a transfer: everything is protocol. */

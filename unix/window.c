@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <gtk/gtk.h>
 #if !GTK_CHECK_VERSION(3,0,0)
 #include <gdk/gdkkeysyms.h>
@@ -31,6 +32,7 @@
 
 #include "putty.h"
 #include "terminal.h"
+#include "zmodem.h"          /* PuTTY-beter: ZMODEM file transfer */
 #include "gtkcompat.h"
 #include "unifont.h"
 #include "gtkmisc.h"
@@ -173,6 +175,22 @@ struct GtkFrontend {
     int master_fd, master_func_id;
     Ldisc *ldisc;
     Backend *backend;
+
+    /*
+     * PuTTY-beter: ZMODEM file transfer. The engine exists for the whole life
+     * of the session, because it has to sit in the incoming stream from the
+     * start - that is where a transfer is detected. Until one begins it does
+     * nothing but pass bytes through. The rest is its front end state.
+     */
+    Zmodem *zmodem;
+    bool zm_in_engine;              /* zmodem_feed_in() is on the stack */
+    unsigned char *zm_pending;      /* bytes that arrived while it was */
+    size_t zm_pendinglen, zm_pendingalloc;
+    FILE *zm_file;                  /* the local file in use, if any */
+    char *zm_path;                  /* its path */
+    GtkWidget *zm_dialog, *zm_label, *zm_bar;
+    bool zm_receive;                /* direction, for the dialog's wording */
+    uint64_t zm_total;
     Terminal *term;
     cmdline_get_passwd_input_state cmdline_get_passwd_state;
     LogContext *logctx;
@@ -402,10 +420,470 @@ static char *gtk_seat_get_ttymode(Seat *seat, const char *mode)
     return term_get_ttymode(inst->term, mode);
 }
 
+/* ------------------------------------------------------------------ */
+/* PuTTY-beter: ZMODEM file transfer                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The front end's half of the ZMODEM engine: the transfer folder, the files
+ * themselves, a progress window and the outcome. The engine knows nothing
+ * about GTK, about files or about the backend; it only calls these.
+ */
+
+static void zm_trace_cb(void *ctx, const char *msg)
+{
+    if (getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] %s\n", msg);
+}
+
+static void zm_terminal_output(void *ctx, const void *data, size_t len)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    term_data(inst->term, data, len);
+}
+
+static void zm_send(void *ctx, const void *data, size_t len)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    /*
+     * Straight to the backend, and deliberately not through ldisc_send():
+     * during a transfer these bytes are protocol, not typed input, and the
+     * line discipline would apply local echo and line editing to them.
+     */
+    if (inst->backend)
+        backend_send(inst->backend, data, len);
+}
+
+/* The folder transfers use, created if it is not there yet. */
+static char *zm_folder(GtkFrontend *inst)
+{
+    Filename *fn = conf_get_filename(inst->conf, CONF_zmodem_dir);
+    char *dir = dupstr(filename_to_str(fn));
+
+    if (!*dir) {
+        const char *home = g_get_home_dir();
+        sfree(dir);
+        dir = dupprintf("%s/Downloads", home ? home : "/tmp");
+    }
+    if (!g_file_test(dir, G_FILE_TEST_IS_DIR) &&
+        g_mkdir_with_parents(dir, 0755) != 0 && getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] cannot create %s\n", dir);
+    return dir;
+}
+
+/*
+ * A path that does not exist yet: "report.txt" becomes "report.1.txt", so
+ * downloading the same name twice never destroys the first copy.
+ *
+ * Nothing here asks the user, and that is deliberate: a modal prompt raised
+ * from inside the engine would run a nested main loop with the engine half
+ * way through its state machine. Renaming is the safe answer that needs no
+ * re-entrancy.
+ */
+static char *zm_unique_path(const char *dir, const char *name)
+{
+    char *path = dupprintf("%s/%s", dir, name);
+    const char *dot;
+    int n;
+
+    if (!g_file_test(path, G_FILE_TEST_EXISTS))
+        return path;
+
+    dot = strrchr(name, '.');
+    for (n = 1; n < 10000; n++) {
+        char *try;
+        if (dot && dot != name)
+            try = dupprintf("%s/%.*s.%d%s", dir, (int)(dot - name), name,
+                            n, dot);
+        else
+            try = dupprintf("%s/%s.%d", dir, name, n);
+        if (!g_file_test(try, G_FILE_TEST_EXISTS)) {
+            sfree(path);
+            return try;
+        }
+        sfree(try);
+    }
+    return path;
+}
+
+static void zm_status(GtkFrontend *inst, const char *fmt, ...)
+{
+    va_list ap;
+    char *msg;
+
+    if (!inst->zm_label)
+        return;
+    va_start(ap, fmt);
+    msg = dupvprintf(fmt, ap);
+    va_end(ap);
+    gtk_label_set_text(GTK_LABEL(inst->zm_label), msg);
+    sfree(msg);
+}
+
+static void zm_dialog_close(GtkFrontend *inst)
+{
+    if (inst->zm_dialog) {
+        gtk_widget_destroy(inst->zm_dialog);
+        inst->zm_dialog = NULL;
+        inst->zm_label = NULL;
+        inst->zm_bar = NULL;
+    }
+}
+
+static void zm_cancel_clicked(GtkButton *b, gpointer data)
+{
+    GtkFrontend *inst = (GtkFrontend *)data;
+    (void)b;
+    if (inst->zmodem)
+        zmodem_cancel(inst->zmodem);
+}
+
+/*
+ * A small progress window. It is deliberately NOT modal: the engine is driven
+ * from the main loop, so a modal dialog would block the transfer it is
+ * reporting on.
+ */
+static void zm_dialog_open(GtkFrontend *inst)
+{
+    GtkWidget *vbox, *btn;
+
+    if (inst->zm_dialog || !inst->window)
+        return;
+
+    inst->zm_dialog = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(inst->zm_dialog), "ZMODEM transfer");
+    gtk_window_set_transient_for(GTK_WINDOW(inst->zm_dialog),
+                                 GTK_WINDOW(inst->window));
+    gtk_window_set_modal(GTK_WINDOW(inst->zm_dialog), false);
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(inst->zm_dialog), true);
+    gtk_window_set_default_size(GTK_WINDOW(inst->zm_dialog), 380, -1);
+
+    vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 12);
+    gtk_container_add(GTK_CONTAINER(inst->zm_dialog), vbox);
+
+    inst->zm_label = gtk_label_new("Starting...");
+    gtk_label_set_xalign(GTK_LABEL(inst->zm_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), inst->zm_label, false, false, 0);
+
+    inst->zm_bar = gtk_progress_bar_new();
+    gtk_box_pack_start(GTK_BOX(vbox), inst->zm_bar, false, false, 0);
+
+    btn = gtk_button_new_with_label("Cancel");
+    g_signal_connect(G_OBJECT(btn), "clicked",
+                     G_CALLBACK(zm_cancel_clicked), inst);
+    gtk_box_pack_start(GTK_BOX(vbox), btn, false, false, 0);
+
+    gtk_widget_show_all(inst->zm_dialog);
+}
+
+/* ---- receiving ---- */
+
+static ZmodemFile *zm_receive_open(void *ctx, const char *name,
+                                   uint64_t size, unsigned long mtime)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    char *dir;
+    const char *safe = name;
+    FILE *fp;
+
+    (void)mtime;
+
+    /* The far end does not get to choose a path. */
+    if (!*safe || !strcmp(safe, ".") || !strcmp(safe, ".."))
+        safe = "download";
+
+    dir = zm_folder(inst);
+    sfree(inst->zm_path);
+    inst->zm_path = zm_unique_path(dir, safe);
+    sfree(dir);
+
+    fp = fopen(inst->zm_path, "wb");
+    if (!fp) {
+        char *msg = dupprintf("Cannot write %s", inst->zm_path);
+        nonfatal_message_box(inst->window, msg);
+        sfree(msg);
+        sfree(inst->zm_path);
+        inst->zm_path = NULL;
+        return NULL;
+    }
+
+    inst->zm_file = fp;
+    inst->zm_receive = true;
+    inst->zm_total = size;
+    zm_dialog_open(inst);
+    zm_status(inst, "Receiving %s", safe);
+    return (ZmodemFile *)fp;
+}
+
+static void zm_receive_write(void *ctx, ZmodemFile *f, const void *data,
+                             size_t len)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    (void)f;
+    if (inst->zm_file)
+        fwrite(data, 1, len, inst->zm_file);
+}
+
+static void zm_receive_close(void *ctx, ZmodemFile *f, bool complete)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    (void)f;
+
+    if (inst->zm_file) {
+        fclose(inst->zm_file);
+        inst->zm_file = NULL;
+    }
+    if (!complete && inst->zm_path) {
+        /* A transfer cut short must not leave a truncated file behind. */
+        remove(inst->zm_path);
+        if (getenv("PUTTY_DIAG"))
+            fprintf(stderr, "[zmodem] removed partial %s\n", inst->zm_path);
+    }
+    sfree(inst->zm_path);
+    inst->zm_path = NULL;
+}
+
+/* ---- sending ---- */
+
+static ZmodemFile *zm_send_open(void *ctx, char **name, uint64_t *size,
+                                unsigned long *mtime)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    char *dir = zm_folder(inst);
+    GtkWidget *fc;
+    char *path = NULL;
+    const char *base;
+    struct stat st;
+    FILE *fp;
+
+    /*
+     * rz cannot say which local file to send, so this is the one place a
+     * chooser is unavoidable. It starts in the transfer folder.
+     */
+    fc = gtk_file_chooser_dialog_new(
+        "Choose a file to send", GTK_WINDOW(inst->window),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Send", GTK_RESPONSE_ACCEPT,
+        (const gchar *)NULL);
+    if (g_file_test(dir, G_FILE_TEST_IS_DIR))
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(fc), dir);
+    sfree(dir);
+
+    if (gtk_dialog_run(GTK_DIALOG(fc)) == GTK_RESPONSE_ACCEPT)
+        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
+    gtk_widget_destroy(fc);
+
+    if (!path)
+        return NULL;
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        g_free(path);
+        return NULL;
+    }
+
+    base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    *name = dupstr(base);
+    if (stat(path, &st) == 0) {
+        *size = (uint64_t)st.st_size;
+        *mtime = (unsigned long)st.st_mtime;
+    } else {
+        *size = 0;
+        *mtime = 0;
+    }
+    g_free(path);
+
+    inst->zm_file = fp;
+    inst->zm_receive = false;
+    inst->zm_total = *size;
+    zm_dialog_open(inst);
+    zm_status(inst, "Sending %s", *name);
+    return (ZmodemFile *)fp;
+}
+
+static size_t zm_send_read(void *ctx, ZmodemFile *f, void *data, size_t maxlen)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    (void)f;
+    if (!inst->zm_file)
+        return 0;
+    return fread(data, 1, maxlen, inst->zm_file);
+}
+
+static void zm_send_close(void *ctx, ZmodemFile *f)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    (void)f;
+    if (inst->zm_file) {
+        fclose(inst->zm_file);
+        inst->zm_file = NULL;
+    }
+}
+
+/* ---- reporting ---- */
+
+static void zm_progress(void *ctx, ZmodemDirection dir, const char *name,
+                        uint64_t done, uint64_t total)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    double frac;
+
+    (void)name;
+    inst->zm_receive = (dir == ZMDIR_RECEIVE);
+    if (total)
+        inst->zm_total = total;
+
+    if (!inst->zm_bar)
+        return;
+
+    if (total) {
+        frac = (double)done / (double)total;
+        if (frac > 1.0)
+            frac = 1.0;
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(inst->zm_bar), frac);
+        zm_status(inst, "%s: %llu of %llu bytes (%d%%)",
+                  inst->zm_receive ? "Receiving" : "Sending",
+                  (unsigned long long)done, (unsigned long long)total,
+                  (int)(frac * 100));
+    } else {
+        gtk_progress_bar_pulse(GTK_PROGRESS_BAR(inst->zm_bar));
+        zm_status(inst, "%s: %llu bytes",
+                  inst->zm_receive ? "Receiving" : "Sending",
+                  (unsigned long long)done);
+    }
+}
+
+static void zm_finished(void *ctx, ZmodemOutcome outcome, const char *message)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+    char *msg;
+
+    zm_dialog_close(inst);
+
+    if (getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] finished: %d (%s)\n", (int)outcome,
+                message ? message : "");
+
+    msg = dupprintf("ZMODEM transfer %s.%s%s",
+                    outcome == ZMOUT_DONE ? "complete" :
+                    outcome == ZMOUT_CANCELLED ? "cancelled" : "failed",
+                    message ? " " : "", message ? message : "");
+    nonfatal_message_box(inst->window, msg);
+    sfree(msg);
+}
+
+/* ---- plumbing ---- */
+
+static void zm_start(GtkFrontend *inst)
+{
+    ZmodemCallbacks cb;
+
+    if (inst->zmodem)
+        return;
+    memset(&cb, 0, sizeof(cb));
+    cb.ctx = inst;
+    cb.send = zm_send;
+    cb.terminal_output = zm_terminal_output;
+    cb.receive_open = zm_receive_open;
+    cb.receive_write = zm_receive_write;
+    cb.receive_close = zm_receive_close;
+    cb.send_open = zm_send_open;
+    cb.send_read = zm_send_read;
+    cb.send_close = zm_send_close;
+    cb.progress = zm_progress;
+    cb.finished = zm_finished;
+    cb.trace = zm_trace_cb;
+    inst->zmodem = zmodem_new(&cb);
+}
+
+static void zm_stop(GtkFrontend *inst)
+{
+    /* The engine first: freeing it may close a file through a callback. */
+    if (inst->zmodem) {
+        zmodem_free(inst->zmodem);
+        inst->zmodem = NULL;
+    }
+    zm_dialog_close(inst);
+    if (inst->zm_file) {
+        fclose(inst->zm_file);
+        inst->zm_file = NULL;
+    }
+    sfree(inst->zm_path);
+    inst->zm_path = NULL;
+    sfree(inst->zm_pending);
+    inst->zm_pending = NULL;
+    inst->zm_pendinglen = inst->zm_pendingalloc = 0;
+}
+
+/*
+ * Feed the engine, with a guard against re-entry.
+ *
+ * A callback can run a nested main loop - the upload file chooser does - and
+ * during that loop more data may arrive from the backend. Feeding the engine
+ * while it is already half way through its state machine would corrupt it, so
+ * such bytes are queued and drained once the outer call has finished.
+ */
+static void zm_feed(GtkFrontend *inst, const void *data, size_t len)
+{
+    if (inst->zm_in_engine) {
+        if (inst->zm_pendinglen + len > inst->zm_pendingalloc) {
+            size_t want = inst->zm_pendingalloc ? inst->zm_pendingalloc : 256;
+            while (want < inst->zm_pendinglen + len)
+                want *= 2;
+            inst->zm_pending = sresize(inst->zm_pending, want,
+                                       unsigned char);
+            inst->zm_pendingalloc = want;
+        }
+        memcpy(inst->zm_pending + inst->zm_pendinglen, data, len);
+        inst->zm_pendinglen += len;
+        return;
+    }
+
+    inst->zm_in_engine = true;
+    zmodem_feed_in(inst->zmodem, data, len);
+
+    while (inst->zm_pendinglen) {
+        unsigned char *tmp = snewn(inst->zm_pendinglen, unsigned char);
+        size_t n = inst->zm_pendinglen;
+        memcpy(tmp, inst->zm_pending, n);
+        inst->zm_pendinglen = 0;
+        zmodem_feed_in(inst->zmodem, tmp, n);
+        sfree(tmp);
+    }
+    inst->zm_in_engine = false;
+}
+
+/*
+ * True while a transfer is running, in which case typed input must not reach
+ * the terminal emulator: it is not protocol, and the emulator is not seeing
+ * the incoming stream either. The engine keeps the cancel key and drops the
+ * rest.
+ */
+static bool zm_takes_input(GtkFrontend *inst)
+{
+    return inst->zmodem && zmodem_active(inst->zmodem);
+}
+
 static size_t gtk_seat_output(Seat *seat, SeatOutputType type,
                               const void *data, size_t len)
 {
     GtkFrontend *inst = container_of(seat, GtkFrontend, seat);
+
+    /*
+     * PuTTY-beter: the ZMODEM engine gets first refusal on the stream. It
+     * consumes protocol bytes and hands everything else back through
+     * zm_terminal_output(), so with no engine, or none running, the bytes
+     * reach term_data() exactly as before. Only stdout is diverted; stderr is
+     * never protocol.
+     */
+    if (inst->zmodem && type == SEAT_OUTPUT_STDOUT) {
+        zm_feed(inst, data, len);
+        return len;
+    }
+
     return term_data(inst->term, data, len);
 }
 
@@ -2151,7 +2629,11 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
              */
             output[end] = '\0';        /* NUL-terminate */
             generated_something = true;
-            term_keyinput(inst->term, -1, output+start, -2);
+            if (zm_takes_input(inst))
+                zmodem_key(inst->zmodem, output+start,
+                           strlen(output+start));
+            else
+                term_keyinput(inst->term, -1, output+start, -2);
         } else if (!inst->direct_to_font) {
             if (!use_ucsoutput) {
 #ifdef KEY_EVENT_DIAGNOSTICS
@@ -2170,8 +2652,12 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
                 sfree(string_string);
 #endif
                 generated_something = true;
-                term_keyinput(inst->term, output_charset,
-                              output+start, end-start);
+                if (zm_takes_input(inst))
+                    zmodem_key(inst->zmodem, output+start,
+                               (size_t)(end-start));
+                else
+                    term_keyinput(inst->term, output_charset,
+                                  output+start, end-start);
             } else {
 #ifdef KEY_EVENT_DIAGNOSTICS
                 char *string_string = dupstr("");
@@ -2194,7 +2680,9 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
                  * keysym, so use that instead.
                  */
                 generated_something = true;
-                term_keyinputw(inst->term, ucsoutput+start, end-start);
+                /* Wide input has no byte form, so a transfer just drops it. */
+                if (!zm_takes_input(inst))
+                    term_keyinputw(inst->term, ucsoutput+start, end-start);
             }
         } else {
             /*
@@ -2217,7 +2705,10 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
             sfree(string_string);
 #endif
             generated_something = true;
-            term_keyinput(inst->term, -1, output+start, end-start);
+            if (zm_takes_input(inst))
+                zmodem_key(inst->zmodem, output+start, (size_t)(end-start));
+            else
+                term_keyinput(inst->term, -1, output+start, end-start);
         }
 
         show_mouseptr(inst, false);
@@ -2248,7 +2739,8 @@ void input_method_commit_event(GtkIMContext *imc, gchar *str, gpointer data)
     sfree(string_string);
 #endif
 
-    term_keyinput(inst->term, CS_UTF8, str, strlen(str));
+    if (!zm_takes_input(inst))
+        term_keyinput(inst->term, CS_UTF8, str, strlen(str));
     show_mouseptr(inst, false);
     key_pressed(inst);
 }
@@ -2632,6 +3124,7 @@ static void delete_inst(GtkFrontend *inst)
         inst->menu = NULL;
     }
     destroy_inst_connection(inst);
+    zm_stop(inst);
     if (inst->term) {
         term_free(inst->term);
         inst->term = NULL;
@@ -5539,6 +6032,12 @@ void new_session_window(Conf *conf, const char *geometry_string)
     inst->alt_keycode = -1;            /* this one needs _not_ to be zero */
     inst->busy_status = BUSY_NOT;
     inst->conf = conf;
+    /*
+     * PuTTY-beter: start the ZMODEM engine with the session. It has to be in
+     * place before any output arrives, because that is where a transfer is
+     * detected.
+     */
+    zm_start(inst);
     inst->wintitle = inst->icontitle = NULL;
     inst->drawtype = DRAWTYPE_DEFAULT;
 #if GTK_CHECK_VERSION(3,4,0)
@@ -5642,6 +6141,7 @@ void new_session_window(Conf *conf, const char *geometry_string)
         window_setup_error(errmsg_main);
         sfree(errmsg_main);
         gtk_widget_destroy(inst->area);
+        zm_stop(inst);          /* PuTTY-beter: the session never started */
         sfree(inst);
         return;
 
