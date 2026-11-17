@@ -2387,6 +2387,43 @@ void setup_config_box(struct controlbox *b, bool midsession,
               HELPCTX(no_help));
 
     /*
+     * PuTTY-beter: hand this session to an AI agent over MCP (PLAN.md
+     * section 7). Its own panel, because it is not really a session setting
+     * like the others - it changes who can type into the window.
+     */
+    ctrl_settitle(b, "Session/Automation (MCP)",
+                  "Let an AI agent read this session");
+
+    s = ctrl_getset(b, "Session/Automation (MCP)", "main", NULL);
+    ctrl_checkbox(s, "Offer this session to an MCP client", 'm',
+                  HELPCTX(no_help),
+                  conf_checkbox_handler, I(CONF_mcp_enabled));
+    ctrl_text(s, "(Off by default. While it is on, this session is offered to"
+              " anything that can reach the MCP socket, which is what the"
+              " `putty-mcp` bridge - and so an AI agent - talks to. The socket"
+              " lives in your temporary folder, and is readable only by your"
+              " own account, or by members of the `putty-mcp` group if that"
+              " group exists. This setting only allows reading: listing"
+              " sessions and reading their output.)",
+              HELPCTX(no_help));
+
+    /*
+     * Typing is a separate decision, and a separate checkbox, because letting
+     * a session be read is not the same as letting it be driven.
+     */
+    ctrl_checkbox(s, "Also allow an MCP client to type into this session", 't',
+                  HELPCTX(no_help),
+                  conf_checkbox_handler, I(CONF_mcp_write));
+    ctrl_text(s, "(Off by default, and only meaningful with the setting above."
+              " A client can then send text and keystrokes, which are delivered"
+              " exactly as if typed here - including to a password prompt, so"
+              " the agent does not need your password to hand it over. There is"
+              " no audit log or policy layer yet, so an agent can run whatever"
+              " the session allows. Watch the window: you can take over at any"
+              " time.)",
+              HELPCTX(no_help));
+
+    /*
      * The Terminal panel.
      */
     ctrl_settitle(b, "Terminal", "Options controlling the terminal emulation");

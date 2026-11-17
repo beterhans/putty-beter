@@ -149,7 +149,11 @@ if(GTK_FOUND)
     printing.c
     # PuTTY-beter: the configuration-folder dialog. It lives in the shared
     # library so that the plain pterm target links too; pterm never calls it.
-    config-location.c)
+    config-location.c
+    # PuTTY-beter: the MCP server (PLAN.md section 7). mcp-buffer.c is the
+    # capture buffer, which is deliberately free of GTK and of the socket so
+    # that test/test_mcp_buffer.c can exercise it on its own.
+    mcp.c mcp-buffer.c)
 
 if(APPLE)
   # config-location.c asks CoreGraphics whether Option/Alt was held when

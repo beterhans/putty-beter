@@ -2031,6 +2031,8 @@ void term_blink(Terminal *, bool set_cursor);
 void term_do_paste(Terminal *, const wchar_t *, size_t);
 void term_nopaste(Terminal *);
 void term_copyall(Terminal *, const int *, int);
+/* PuTTY-beter: the visible screen as plain UTF-8 text, for the MCP server. */
+char *term_get_screen_text(Terminal *);
 void term_pre_reconfig(Terminal *, Conf *);
 void term_reconfig(Terminal *, Conf *);
 void term_request_copy(Terminal *, const int *clipboards, int n_clipboards);

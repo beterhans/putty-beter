@@ -920,6 +920,40 @@ CONF_OPTION(zmodem_dir,
      * Saving it unconditionally is what makes it sticky.
      */
 )
+CONF_OPTION(mcp_enabled,
+    VALUE_TYPE(BOOL),
+    DEFAULT_BOOL(false),
+    SAVE_KEYWORD("McpEnabled"),
+    /*
+     * PuTTY-beter: offer this session to an MCP client, so an AI agent can
+     * read what it prints - and, from phase 4b, type into it (PLAN.md
+     * section 7).
+     *
+     * Off by default, and per session, because turning it on hands a shell -
+     * or a switch - to whatever can reach the socket. The front end registers
+     * the session with the MCP server, and the server only creates its Unix
+     * socket while at least one session is registered, so a PuTTY with the
+     * setting off never creates a socket at all.
+     *
+     * Reading and writing are separate settings on purpose: offering a session
+     * to be *read* should not quietly grant the ability to type into it.
+     */
+)
+CONF_OPTION(mcp_write,
+    VALUE_TYPE(BOOL),
+    DEFAULT_BOOL(false),
+    SAVE_KEYWORD("McpWrite"),
+    /*
+     * PuTTY-beter: let an MCP client type into this session as well as read
+     * it. Off by default, and separate from mcp_enabled so that read access
+     * can be given without it.
+     *
+     * What a client types is sent through the line discipline, exactly as
+     * typing at the keyboard is, so local echo and line editing behave the
+     * same way. It is refused while a ZMODEM transfer is running, because
+     * those bytes are protocol and the terminal is not seeing the stream.
+     */
+)
 CONF_OPTION(hide_mouseptr,
     VALUE_TYPE(BOOL),
     DEFAULT_BOOL(false),

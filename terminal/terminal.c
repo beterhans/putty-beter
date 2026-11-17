@@ -1269,6 +1269,88 @@ static termline *lineptr(Terminal *term, int y, int lineno)
 termline *term_get_line(Terminal *term, int y) { return lineptr(y); }
 
 /*
+ * PuTTY-beter: the visible screen as plain text, for the MCP server's
+ * screen() call.
+ *
+ * Only the active screen is read, never the scrollback: the question this
+ * answers is "what does the human see right now", which the capture buffer in
+ * unix/mcp-buffer.c deliberately cannot answer, because it has no idea about
+ * cursor addressing or where the screen has scrolled to.
+ *
+ * Trailing blanks are trimmed from each row, rows are joined with '\n' and the
+ * result ends with a newline, so it can be printed or compared directly.
+ */
+char *term_get_screen_text(Terminal *term)
+{
+    strbuf *sb = strbuf_new();
+
+    for (int y = 0; y < term->rows; y++) {
+        termline *ldata = lineptr(y);
+        wchar_t *row = snewn(term->cols + 1, wchar_t);
+        int last = 0;
+
+        for (int x = 0; x < term->cols; x++) {
+            unsigned long uc = ldata->chars[x].chr;
+
+            /* The right half of a double-width character is not its own. */
+            if (uc == UCSWIDE) {
+                row[x] = L' ';
+                continue;
+            }
+
+            /* The same two-stage translation clipme() does, so that line
+             * drawing and codepage characters come out as text. */
+            switch (uc & CSET_MASK) {
+              case CSET_LINEDRW:
+                uc = term->ucsdata->unitab_xterm[uc & 0xFF];
+                break;
+              case CSET_ASCII:
+                uc = term->ucsdata->unitab_line[uc & 0xFF];
+                break;
+              case CSET_SCOACS:
+                uc = term->ucsdata->unitab_scoacs[uc & 0xFF];
+                break;
+            }
+            switch (uc & CSET_MASK) {
+              case CSET_ACP:
+                uc = term->ucsdata->unitab_font[uc & 0xFF];
+                break;
+              case CSET_OEMCP:
+                uc = term->ucsdata->unitab_oemcp[uc & 0xFF];
+                break;
+            }
+
+            uc &= ~CSET_MASK;
+            if (uc < 0x20 || uc == 0x7F)
+                uc = ' ';              /* control characters are not text */
+            row[x] = (wchar_t)uc;
+            if (!IS_SPACE_CHR(uc))
+                last = x + 1;
+        }
+
+        row[last] = L'\0';
+        for (int x = 0; x < last; x++) {
+            unsigned long ch = row[x];
+#ifdef PLATFORM_IS_UTF16
+            if (IS_HIGH_SURROGATE(ch) && x + 1 < last &&
+                IS_LOW_SURROGATE(row[x + 1])) {
+                ch = FROM_SURROGATES(ch, row[++x]);
+            } else if (IS_SURROGATE(ch)) {
+                ch = 0xFFFD;
+            }
+#endif
+            put_utf8_char(sb, ch);
+        }
+        put_byte(sb, '\n');
+
+        unlineptr(ldata);
+        sfree(row);
+    }
+
+    return strbuf_to_str(sb);
+}
+
+/*
  * Coerce a termline to the terminal's current width. Unlike the
  * optional resize in lineptr() above, this is potentially destructive
  * of text, since it can shrink as well as grow the line.

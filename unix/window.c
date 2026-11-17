@@ -33,6 +33,7 @@
 #include "putty.h"
 #include "terminal.h"
 #include "zmodem.h"          /* PuTTY-beter: ZMODEM file transfer */
+#include "mcp.h"             /* PuTTY-beter: the MCP server */
 #include "gtkcompat.h"
 #include "unifont.h"
 #include "gtkmisc.h"
@@ -192,6 +193,13 @@ struct GtkFrontend {
     bool zm_receive;                /* direction, for the dialog's wording */
     bool zm_sent_one;               /* a file has been sent in this transfer */
     uint64_t zm_total;
+
+    /*
+     * PuTTY-beter: MCP (PLAN.md section 7). NULL unless this session was
+     * configured to allow it, which is the opt-in: no MCP session, no socket.
+     */
+    McpSession *mcp;
+
     Terminal *term;
     cmdline_get_passwd_input_state cmdline_get_passwd_state;
     LogContext *logctx;
@@ -440,6 +448,18 @@ static void zm_trace_cb(void *ctx, const char *msg)
 static void zm_terminal_output(void *ctx, const void *data, size_t len)
 {
     GtkFrontend *inst = (GtkFrontend *)ctx;
+
+    /*
+     * PuTTY-beter: MCP captures the stream here rather than in
+     * gtk_seat_output(), and that is deliberate. This callback is called for
+     * exactly the bytes the terminal is about to be shown: the engine has
+     * already decided that they are not protocol, so a transfer's prologue
+     * never lands in the transcript as junk, and the engine's own pass-through
+     * text ("rz waiting to receive...") does.
+     */
+    if (inst->mcp)
+        mcp_session_feed(inst->mcp, data, len);
+
     term_data(inst->term, data, len);
 }
 
@@ -885,6 +905,99 @@ static bool zm_takes_input(GtkFrontend *inst)
     return inst->zmodem && zmodem_active(inst->zmodem);
 }
 
+/* ------------------------------------------------------------------ */
+/* PuTTY-beter: MCP (PLAN.md section 7)                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * What the MCP server asks for when a client calls screen(): the visible
+ * screen and the terminal size. Only the front end has the Terminal, so the
+ * server never touches it itself.
+ */
+static bool mcp_send(void *ctx, const void *data, size_t len);
+
+static void mcp_get_view(void *ctx, McpView *out)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+
+    if (!inst->term) {
+        out->screen = NULL;
+        out->cols = out->rows = 0;
+        return;
+    }
+    out->screen = term_get_screen_text(inst->term);
+    out->cols = inst->term->cols;
+    out->rows = inst->term->rows;
+}
+
+/*
+ * Start the MCP session, if this one is configured for it.
+ *
+ * Off by default, and deliberately: this hands a shell - or a switch - to an
+ * AI agent. See PLAN.md section 7.9.
+ */
+static void mcp_start(GtkFrontend *inst)
+{
+    const char *name;
+    bool writable;
+
+    writable = conf_get_bool(inst->conf, CONF_mcp_write);
+
+    if (getenv("PUTTY_MCP_DEBUG"))
+        fprintf(stderr, "[mcp] session start: McpEnabled=%d McpWrite=%d "
+                "dest=\"%s\"\n",
+                (int)conf_get_bool(inst->conf, CONF_mcp_enabled),
+                (int)writable, conf_dest(inst->conf));
+
+    if (!conf_get_bool(inst->conf, CONF_mcp_enabled))
+        return;
+
+    /*
+     * conf_dest() gives the host name, or the serial line. That is what a
+     * human recognises in a list of sessions, and unlike the window title it
+     * does not change under them when the remote runs something. Sessions are
+     * keyed by id anyway; the name is only for the human.
+     */
+    name = conf_dest(inst->conf);
+
+    inst->mcp = mcp_session_new(name, MCP_BUFFER_DEFAULT_BUDGET, writable,
+                                mcp_get_view, mcp_send, inst);
+}
+
+/*
+ * Put bytes into the session as if they had been typed.
+ *
+ * Through the line discipline, deliberately, and not straight to the backend:
+ * that is what typing does, so local echo, line editing and the terminal's own
+ * handling all behave exactly as they would for the person at the keyboard.
+ * The ZMODEM engine's own send path bypasses ldisc for the opposite reason -
+ * during a transfer the bytes are protocol, not input.
+ *
+ * Returns false if the session cannot take them: during a transfer the stream
+ * is protocol and the terminal is not seeing it, so typed bytes would corrupt
+ * the transfer rather than do anything useful.
+ */
+static bool mcp_send(void *ctx, const void *data, size_t len)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+
+    if (!inst->ldisc || !inst->backend || inst->exited)
+        return false;
+    if (zm_takes_input(inst))
+        return false;
+
+    ldisc_send(inst->ldisc, data, (int)len, false);
+    return true;
+}
+
+static void mcp_stop(GtkFrontend *inst)
+{
+    if (inst->mcp) {
+        mcp_session_free(inst->mcp);
+        inst->mcp = NULL;
+    }
+}
+
 static size_t gtk_seat_output(Seat *seat, SeatOutputType type,
                               const void *data, size_t len)
 {
@@ -896,11 +1009,20 @@ static size_t gtk_seat_output(Seat *seat, SeatOutputType type,
      * zm_terminal_output(), so with no engine, or none running, the bytes
      * reach term_data() exactly as before. Only stdout is diverted; stderr is
      * never protocol.
+     *
+     * This is where the engine is fed, but *not* where MCP captures: the
+     * capture belongs with term_data(), in zm_terminal_output() and below, so
+     * that it sees exactly what the terminal sees and never the protocol
+     * prologue that a transfer starts with.
      */
     if (inst->zmodem && type == SEAT_OUTPUT_STDOUT) {
         zm_feed(inst, data, len);
         return len;
     }
+
+    /* No engine (or stderr): the terminal is shown it directly. */
+    if (inst->mcp && type == SEAT_OUTPUT_STDOUT)
+        mcp_session_feed(inst->mcp, data, len);
 
     return term_data(inst->term, data, len);
 }
@@ -3143,6 +3265,7 @@ static void delete_inst(GtkFrontend *inst)
     }
     destroy_inst_connection(inst);
     zm_stop(inst);
+    mcp_stop(inst);
     if (inst->term) {
         term_free(inst->term);
         inst->term = NULL;
@@ -6056,6 +6179,12 @@ void new_session_window(Conf *conf, const char *geometry_string)
      * detected.
      */
     zm_start(inst);
+    /*
+     * PuTTY-beter: and the MCP session, for the same reason - it has to be
+     * watching the stream before any output arrives, or a client would see a
+     * transcript that starts in the middle.
+     */
+    mcp_start(inst);
     inst->wintitle = inst->icontitle = NULL;
     inst->drawtype = DRAWTYPE_DEFAULT;
 #if GTK_CHECK_VERSION(3,4,0)
@@ -6160,6 +6289,7 @@ void new_session_window(Conf *conf, const char *geometry_string)
         sfree(errmsg_main);
         gtk_widget_destroy(inst->area);
         zm_stop(inst);          /* PuTTY-beter: the session never started */
+        mcp_stop(inst);         /* likewise */
         sfree(inst);
         return;
 
