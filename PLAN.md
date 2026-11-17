@@ -1,7 +1,13 @@
 # putty-beter — Development Plan
 
-Status: planning. No feature code written yet.
-Base: vanilla **PuTTY 0.85** source, MIT-licensed, fresh `git init` (no commits).
+Status: **in development.** Phases 0 and 1a are done and most of Phase 2 is
+done: a native arm64 `.app` builds and bundles, with session folders,
+per-session comments, a relocatable configuration folder and a reworked
+configuration box. The universal (Intel + ARM) `.app`, ZMODEM and MCP are still
+to come — see the milestones at the end.
+
+Base: vanilla **PuTTY 0.85** source, MIT-licensed.
+Repo: <https://github.com/beterhans/putty-beter>
 
 ---
 
@@ -86,6 +92,18 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
 ## 4. Phase 1 — T1: macOS Intel + ARM
 
 **Goal:** a `.app` that runs natively on both Apple Silicon and Intel Macs.
+
+**Status (2026-11-17)**
+
+- **1a — done.** `scripts/build-macos.sh arm64` then
+  `scripts/bundle-macos.sh arm64` produce a self-contained `PuTTY.app` that
+  launches and runs. All standalone tests and cryptsuite pass.
+- **1b — not started.** The x86_64 build. Needs Homebrew under `/usr/local`
+  (through Rosetta), so that the GTK dependencies are x86_64 as well.
+- **1c — not started.** `scripts/make-universal.sh`: `lipo -create` every
+  Mach-O in the two bundles into one, then re-sign.
+- **Signing / notarisation — not started.** Needs an Apple Developer account, a
+  hardened runtime and `notarytool`.
 
 **Reality check (researched 2026-11-16)**
 - **Rosetta 2 is going away.** macOS 27 (this machine) is the *last* release with Rosetta;
@@ -429,8 +447,60 @@ Implemented (M2, part 1):
 `CHANGES-FROM-UPSTREAM.md` section 9. The tree was also checked visually in the
 `.app` (folders bold, triangles, nesting, empty folder).
 
+**Added after the first cut:** the session list is multi-select, so several
+sessions can be dragged into a folder in one go and Delete removes everything
+selected (asking once if the selection includes sessions inside a folder); and
+`sessioncmp()` now sorts folders before sessions at every level, so folders
+always sit at the top of their level rather than needing a manual order.
+
 **Not done yet (rest of M2/M3):** renaming a folder, remembering which folders
-are expanded, per-session comments, and saved passwords via the Keychain.
+are expanded, and saved passwords via the Keychain. (Per-session comments are
+done — see section 4i.)
+
+---
+
+## 4h. App icon  *(done 2026-11-17)*
+
+**Goal:** ship this fork's own icon rather than the upstream PuTTY one.
+
+`icons/putty-beter-icon.png` is the source of truth. `scripts/make-icns.sh`
+converts it to `icons/PuTTY.icns` with only what macOS provides — `sips` to
+resize and `iconutil` to assemble the `.iconset` — and `bundle-macos.sh` runs
+it whenever the PNG is newer than the `.icns`. `unix/putty.bundle` already
+copied `icons/PuTTY.icns` into `Contents/Resources` and `unix/putty.plist`
+already named it in `CFBundleIconFile`, so no bundle changes were needed.
+
+The upstream icon set (`icons/mkicon.py`, `make -C icons PuTTY.icns`) is kept
+and still used as a fallback if the PNG is missing. `.gitignore` needs an
+exception for the PNG, since `/icons/*.png` is otherwise ignored.
+
+**Note:** `gtk_widget_show()` does not recurse in GTK 3. Every widget has to be
+shown itself; relying on showing the parent gives an invisible child.
+
+---
+
+## 4i. Session comments  *(done 2026-11-17)*
+
+**Goal:** a free-text note kept with each saved session.
+
+| Where | What |
+|---|---|
+| `conf.h` | `session_comment`, `VALUE_TYPE(STR)`, `LOAD_CUSTOM, SAVE_CUSTOM` |
+| `settings.c` | saved by hand under `SessionComment`, and only when non-empty; backslash, newline and CR escaped as `\\`, `\n` and `\r` |
+| `dialog.h`, `dialog.c` | `editbox.multiline` flag |
+| `unix/dialog.c` | a multi-line box is a `GtkTextView` in a scrolled window: word-char wrap, `accepts-tab` off, eight-line minimum, `vexpand`; changes reported by the text buffer, Return inserts a newline |
+| `config.c` | the `Session/Comment` panel, directly after `Session/Logging` |
+| `test/test_sessions.c` | round-trip test over six comments |
+
+**Two things worth remembering.** A `LOAD_CUSTOM` option is skipped by the
+automatic loop in `load_open_settings()`, so its default has to be set by hand —
+a `Conf` entry has to exist before `conf_get_str()` can be asked for it. And the
+text view needed its own `gtk_widget_show()`, because showing only the
+surrounding scrolled window left it invisible: an empty sunken frame that could
+not be typed into, since an invisible widget never receives the click that
+would focus it.
+
+**Verified:** the storage round trip is tested. The widget needs a human.
 
 ---
 
@@ -445,9 +515,12 @@ are expanded, per-session comments, and saved passwords via the Keychain.
 - Session panel definition: `config.c` (~line 1904, "Session"/"savedsessions").
 - GTK UI implementation: `unix/dialog.c` (4424 lines).
 
+**Status:** folders and comments are done (sections 4g and 4i); passwords are
+not started.
+
 **Tasks**
-1. **Comments** (cheapest): add a `SessionComment` key; store/read via existing storage calls; show in the session list tooltip. Low risk.
-2. **Folders:** allow `/` in session names → subdirectories under `sessions/`; update `make_session_filename`, `enum_settings_*` to recurse; render a tree in the GTK list.
+1. ~~**Comments** (cheapest): add a `SessionComment` key; store/read via existing storage calls; show in the session list tooltip. Low risk.~~ **Done** — section 4i. (It ended up in a panel of its own rather than a tooltip, because a note can be a paragraph.) Showing it as a tooltip on the session list is still an obvious small win.
+2. ~~**Folders:** allow `/` in session names → subdirectories under `sessions/`; update `make_session_filename`, `enum_settings_*` to recurse; render a tree in the GTK list.~~ **Done** — section 4g.
 3. **Password** (do last, design first):
    - Never store plaintext in the session file.
    - macOS: **Keychain** (via Security framework or `security` CLI), keyed by session name.
@@ -623,9 +696,9 @@ crates*, not a port of PuTTY:
 
 ## 11. Milestones
 
-- [ ] **M0** — native arm64 build passes (Phase 0)
-- [ ] **M1** — universal signed `.app` runs on Intel + ARM (Phase 1, T1)
-- [ ] **M2** — session folders + comments (Phase 2, O1 part 1)
+- [x] **M0** — native arm64 build passes (Phase 0)
+- [ ] **M1** — universal signed `.app` runs on Intel + ARM (Phase 1, T1) — 1a done, 1b/1c not started
+- [x] **M2** — session folders + comments (Phase 2, O1 part 1)
 - [ ] **M3** — session password via Keychain (Phase 2, O1 part 2)
 - [ ] **M4** — ZMODEM download works over SSH (Phase 3, T2)
 - [ ] **M5** — ZMODEM upload + cancel + serial (Phase 3, T2)
