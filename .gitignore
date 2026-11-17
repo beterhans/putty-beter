@@ -97,6 +97,8 @@ Makefile
 /doc/copy.but
 /icons/*.pam
 /icons/*.png
+# The PuTTY-beter app icon source (converted to icons/PuTTY.icns at build time)
+!/icons/putty-beter-icon.png
 /icons/*.ico
 /icons/*.icns
 /icons/*.xpm

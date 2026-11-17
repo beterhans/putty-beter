@@ -112,8 +112,23 @@ done
 }
 
 # ----------------------------------------------------------------------- icon
-if [ ! -f "$SRC_DIR/icons/PuTTY.icns" ]; then
-    log "generating icons/PuTTY.icns"
+#
+# PuTTY-beter: the app icon is icons/putty-beter-icon.png, converted to .icns
+# here with scripts/make-icns.sh (sips + iconutil). The upstream icon set in
+# icons/ - mkicon.py and `make -C icons PuTTY.icns` - is kept for reference and
+# is still used as a fallback if the PNG is missing.
+ICON_PNG="$SRC_DIR/icons/putty-beter-icon.png"
+ICON_ICNS="$SRC_DIR/icons/PuTTY.icns"
+
+if [ -f "$ICON_PNG" ]; then
+    if [ ! -f "$ICON_ICNS" ] || [ "$ICON_PNG" -nt "$ICON_ICNS" ]; then
+        log "converting icons/putty-beter-icon.png -> icons/PuTTY.icns"
+        "$SRC_DIR/scripts/make-icns.sh" "$ICON_PNG" "$ICON_ICNS"
+    else
+        log "icons/PuTTY.icns is up to date"
+    fi
+elif [ ! -f "$ICON_ICNS" ]; then
+    log "generating icons/PuTTY.icns from the upstream icon set"
     make -C "$SRC_DIR/icons" PuTTY.icns >/dev/null
 fi
 
