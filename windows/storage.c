@@ -866,3 +866,24 @@ void cleanup_all(void)
      * Now we're done.
      */
 }
+
+/*
+ * PuTTY-beter: session folders are implemented on Unix, where a session is a
+ * file and a folder is a directory. On Windows a session is a registry key,
+ * so these are not supported; the configuration box offers the buttons
+ * anyway, and they report this.
+ */
+char *session_mkdir(const char *name)
+{
+    return dupstr("Session folders are not supported on this platform.");
+}
+
+char *session_move(const char *oldname, const char *newname)
+{
+    return dupstr("Session folders are not supported on this platform.");
+}
+
+char *session_rmdir(const char *name)
+{
+    return dupstr("Session folders are not supported on this platform.");
+}

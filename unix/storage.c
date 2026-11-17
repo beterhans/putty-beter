@@ -33,12 +33,66 @@ enum {
 
 static const char hex[16] = "0123456789ABCDEF";
 
-static void make_session_filename(const char *in, strbuf *out)
-{
-    if (!in || !*in)
-        in = "Default Settings";
+/*
+ * PuTTY-beter: session folders.
+ *
+ * A session name may contain '/', which separates folder names: the session
+ * called "Work/beta" is the file <sessions>/Work/beta, and "Work" is a real
+ * directory. Folders are ordinary directories, so they can be empty and they
+ * appear in the Finder the way you would expect.
+ *
+ * get_sesslist() reports a folder as a name with a trailing '/', so that the
+ * configuration box can tell folders from sessions; sessions are reported as
+ * before.
+ *
+ * Component names are validated when a path is built: an empty component, "."
+ * or ".." is rejected, so a session name can never escape the sessions
+ * directory. Anything invalid falls back to the old flat encoding, which
+ * simply cannot name a real session.
+ */
 
-    while (*in) {
+/*
+ * Is a single path component usable as a folder or session name? Empty, "."
+ * and ".." are not, because they would let a name walk out of the sessions
+ * directory.
+ */
+static bool session_component_ok(ptrlen c)
+{
+    if (c.len == 0)
+        return false;
+    if (c.len == 1 && ((const char *)c.ptr)[0] == '.')
+        return false;
+    if (c.len == 2 && ((const char *)c.ptr)[0] == '.' &&
+        ((const char *)c.ptr)[1] == '.')
+        return false;
+    return true;
+}
+
+/* Is a whole session name (a '/'-separated path) usable? */
+bool session_name_is_valid(const char *name)
+{
+    const char *p = name;
+
+    if (!name || !*name)
+        return false;
+
+    while (1) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+
+        if (!session_component_ok(make_ptrlen(p, len)))
+            return false;
+
+        if (!slash)
+            return true;
+        p = slash + 1;
+    }
+}
+
+static void encode_session_component(ptrlen in, strbuf *out)
+{    for (size_t i = 0; i < in.len; i++) {
+        unsigned char c = ((const unsigned char *)in.ptr)[i];
+
         /*
          * There are remarkably few punctuation characters that
          * aren't shell-special in some way or likely to be used as
@@ -46,16 +100,55 @@ static void make_session_filename(const char *in, strbuf *out)
          * opt-in for safe characters rather than opt-out for
          * specific unsafe ones...
          */
-        if (*in!='+' && *in!='-' && *in!='.' && *in!='@' && *in!='_' &&
-            !(*in >= '0' && *in <= '9') &&
-            !(*in >= 'A' && *in <= 'Z') &&
-            !(*in >= 'a' && *in <= 'z')) {
+        if (c=='+' || c=='-' || c=='.' || c=='@' || c=='_' ||
+            (c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z')) {
+            put_byte(out, c);
+        } else {
             put_byte(out, '%');
-            put_byte(out, hex[((unsigned char) *in) >> 4]);
-            put_byte(out, hex[((unsigned char) *in) & 15]);
-        } else
-            put_byte(out, *in);
-        in++;
+            put_byte(out, hex[c >> 4]);
+            put_byte(out, hex[c & 15]);
+        }
+    }
+}
+
+static void make_session_filename(const char *in, strbuf *out)
+{
+    if (!in || !*in)
+        in = "Default Settings";
+
+    encode_session_component(ptrlen_from_asciz(in), out);
+}
+
+/*
+ * Encode a whole session name as a relative path, keeping '/' as the
+ * separator between folder names. Returns false if the name is not usable as
+ * a path.
+ */
+static bool encode_session_path(const char *in, strbuf *out)
+{
+    const char *p = in;
+    bool first = true;
+
+    if (!in || !*in)
+        return false;
+
+    while (1) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+
+        if (!session_component_ok(make_ptrlen(p, len)))
+            return false;
+
+        if (!first)
+            put_byte(out, '/');
+        encode_session_component(make_ptrlen(p, len), out);
+        first = false;
+
+        if (!slash)
+            return true;
+        p = slash + 1;
     }
 }
 
@@ -198,7 +291,15 @@ static char *make_filename(int index, const char *subname)
         tmp = make_filename(INDEX_SESSIONDIR, NULL);
         put_fmt(sb, "%s/", tmp);
         sfree(tmp);
-        make_session_filename(subname, sb);
+        if (!encode_session_path(subname, sb)) {
+            /*
+             * PuTTY-beter: not usable as a path (empty, "." or ".."
+             * component). Fall back to the flat encoding, which cannot name
+             * anything outside the sessions directory, so the caller simply
+             * fails to find or create the session.
+             */
+            make_session_filename(subname, sb);
+        }
         return strbuf_to_str(sb);
     }
     if (index == INDEX_HOSTKEYS) {
@@ -862,6 +963,17 @@ settings_w *open_settings_w(const char *sessionname, char **errmsg)
     *errmsg = NULL;
 
     /*
+     * PuTTY-beter: a session name is a '/'-separated path under the sessions
+     * directory, so refuse names that would escape it rather than quietly
+     * writing something odd.
+     */
+    if (!session_name_is_valid(sessionname)) {
+        *errmsg = dupprintf("Invalid session name \"%s\".",
+                            sessionname ? sessionname : "");
+        return NULL;
+    }
+
+    /*
      * Start by making sure the .putty directory and its sessions
      * subdir actually exist.
      */
@@ -1168,20 +1280,89 @@ void del_settings(const char *sessionname)
 }
 
 struct settings_e {
-    DIR *dp;
+    /*
+     * PuTTY-beter: the whole tree is collected up front, because the
+     * enumeration is now recursive (session folders) while the caller still
+     * wants a flat list of names. Folders are reported with a trailing '/'.
+     */
+    char **names;
+    size_t nnames, namesize;
+    size_t next;
 };
+
+/*
+ * Walk the sessions directory, collecting sessions and folders. `prefix` is
+ * the already-decoded path of `dir` relative to the sessions directory, and
+ * ends in '/' unless it is empty.
+ */
+static void enum_sessions_recurse(settings_e *e, const char *dir,
+                                  const char *prefix, int depth)
+{
+    DIR *dp = opendir(dir);
+    struct dirent *de;
+
+    if (!dp)
+        return;
+
+    while ((de = readdir(dp)) != NULL) {
+        char *full, *name, *childprefix;
+        struct stat st;
+        strbuf *leaf;
+
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        full = dupprintf("%s/%s", dir, de->d_name);
+        if (lstat(full, &st) < 0) {
+            sfree(full);
+            continue;                  /* dangling symlink, or similar */
+        }
+
+        leaf = strbuf_new();
+        decode_session_filename(de->d_name, leaf);
+        name = dupprintf("%s%s", prefix, leaf->s);
+        strbuf_free(leaf);
+
+        if (S_ISDIR(st.st_mode) && depth < 16) {
+            /* A folder: report it even when it is empty. */
+            sgrowarray(e->names, e->namesize, e->nnames);
+            e->names[e->nnames++] = dupcat(name, "/", (const char *)NULL);
+
+            childprefix = dupcat(name, "/", (const char *)NULL);
+            enum_sessions_recurse(e, full, childprefix, depth+1);
+            sfree(childprefix);
+        } else if (S_ISREG(st.st_mode)) {
+            sgrowarray(e->names, e->namesize, e->nnames);
+            e->names[e->nnames++] = dupstr(name);
+        }
+
+        sfree(name);
+        sfree(full);
+    }
+
+    closedir(dp);
+}
 
 settings_e *enum_settings_start(void)
 {
     DIR *dp;
     char *filename;
+    settings_e *toret;
 
     filename = make_filename(INDEX_SESSIONDIR, NULL);
     dp = opendir(filename);
-    sfree(filename);
+    if (!dp) {
+        /* No sessions directory yet: nothing to list. */
+        sfree(filename);
+        return NULL;
+    }
+    closedir(dp);
 
-    settings_e *toret = snew(settings_e);
-    toret->dp = dp;
+    toret = snew(settings_e);
+    memset(toret, 0, sizeof(*toret));
+    enum_sessions_recurse(toret, filename, "", 0);
+
+    sfree(filename);
     return toret;
 }
 
@@ -1221,14 +1402,139 @@ static bool enum_dir_next(DIR *dp, int index, strbuf *out)
 
 bool enum_settings_next(settings_e *handle, strbuf *out)
 {
-    return enum_dir_next(handle->dp, INDEX_SESSIONDIR, out);
+    if (!handle || handle->next >= handle->nnames)
+        return false;
+
+    put_dataz(out, handle->names[handle->next++]);
+    return true;
 }
 
 void enum_settings_finish(settings_e *handle)
 {
-    if (handle->dp)
-        closedir(handle->dp);
+    if (!handle)
+        return;
+
+    for (size_t i = 0; i < handle->nnames; i++)
+        sfree(handle->names[i]);
+    sfree(handle->names);
     sfree(handle);
+}
+
+/* ----------------------------------------------------------------------
+ * PuTTY-beter: creating, moving and removing session folders.
+ *
+ * All three return NULL on success, or an error message for the caller to
+ * show. A folder name may come from get_sesslist() with its trailing '/'
+ * still attached; that is stripped here.
+ */
+
+static char *session_name_strip(const char *name)
+{
+    size_t len = strlen(name);
+
+    while (len > 0 && name[len-1] == '/')
+        len--;
+
+    return mkstr(make_ptrlen(name, len));
+}
+
+char *session_mkdir(const char *name)
+{
+    char *stripped, *path, *err = NULL;
+
+    if (!name || !*name)
+        return dupstr("Please specify a folder name.");
+
+    stripped = session_name_strip(name);
+    if (!*stripped) {
+        sfree(stripped);
+        return dupstr("Please specify a folder name.");
+    }
+
+    path = make_filename(INDEX_SESSION, stripped);
+    if (mkdir(path, 0700) < 0) {
+        if (errno == EEXIST)
+            err = dupprintf("There is already a folder called \"%s\".",
+                            stripped);
+        else if (errno == ENOENT)
+            err = dupprintf("There is no folder called \"%s\" to put it in.",
+                            stripped);
+        else
+            err = dupprintf("Unable to create folder \"%s\": %s",
+                            stripped, strerror(errno));
+    }
+
+    sfree(path);
+    sfree(stripped);
+    return err;
+}
+
+char *session_move(const char *oldname, const char *newname)
+{
+    char *oldpath, *newpath, *err = NULL;
+
+    if (!oldname || !*oldname || !newname || !*newname)
+        return dupstr("Bad session name.");
+
+    if (!strcmp(oldname, newname))
+        return NULL;
+
+    oldpath = make_filename(INDEX_SESSION, oldname);
+    newpath = make_filename(INDEX_SESSION, newname);
+
+    if (access(oldpath, F_OK) != 0)
+        err = dupprintf("There is no session called \"%s\".", oldname);
+    else if (access(newpath, F_OK) == 0)
+        err = dupprintf("\"%s\" already exists.", newname);
+    else if (rename(oldpath, newpath) < 0)
+        err = dupprintf("Unable to move \"%s\": %s", oldname, strerror(errno));
+
+    sfree(oldpath);
+    sfree(newpath);
+    return err;
+}
+
+char *session_rmdir(const char *name)
+{
+    char *stripped, *path, *err = NULL;
+    DIR *dp;
+
+    if (!name || !*name)
+        return dupstr("Bad folder name.");
+
+    stripped = session_name_strip(name);
+    if (!*stripped) {
+        sfree(stripped);
+        return dupstr("Bad folder name.");
+    }
+
+    path = make_filename(INDEX_SESSION, stripped);
+    dp = opendir(path);
+    if (!dp) {
+        err = dupprintf("There is no folder called \"%s\".", stripped);
+    } else {
+        struct dirent *de;
+        bool empty = true;
+
+        while ((de = readdir(dp)) != NULL) {
+            if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..")) {
+                empty = false;
+                break;
+            }
+        }
+        closedir(dp);
+
+        if (!empty)
+            err = dupprintf("The folder \"%s\" is not empty. Move or delete "
+                            "the sessions in it first.", stripped);
+        else if (rmdir(path) < 0)
+            err = dupprintf("Unable to remove folder \"%s\": %s",
+                            stripped, strerror(errno));
+    }
+
+    sfree(path);
+    sfree(stripped);
+    return err;
 }
 
 struct host_ca_enum {

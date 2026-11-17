@@ -187,6 +187,14 @@ add_executable(test_conf
 be_list(test_conf TestConf SSH SERIAL OTHERBACKENDS)
 target_link_libraries(test_conf sshclient otherbackends settings network crypto utils ${platform_libraries})
 
+# PuTTY-beter: session folders. Kept outside the GTK block, because it only
+# tests the storage layer.
+add_executable(test_sessions
+  test/test_sessions.c)
+# Only the storage layer, so no backends and no front end are linked; the
+# test supplies the few hooks that would otherwise come from them.
+target_link_libraries(test_sessions settings utils)
+
 foreach(subdir ${platform} ${extra_dirs})
   add_subdirectory(${subdir})
 endforeach()

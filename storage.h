@@ -68,6 +68,25 @@ void close_settings_r(settings_r *handle);
 void del_settings(const char *sessionname);
 
 /*
+ * PuTTY-beter: session folders.
+ *
+ * A session name may contain '/', which separates folder names, so that
+ * "Work/beta" is a session inside the folder "Work". Folders are real
+ * directories inside the sessions directory, which means they can be empty.
+ *
+ * enum_settings_*() report a folder as a name with a trailing '/', so the
+ * caller can tell the two apart; sessions are reported as before.
+ *
+ * These three return NULL on success, or a message for the user.
+ */
+char *session_mkdir(const char *name);
+char *session_move(const char *oldname, const char *newname);
+char *session_rmdir(const char *name);
+
+/* False if a name is empty or has an empty, "." or ".." component. */
+bool session_name_is_valid(const char *name);
+
+/*
  * Enumerate all saved sessions.
  */
 settings_e *enum_settings_start(void);
