@@ -1116,13 +1116,24 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
                     "Delete All", "Cancel",
                 };
                 struct delfolder_ctx *c = snew(struct delfolder_ctx);
-                char *question = dupprintf(
-                    nnames == 1 ?
-                    "The folder \"%s\" contains %d item%s. "
-                    "Delete the folder and everything in it?" :
-                    "The selection contains %d item%s in all, including "
-                    "sessions inside folders. Delete everything selected?",
-                    names[0], ncontents, ncontents == 1 ? "" : "s");
+                char *question;
+
+                /*
+                 * The two questions have different format strings, so they
+                 * have to be built separately - passing one set of arguments
+                 * to a conditional format string does not work.
+                 */
+                if (nnames == 1) {
+                    question = dupprintf(
+                        "The folder \"%s\" contains %d item%s. "
+                        "Delete the folder and everything in it?",
+                        names[0], ncontents, ncontents == 1 ? "" : "s");
+                } else {
+                    question = dupprintf(
+                        "The selection contains %d item%s in all, including "
+                        "sessions inside folders. Delete everything selected?",
+                        ncontents, ncontents == 1 ? "" : "s");
+                }
 
                 c->ssd = ssd;
                 c->dlg = dlg;
@@ -2321,6 +2332,29 @@ void setup_config_box(struct controlbox *b, bool midsession,
         ctrl_checkbox(s, "Omit session data", 'd',
                       HELPCTX(logging_ssh_omit_data),
                       conf_checkbox_handler, I(CONF_logomitdata));
+    }
+
+    /*
+     * PuTTY-beter: a free-text note about the session, so that a saved
+     * session can say what it is for. It is a panel of its own, alongside
+     * Logging, because it needs a box big enough to type a paragraph into.
+     */
+    ctrl_settitle(b, "Session/Comment",
+                  "A note about this session, kept with it");
+
+    s = ctrl_getset(b, "Session/Comment", "main", NULL);
+    /*
+     * This controlset absorbs the spare height of its panel, so the comment
+     * box grows when the window does.
+     */
+    s->vexpand = true;
+    {
+        dlgcontrol *c = ctrl_editbox(s, "Comment:", NO_SHORTCUT, 100,
+                                     HELPCTX(no_help),
+                                     conf_editbox_handler,
+                                     I(CONF_session_comment), ED_STR);
+        c->editbox.multiline = true;
+        c->vexpand = true;
     }
 
     /*

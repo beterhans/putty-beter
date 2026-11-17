@@ -224,6 +224,13 @@ struct dlgcontrol {
              * combination.
              */
             bool has_list;
+            /*
+             * PuTTY-beter: a multi-line edit box, for entering a block of
+             * free text (currently the session comment). Front ends that
+             * cannot manage a multi-line box may fall back to an ordinary
+             * single-line one.
+             */
+            bool multiline;
         } editbox;
         struct { /* for CTRL_RADIO */
             /*

@@ -80,6 +80,8 @@ struct uctrl {
     GtkTreeStore *listmodel;
 #endif
     GtkWidget *text;          /* for text */
+    /* PuTTY-beter: the GtkTextView of a multi-line edit box, if this is one */
+    GtkWidget *textview;
     GtkWidget *label;         /* for dlg_label_change */
     GtkAdjustment *adj;       /* for the scrollbar in a list box */
     struct selparam *sp;      /* which switchable pane of the box we're in */
@@ -319,6 +321,22 @@ void dlg_editbox_set_utf8(dlgcontrol *ctrl, dlgparam *dp, char const *text)
     char *tmpstring;
     assert(uc->ctrl->type == CTRL_EDITBOX);
 
+    /*
+     * PuTTY-beter: a multi-line edit box is a GtkTextView, which keeps its
+     * text in a buffer rather than in the widget. Setting the buffer's text
+     * also emits "changed", so take our own copy of `text' for the same
+     * reason as the GtkEntry case below.
+     */
+    if (uc->textview) {
+        GtkTextBuffer *buf = gtk_text_view_get_buffer(
+            GTK_TEXT_VIEW(uc->textview));
+
+        tmpstring = dupstr(text);
+        gtk_text_buffer_set_text(buf, tmpstring, -1);
+        sfree(tmpstring);
+        return;
+    }
+
 #if GTK_CHECK_VERSION(2,4,0)
     if (uc->combo)
         entry = gtk_bin_get_child(GTK_BIN(uc->combo));
@@ -362,6 +380,20 @@ char *dlg_editbox_get_utf8(dlgcontrol *ctrl, dlgparam *dp)
     struct uctrl *uc = dlg_find_byctrl(dp, ctrl);
     assert(uc->ctrl->type == CTRL_EDITBOX);
 
+    /*
+     * PuTTY-beter: a multi-line edit box is a GtkTextView, whose text lives
+     * in its buffer. (This is also the UTF-8 case on every platform, since
+     * GTK strings always are.)
+     */
+    if (uc->textview) {
+        GtkTextBuffer *buf = gtk_text_view_get_buffer(
+            GTK_TEXT_VIEW(uc->textview));
+        GtkTextIter start, end;
+
+        gtk_text_buffer_get_bounds(buf, &start, &end);
+        return gtk_text_buffer_get_text(buf, &start, &end, false);
+    }
+
 #if GTK_CHECK_VERSION(2,4,0)
     if (uc->combo) {
         return dupstr(gtk_entry_get_text(
@@ -388,6 +420,10 @@ void dlg_editbox_select_range(dlgcontrol *ctrl, dlgparam *dp,
 {
     struct uctrl *uc = dlg_find_byctrl(dp, ctrl);
     assert(uc->ctrl->type == CTRL_EDITBOX);
+
+    /* PuTTY-beter: nothing in the box uses this on a multi-line edit box. */
+    if (uc->textview)
+        return;
 
     GtkWidget *entry = NULL;
 
@@ -873,18 +909,19 @@ static bool listbox_dragging = false;
 
 /*
  * PuTTY-beter: the same PUTTY_DIAG switch the rest of the GTK front end
- * uses, for tracing this drag.
+ * uses, for tracing the more intricate widgets in here (the session list's
+ * drag, and the multi-line edit box).
  */
-static int listbox_diag_flag = -1;
-static bool listbox_diag(void)
+static int dlg_diag_flag = -1;
+static bool dlg_diag(void)
 {
-    if (listbox_diag_flag < 0)
-        listbox_diag_flag = (getenv("PUTTY_DIAG") != NULL);
-    return listbox_diag_flag;
+    if (dlg_diag_flag < 0)
+        dlg_diag_flag = (getenv("PUTTY_DIAG") != NULL);
+    return dlg_diag_flag;
 }
-#define LISTBOX_DIAG(...) do {                                          \
-        if (listbox_diag())                                             \
-            fprintf(stderr, "putty-diag: " __VA_ARGS__);                \
+#define DLG_DIAG(...) do {                                      \
+        if (dlg_diag())                                         \
+            fprintf(stderr, "putty-diag: " __VA_ARGS__);        \
     } while (0)
 
 static void listbox_press_forget(void)
@@ -923,7 +960,7 @@ static gboolean listbox_press_event(GtkWidget *widget, GdkEventButton *event,
 
     listbox_press_nids = dlg_listbox_selected_ids(ctrl, dp, &listbox_press_ids);
 
-    LISTBOX_DIAG("listbox press on id %d, %d row(s) selected\n",
+    DLG_DIAG("listbox press on id %d, %d row(s) selected\n",
                  listbox_press_id, listbox_press_nids);
 
     return false;                      /* the tree view still does its thing */
@@ -977,7 +1014,7 @@ static void listbox_restore_selection(dlgcontrol *ctrl, dlgparam *dp)
             gtk_tree_selection_select_iter(sel, &iter);
     }
 
-    LISTBOX_DIAG("listbox restored %d row(s) of selection\n",
+    DLG_DIAG("listbox restored %d row(s) of selection\n",
                  listbox_press_nids);
 
     /*
@@ -999,7 +1036,7 @@ static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
 
     listbox_dragging = true;
 
-    LISTBOX_DIAG("listbox drag begin, snapshot holds %d row(s)\n",
+    DLG_DIAG("listbox drag begin, snapshot holds %d row(s)\n",
                  listbox_press_nids);
 
     if (ctrl)
@@ -1066,7 +1103,7 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
     /* The selection GTK collapsed when the drag started comes back first. */
     listbox_restore_selection(ctrl, dp);
 
-    LISTBOX_DIAG("listbox drop on id %d\n", dest_id);
+    DLG_DIAG("listbox drop on id %d\n", dest_id);
 
     ctrl->listbox.drag_handler(ctrl, dp, dest_id);
 }
@@ -1571,6 +1608,10 @@ void dlg_set_focus(dlgcontrol *ctrl, dlgparam *dp)
             gtk_widget_grab_focus(uc->combo);
         }
 #endif
+        /* PuTTY-beter: or, for a multi-line edit box, the text view. */
+        else if (uc->textview) {
+            gtk_widget_grab_focus(uc->textview);
+        }
         break;
       case CTRL_RADIO:
         /*
@@ -1872,6 +1913,21 @@ static gboolean editbox_lostfocus(GtkWidget *ed, GdkEventFocus *event,
     struct uctrl *uc = dlg_find_bywidget(dp, GTK_WIDGET(ed));
     uc->ctrl->handler(uc->ctrl, dp, dp->data, EVENT_REFRESH);
     return false;
+}
+
+/*
+ * PuTTY-beter: the "changed" signal of a multi-line edit box. A GtkTextView
+ * reports changes on its text buffer, which is not a widget, so the control
+ * has to be found through a pointer stashed on the buffer rather than with
+ * dlg_find_bywidget().
+ */
+static void textview_changed(GtkTextBuffer *buf, gpointer data)
+{
+    struct dlgparam *dp = (struct dlgparam *)data;
+    struct uctrl *uc = g_object_get_data(G_OBJECT(buf), "putty-uctrl");
+
+    if (uc && uc->ctrl->handler)
+        uc->ctrl->handler(uc->ctrl, dp, dp->data, EVENT_VALCHANGE);
 }
 
 #if !GTK_CHECK_VERSION(2,0,0)
@@ -2530,6 +2586,8 @@ GtkWidget *layout_ctrls(
         uc->listmodel = NULL;
 #endif
         uc->button = uc->text = NULL;
+        /* PuTTY-beter: only a multi-line edit box has a text view. */
+        uc->textview = NULL;
         uc->label = NULL;
         uc->nclicks = 0;
 
@@ -2619,7 +2677,7 @@ GtkWidget *layout_ctrls(
             break;
           }
           case CTRL_EDITBOX: {
-            GtkWidget *signalobject;
+            GtkWidget *signalobject = NULL;
 
             if (ctrl->editbox.has_list) {
 #if !GTK_CHECK_VERSION(2,4,0)
@@ -2646,6 +2704,51 @@ GtkWidget *layout_ctrls(
                 uc->combo = w;
                 signalobject = uc->combo;
 #endif
+            } else if (ctrl->editbox.multiline) {
+                /*
+                 * PuTTY-beter: a multi-line box for entering a block of free
+                 * text. GTK has no multi-line GtkEntry, so this is a
+                 * GtkTextView inside a scrolled window.
+                 */
+                GtkWidget *view = gtk_text_view_new();
+
+                gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view),
+                                            GTK_WRAP_WORD_CHAR);
+                /*
+                 * Tab moves the focus on to the next control rather than
+                 * inserting a tab character, so the box can still be
+                 * navigated from the keyboard.
+                 */
+                gtk_text_view_set_accepts_tab(GTK_TEXT_VIEW(view), false);
+                /*
+                 * Room for a good few lines to begin with; the box is marked
+                 * vexpand, so it grows into any spare height the panel has.
+                 */
+                gtk_widget_set_size_request(view, -1, 8 * 16);
+
+                w = gtk_scrolled_window_new(NULL, NULL);
+                gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(w),
+                                               GTK_POLICY_AUTOMATIC,
+                                               GTK_POLICY_AUTOMATIC);
+                gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(w),
+                                                    GTK_SHADOW_IN);
+                gtk_container_add(GTK_CONTAINER(w), view);
+
+                /*
+                 * gtk_widget_show() does not recurse in GTK 3: showing only
+                 * the scrolled window leaves the text view invisible, which
+                 * gives an empty sunken frame that cannot be typed into (an
+                 * invisible widget never receives the click that would focus
+                 * it). So show the view itself as well.
+                 */
+                gtk_widget_show(view);
+
+                DLG_DIAG("multi-line edit box: view visible=%d can_focus=%d\n",
+                         gtk_widget_get_visible(view),
+                         gtk_widget_get_can_focus(view));
+
+                uc->textview = view;
+                signalobject = w;
             } else {
                 w = gtk_entry_new();
                 if (ctrl->editbox.password)
@@ -2653,16 +2756,36 @@ GtkWidget *layout_ctrls(
                 uc->entry = w;
                 signalobject = w;
             }
-            g_signal_connect(G_OBJECT(signalobject), "changed",
-                             G_CALLBACK(editbox_changed), dp);
-            g_signal_connect(G_OBJECT(signalobject), "key_press_event",
-                             G_CALLBACK(editbox_key), dp);
-            g_signal_connect(G_OBJECT(signalobject), "focus_in_event",
-                             G_CALLBACK(widget_focus), dp);
-            g_signal_connect(G_OBJECT(signalobject), "focus_out_event",
-                             G_CALLBACK(editbox_lostfocus), dp);
-            g_signal_connect(G_OBJECT(signalobject), "focus_out_event",
-                             G_CALLBACK(editbox_lostfocus), dp);
+
+            if (uc->textview) {
+                /*
+                 * A GtkTextView needs different signals from a GtkEntry:
+                 * changes are reported by the text buffer, and Return has to
+                 * insert a newline rather than activate the default button,
+                 * so it gets neither editbox_changed nor editbox_key.
+                 */
+                GtkTextBuffer *buf = gtk_text_view_get_buffer(
+                    GTK_TEXT_VIEW(uc->textview));
+
+                g_object_set_data(G_OBJECT(buf), "putty-uctrl", uc);
+                g_signal_connect(G_OBJECT(buf), "changed",
+                                 G_CALLBACK(textview_changed), dp);
+                g_signal_connect(G_OBJECT(uc->textview), "focus_in_event",
+                                 G_CALLBACK(widget_focus), dp);
+                g_signal_connect(G_OBJECT(uc->textview), "focus_out_event",
+                                 G_CALLBACK(editbox_lostfocus), dp);
+            } else {
+                g_signal_connect(G_OBJECT(signalobject), "changed",
+                                 G_CALLBACK(editbox_changed), dp);
+                g_signal_connect(G_OBJECT(signalobject), "key_press_event",
+                                 G_CALLBACK(editbox_key), dp);
+                g_signal_connect(G_OBJECT(signalobject), "focus_in_event",
+                                 G_CALLBACK(widget_focus), dp);
+                g_signal_connect(G_OBJECT(signalobject), "focus_out_event",
+                                 G_CALLBACK(editbox_lostfocus), dp);
+                g_signal_connect(G_OBJECT(signalobject), "focus_out_event",
+                                 G_CALLBACK(editbox_lostfocus), dp);
+            }
 
 #if !GTK_CHECK_VERSION(3,0,0)
             /*

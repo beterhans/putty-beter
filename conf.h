@@ -885,6 +885,22 @@ CONF_OPTION(logomitdata,
     DEFAULT_BOOL(false),
     SAVE_KEYWORD("SSHLogOmitData"),
 )
+CONF_OPTION(session_comment,
+    VALUE_TYPE(STR),
+    DEFAULT_STR(""),
+    LOAD_CUSTOM, SAVE_CUSTOM,
+    /*
+     * PuTTY-beter: a free-text note about the session, so that a saved
+     * session can say what it is for and who it belongs to. Notionally
+     * SAVE_KEYWORD("SessionComment"), but saving and loading are done by
+     * hand in settings.c, because the note can run to several lines and the
+     * settings file format is one "key=value" per line: newlines are
+     * escaped as "\n" on the way out and turned back on the way in.
+     *
+     * The value is always UTF-8, because that is what the front ends'
+     * edit boxes deal in.
+     */
+)
 CONF_OPTION(hide_mouseptr,
     VALUE_TYPE(BOOL),
     DEFAULT_BOOL(false),

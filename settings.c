@@ -529,6 +529,60 @@ char *save_settings(const char *section, Conf *conf)
     return NULL;
 }
 
+/*
+ * PuTTY-beter: the session comment is free text, so it can contain line
+ * breaks, but the settings file format is one "key=value" per line. Escape
+ * backslashes and line breaks on the way out, and undo it on the way in.
+ * ("\r" is escaped as well, so that a comment survives a round trip through
+ * a file that has been edited with DOS line endings.)
+ */
+static char *comment_escape(const char *text)
+{
+    char *ret = snewn(1, char);
+    size_t len = 0;
+
+    for (const char *p = text; *p; p++) {
+        const char *rep = NULL;
+
+        switch (*p) {
+          case '\\': rep = "\\\\"; break;
+          case '\n': rep = "\\n"; break;
+          case '\r': rep = "\\r"; break;
+        }
+
+        if (rep) {
+            size_t rl = strlen(rep);
+            ret = sresize(ret, len + rl + 1, char);
+            memcpy(ret + len, rep, rl);
+            len += rl;
+        } else {
+            ret = sresize(ret, len + 2, char);
+            ret[len++] = *p;
+        }
+    }
+    ret[len] = '\0';
+    return ret;
+}
+
+static char *comment_unescape(const char *text)
+{
+    char *ret = snewn(strlen(text) + 1, char);
+    size_t len = 0;
+
+    while (*text) {
+        if (text[0] == '\\' && text[1]) {
+            switch (text[1]) {
+              case 'n': ret[len++] = '\n'; text += 2; continue;
+              case 'r': ret[len++] = '\r'; text += 2; continue;
+              case '\\': ret[len++] = '\\'; text += 2; continue;
+            }
+        }
+        ret[len++] = *text++;
+    }
+    ret[len] = '\0';
+    return ret;
+}
+
 /* Declare extern references to conf_enum_* types */
 #define CONF_ENUM(name, ...) extern const ConfSaveEnumType conf_enum_##name;
 #include "conf-enums.h"
@@ -611,6 +665,20 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
               default:
                 unreachable("bad key type in save_open_settings");
             }
+        }
+    }
+
+    /*
+     * PuTTY-beter: the session's comment, written only when there is one, so
+     * that ordinary session files are unchanged.
+     */
+    {
+        const char *comment = conf_get_str(conf, CONF_session_comment);
+
+        if (*comment) {
+            char *escaped = comment_escape(comment);
+            write_setting_s(sesskey, "SessionComment", escaped);
+            sfree(escaped);
         }
     }
 
@@ -786,6 +854,22 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
                 unreachable("bad key type in load_open_settings");
             }
         }
+    }
+
+    /*
+     * PuTTY-beter: the session's comment. Absent from most session files.
+     * Note that the automatic loop above skips this key because it is
+     * LOAD_CUSTOM, so the empty default has to be set here as well - Conf
+     * entries have to exist before conf_get_str() can be asked for them.
+     */
+    {
+        char *escaped = read_setting_s(sesskey, "SessionComment");
+        char *comment = escaped ? comment_unescape(escaped) : NULL;
+
+        conf_set_str(conf, CONF_session_comment, comment ? comment : "");
+
+        sfree(comment);
+        sfree(escaped);
     }
 
     prot = gpps_raw(sesskey, "Protocol", "default");

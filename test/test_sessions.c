@@ -404,6 +404,53 @@ int main(void)
         }
     }
 
+    /*
+     * The session comment survives a save/load round trip, including
+     * newlines and backslashes, since the settings file format is one
+     * "key=value" per line.
+     */
+    {
+        static const char *const comments[] = {
+            "",
+            "A plain one-line comment",
+            "Line one\nLine two\n\nLine four",
+            "Backslashes \\ and a literal \\n in the middle",
+            "UTF-8: \xe4\xbd\xa0\xe5\xa5\xbd, \xf0\x9f\x94\x8c, \xc3\xa9",
+            "A backslash at the end of a line\\\nand then a newline",
+        };
+
+        for (size_t i = 0; i < lenof(comments); i++) {
+            Conf *out = conf_new(), *in = conf_new();
+            char *err;
+            const char *got;
+
+            /*
+             * load_settings() is what fills in every default, so a Conf is
+             * built by loading (an absent session will do) before anything
+             * is set on it.
+             */
+            load_settings("Commented", in);
+            conf_set_str(in, CONF_session_comment, comments[i]);
+            conf_set_str(in, CONF_host, "comment.example.com");
+
+            err = save_settings("Commented", in);
+            if (err) { fail("save_settings: %s", err); sfree(err); }
+
+            if (!load_settings("Commented", out))
+                fail("load_settings(Commented) failed");
+
+            got = conf_get_str(out, CONF_session_comment);
+            if (strcmp(got, comments[i]))
+                fail("comment %zu did not survive a round trip: got \"%s\"",
+                     i, got);
+
+            conf_free(in);
+            conf_free(out);
+        }
+
+        del_settings("Commented");
+    }
+
     /* The names a drag between rows would produce. */
     {
         static const struct {
