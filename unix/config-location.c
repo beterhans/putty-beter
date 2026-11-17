@@ -27,6 +27,8 @@
 #define MAY_REFER_TO_GTK_IN_HEADERS
 
 #include "putty.h"
+#include "gtkcompat.h"          /* PuTTY-beter: gtk_dialog_fix_macos_titlebar */
+#include "gtkmisc.h"            /* PuTTY-beter: our_file_chooser_run */
 
 #ifdef __APPLE__
 #include <ApplicationServices/ApplicationServices.h>
@@ -64,6 +66,7 @@ static void show_error(GtkWindow *parent, const char *msg)
         parent, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
         "%s", msg);
     gtk_window_set_title(GTK_WINDOW(dlg), "PuTTY configuration folder");
+    gtk_dialog_fix_macos_titlebar(dlg);   /* PuTTY-beter: opaque title bar */
     gtk_dialog_run(GTK_DIALOG(dlg));
     gtk_widget_destroy(dlg);
 }
@@ -71,32 +74,31 @@ static void show_error(GtkWindow *parent, const char *msg)
 static void browse_cb(GtkButton *button, gpointer ventry)
 {
     GtkWidget *entry = GTK_WIDGET(ventry);
-    GtkWidget *fc = gtk_file_chooser_dialog_new(
-        "Choose configuration folder", NULL,
-        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Choose", GTK_RESPONSE_ACCEPT,
-        NULL);
+    /*
+     * PuTTY-beter: the shared chooser, so this gets the same full-path box as
+     * every other file selector in the application. The upstream call this
+     * replaces was:
+     *
+     *     gtk_file_chooser_dialog_new(
+     *         "Choose configuration folder", NULL,
+     *         GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+     *         "_Cancel", GTK_RESPONSE_CANCEL,
+     *         "_Choose", GTK_RESPONSE_ACCEPT, NULL);
+     *
+     * which started browsing at whatever was typed in, and set
+     * gtk_file_chooser_set_create_folders() - both of which the shared chooser
+     * does for itself.
+     */
+    char *chosen = our_file_chooser_run(
+        NULL, "Choose configuration folder", true, false,
+        gtk_entry_get_text(GTK_ENTRY(entry)));
 
-    gtk_file_chooser_set_create_folders(GTK_FILE_CHOOSER(fc), true);
-
-    /* Start browsing at whatever is currently typed in. */
-    {
-        const char *cur = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (cur && *cur && g_file_test(cur, G_FILE_TEST_IS_DIR))
-            gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(fc), cur);
+    if (chosen) {
+        gtk_entry_set_text(GTK_ENTRY(entry), chosen);
+        g_free(chosen);
     }
 
-    if (gtk_dialog_run(GTK_DIALOG(fc)) == GTK_RESPONSE_ACCEPT) {
-        char *filename =
-            gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
-        if (filename) {
-            gtk_entry_set_text(GTK_ENTRY(entry), filename);
-            g_free(filename);
-        }
-    }
-
-    gtk_widget_destroy(fc);
+    (void)button;
 }
 
 /*
@@ -135,6 +137,7 @@ static bool ask_dialog(bool forced)
         NULL);
     gtk_window_set_position(GTK_WINDOW(dlg), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(dlg), false);
+    gtk_dialog_fix_macos_titlebar(dlg);   /* PuTTY-beter: opaque title bar */
 
     content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
     gtk_container_set_border_width(GTK_CONTAINER(content), 12);

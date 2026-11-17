@@ -16,4 +16,14 @@ void our_dialog_add_to_content_area(GtkWindow *dlg, GtkWidget *w,
 void our_dialog_set_action_area(GtkWindow *dlg, GtkWidget *w);
 GtkBox *our_dialog_make_action_hbox(GtkWindow *dlg);
 
+/*
+ * PuTTY-beter: the application's one file chooser. Asks for a file or a
+ * folder, with a visible full-path box so an exact path can be typed or
+ * pasted. Returns a newly allocated path (free with g_free), or NULL if the
+ * user cancelled. See unix/utils/filechooser.c.
+ */
+char *our_file_chooser_run(GtkWindow *parent, const char *title,
+                           bool for_directory, bool for_writing,
+                           const char *initial);
+
 #endif /* PUTTY_GTKMISC_H */

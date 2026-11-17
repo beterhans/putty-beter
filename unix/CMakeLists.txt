@@ -138,6 +138,7 @@ if(GTK_FOUND)
   add_sources_from_current_dir(utils
     utils/align_label_left.c
     utils/buildinfo_gtk_version.c
+    utils/filechooser.c
     utils/get_label_text_dimensions.c
     utils/get_x11_display.c
     utils/our_dialog.c

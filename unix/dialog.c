@@ -2232,7 +2232,12 @@ static void filechoose_emit_value(struct dlgparam *dp, struct uctrl *uc,
     }
 }
 
-#ifdef USE_GTK_FILE_CHOOSER_DIALOG
+/*
+ * PuTTY-beter: no longer used. our_file_chooser_run() runs the chooser's modal
+ * loop itself and hands the chosen path straight back, so there is no
+ * "response" signal left to handle. Kept (rather than deleted) for reference.
+ */
+#if 0
 static void filechoose_response(GtkDialog *dialog, gint response,
                                 gpointer data)
 {
@@ -2245,7 +2250,7 @@ static void filechoose_response(GtkDialog *dialog, gint response,
     }
     gtk_widget_destroy(GTK_WIDGET(dialog));
 }
-#else
+#elif 0
 static void filesel_ok(GtkButton *button, gpointer data)
 {
     struct dlgparam *dp = (struct dlgparam *)data;
@@ -2363,35 +2368,34 @@ static void filefont_clicked(GtkButton *button, gpointer data)
          */
 #ifdef USE_GTK_FILE_CHOOSER_DIALOG
         /*
-         * PuTTY-beter: a folder-typed setting (fileselect.for_directory,
-         * which is what the ZMODEM transfer folder uses) needs a directory
-         * chooser rather than an open/save one. The upstream expression
-         * this replaces was:
+         * PuTTY-beter: every file selector in the configuration box goes
+         * through the shared chooser, so they all have a visible full-path
+         * box: the private key file under Auth/Credentials, the session log
+         * file, the GSSAPI library and the rest. It also picks a directory
+         * for a folder-typed setting (fileselect.for_directory, which is what
+         * the ZMODEM transfer folder uses). The upstream call this replaces
+         * was:
          *
-         *     (uc->ctrl->fileselect.for_writing ?
-         *      GTK_FILE_CHOOSER_ACTION_SAVE :
-         *      GTK_FILE_CHOOSER_ACTION_OPEN),
+         *     gtk_file_chooser_dialog_new(
+         *         uc->ctrl->fileselect.title, GTK_WINDOW(dp->window),
+         *         (uc->ctrl->fileselect.for_writing ?
+         *          GTK_FILE_CHOOSER_ACTION_SAVE :
+         *          GTK_FILE_CHOOSER_ACTION_OPEN),
+         *         STANDARD_CANCEL_LABEL, GTK_RESPONSE_CANCEL,
+         *         STANDARD_OPEN_LABEL, GTK_RESPONSE_ACCEPT,
+         *         (const gchar *)NULL);
+         *
+         * with the result taken from the "response" signal instead.
          */
-        GtkFileChooserAction action;
-        if (uc->ctrl->fileselect.for_directory)
-            action = GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER;
-        else if (uc->ctrl->fileselect.for_writing)
-            action = GTK_FILE_CHOOSER_ACTION_SAVE;
-        else
-            action = GTK_FILE_CHOOSER_ACTION_OPEN;
-
-        GtkWidget *filechoose = gtk_file_chooser_dialog_new(
-            uc->ctrl->fileselect.title, GTK_WINDOW(dp->window),
-            action,
-            STANDARD_CANCEL_LABEL, GTK_RESPONSE_CANCEL,
-            uc->ctrl->fileselect.for_directory ?
-            "Choose" : STANDARD_OPEN_LABEL, GTK_RESPONSE_ACCEPT,
-            (const gchar *)NULL);
-        gtk_window_set_modal(GTK_WINDOW(filechoose), true);
-        g_object_set_data(G_OBJECT(filechoose), "user-data", (gpointer)uc);
-        g_signal_connect(G_OBJECT(filechoose), "response",
-                         G_CALLBACK(filechoose_response), (gpointer)dp);
-        gtk_widget_show(filechoose);
+        char *chosen = our_file_chooser_run(
+            GTK_WINDOW(dp->window), uc->ctrl->fileselect.title,
+            uc->ctrl->fileselect.for_directory,
+            uc->ctrl->fileselect.for_writing,
+            uc->entry ? gtk_entry_get_text(GTK_ENTRY(uc->entry)) : NULL);
+        if (chosen) {
+            filechoose_emit_value(dp, uc, chosen);
+            g_free(chosen);
+        }
 #else
         GtkWidget *filesel =
             gtk_file_selection_new(uc->ctrl->fileselect.title);

@@ -219,6 +219,32 @@
 #define gdk_cursor_new(cur) \
     gdk_cursor_new_for_display(gdk_display_get_default(), cur)
 
+/*
+ * PuTTY-beter: give a GtkDialog an opaque title bar on macOS.
+ *
+ * GTK 3 on macOS creates a GtkDialog's NSWindow with an RGBA visual, so the
+ * window is not opaque and its background is fully transparent. macOS paints
+ * the title bar using that background, so the bar comes out see-through: the
+ * traffic lights and the title are drawn over whatever is behind the window,
+ * and the title looks as if it were written on the desktop.
+ *
+ * A plain GtkWindow is opaque and unaffected - which is what our_dialog_new()
+ * returns, so the config box, the About box and every message box are fine.
+ * Only real GtkDialogs need this: the file choosers, the font selector and
+ * the configuration-folder dialogs.
+ *
+ * Asking for the screen's plain system visual instead makes the NSWindow
+ * opaque again, which is all macOS needs to paint a normal title bar. It has
+ * to be called after the dialog is created and before it is shown.
+ */
+static inline void gtk_dialog_fix_macos_titlebar(GtkWidget *dlg)
+{
+    GdkScreen *screen = gtk_widget_get_screen(dlg);
+    GdkVisual *visual = screen ? gdk_screen_get_system_visual(screen) : NULL;
+    if (visual)
+        gtk_widget_set_visual(dlg, visual);
+}
+
 #endif /* 3.0 */
 
 #if !HAVE_G_APPLICATION_DEFAULT_FLAGS

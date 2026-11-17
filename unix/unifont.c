@@ -3268,6 +3268,7 @@ unifontsel *unifontsel_new(const char *wintitle)
      */
     fs->u.user_data = NULL;
     fs->u.window = GTK_WINDOW(gtk_dialog_new());
+    gtk_dialog_fix_macos_titlebar(GTK_WIDGET(fs->u.window));  /* PuTTY-beter */
     gtk_window_set_title(fs->u.window, wintitle);
     fs->u.cancel_button = gtk_dialog_add_button(
         GTK_DIALOG(fs->u.window), STANDARD_CANCEL_LABEL, GTK_RESPONSE_CANCEL);
