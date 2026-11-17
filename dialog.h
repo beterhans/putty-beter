@@ -367,13 +367,13 @@ struct dlgcontrol {
              */
             bool tree;
             /*
-             * PuTTY-beter: called when the user drags one row of a tree
-             * list box onto another, with the ids of the source row and
-             * the row it was dropped on. Front ends that do not implement
-             * dragging simply never call it.
+             * PuTTY-beter: called when the user drags rows of a tree list
+             * box onto another row, with the id of the row they were
+             * dropped on. The rows being dragged are the selected ones, so
+             * the handler asks for those with dlg_listbox_selected_ids().
+             * Front ends that do not implement dragging never call it.
              */
-            void (*drag_handler)(dlgcontrol *ctrl, dlgparam *dp,
-                                 int src_id, int dst_id);
+            void (*drag_handler)(dlgcontrol *ctrl, dlgparam *dp, int dst_id);
         } listbox;
         struct { /* for CTRL_FILESELECT */
             char shortcut;
@@ -631,6 +631,11 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index);
  */
 int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp);
 void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id);
+/*
+ * Every selected row's id, in list order, for a multi-select list box. The
+ * caller frees *ids; the return value is how many there are.
+ */
+int dlg_listbox_selected_ids(dlgcontrol *ctrl, dlgparam *dp, int **ids);
 /*
  * PuTTY-beter: ask a question with a few buttons. The callback is given the
  * index of the button chosen, or -1 if the dialog was dismissed some other

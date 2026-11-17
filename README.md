@@ -101,11 +101,13 @@ real folder `Work`, so the structure is visible in the Finder and a folder can
 be empty.
 
 In the configuration box the session list is a **collapsible tree**: folders
-are in bold with a disclosure triangle, and a session is moved into a folder
-by dragging its row onto it. Under the list are **Load**, **Save**, **Delete**
+are in bold with a disclosure triangle and always sort to the top of their
+level. Select several rows (Shift-click or ⌘-click) and drag them onto a
+folder to move them all at once. Under the list are **Load**, **Save**, **Delete**
 and **New Folder**; New Folder takes the name from the Saved Sessions box, the
-same way Save does. Delete on a folder that still has sessions in it asks
-first, with a "Delete All" / "Cancel" box — Escape cancels.
+same way Save does. Delete removes everything selected, and asks first if the
+selection includes sessions inside a folder, with a "Delete All" / "Cancel"
+box — Escape cancels.
 
 You can also just type a name with a slash: saving as `Work/beta` creates the
 folder as it goes. Names are checked, so a session name can never escape the

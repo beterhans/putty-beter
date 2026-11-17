@@ -1073,11 +1073,52 @@ static int sessioncmp(const void *av, const void *bv)
         return -1;                     /* a comes first */
     if (!strcmp(b, "Default Settings"))
         return +1;                     /* b comes first */
+
     /*
-     * FIXME: perhaps we should ignore the first & in determining
-     * sort order.
+     * PuTTY-beter: at every level, folders come before sessions; within
+     * each, names are compared component by component, so that the entries
+     * of a folder stay together. A name ending in '/' is a folder.
      */
-    return strcmp(a, b);               /* otherwise, compare normally */
+    {
+        const char *pa = a, *pb = b;
+
+        while (1) {
+            const char *sa = strchr(pa, '/');
+            const char *sb = strchr(pb, '/');
+            /*
+             * A component is the last one of a name if there is no '/' after
+             * it, or if the '/' is the trailing one that marks a folder.
+             */
+            bool a_last = (sa == NULL || sa[1] == '\0');
+            bool b_last = (sb == NULL || sb[1] == '\0');
+            size_t la = sa ? (size_t)(sa - pa) : strlen(pa);
+            size_t lb = sb ? (size_t)(sb - pb) : strlen(pb);
+            size_t l = la < lb ? la : lb;
+            int c = memcmp(pa, pb, l);
+
+            if (a_last && b_last) {
+                /* Two entries side by side: folders before sessions. */
+                bool fa = (a[strlen(a)-1] == '/');
+                bool fb = (b[strlen(b)-1] == '/');
+
+                if (fa != fb)
+                    return fa ? -1 : +1;
+                if (c)
+                    return c;
+                return la < lb ? -1 : (la > lb ? +1 : 0);
+            }
+
+            if (c)
+                return c;
+
+            if (a_last != b_last)
+                return a_last ? -1 : +1;   /* the folder itself comes first */
+
+            /* Same component: look at the next one. */
+            pa = sa + 1;
+            pb = sb + 1;
+        }
+    }
 }
 
 bool sesslist_demo_mode = false;

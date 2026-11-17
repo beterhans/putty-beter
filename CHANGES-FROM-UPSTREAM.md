@@ -54,16 +54,16 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | File | +/- | What changed |
 |---|---|---|
 | `conf.h` | +19 / -7 | Seven default values changed (see below) |
-| `config.c` | +197 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
-| `dialog.h` | +47 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
+| `config.c` | +294 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
+| `dialog.h` | +62 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
 | `dialog.c` | +3 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` |
-| `settings.c` | +5 / -1 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform |
+| `settings.c` | +42 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level |
 | `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
 | `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
 | `unix/columns.c` | +54 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
-| `unix/dialog.c` | +412 / -14 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
+| `unix/dialog.c` | +519 / -14 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
 | `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
@@ -72,7 +72,7 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `unix/storage.c` | +880 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
 | `unix/window.c` | +196 / -8 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
-| `windows/controls.c` | +26 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index) |
+| `windows/controls.c` | +53 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index) |
 | `windows/storage.c` | +18 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
 | `storage.h` | +19 / -0 | Declarations for the folder operations and the name checks |
 | `CMakeLists.txt` | +7 / -0 | `test_sessions` target |
@@ -289,9 +289,19 @@ configuration box, and moved between folders by dragging.
   live in `unix/storage.c`; `session_move_target_name()` works out the name a
   drag would give, so that the fiddly part is testable without a front end.
 * The dialog layer gained a `tree` flag on list boxes, a `drag_handler` hook,
-  and `dlg_listbox_selected_id()` / `dlg_listbox_select_id()`: with a tree, a
-  row index is ambiguous, so the configuration box identifies rows by id
-  (the index of the name in the session list).
+  and `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` /
+  `dlg_listbox_selected_ids()`: with a tree, a row index is ambiguous, so the
+  configuration box identifies rows by id (the index of the name in the
+  session list). The plural one is what makes a drag move the whole
+  selection, and what lets Delete remove several rows at once.
+* The session list is a multi-select list, so a group of sessions can be
+  dragged into a folder together, or deleted together. `dlg_listbox_selected_id()`
+  falls back to the row under the cursor when several are selected, so Load
+  and Save still act on something sensible.
+* `sessioncmp()` puts **folders before sessions at every level** (then
+  compares component by component, so a folder's contents stay together),
+  which is what makes the tree show folders at the top of each level.
+  "Default Settings" still comes first.
 * In tree mode the GTK front end builds the hierarchy from the `/` in the
   names, keeps a folder flag in an extra, undisplayed model column, shows
   folders in bold, expands them as they gain children, and drags rows onto

@@ -2347,6 +2347,23 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index)
 }
 
 /*
+ * PuTTY-beter: every selected row's id. This front end has no tree list
+ * boxes, so there is at most one, and the single-row lookup is enough.
+ */
+int dlg_listbox_selected_ids(dlgcontrol *ctrl, dlgparam *dp, int **ids)
+{
+    int id = dlg_listbox_selected_id(ctrl, dp);
+
+    *ids = NULL;
+    if (id < 0)
+        return 0;
+
+    *ids = snew(int);
+    (*ids)[0] = id;
+    return 1;
+}
+
+/*
  * PuTTY-beter: ask a question with a few buttons. This front end has no
  * equivalent of the GTK message box's button list, so the first button is
  * the one that is offered.

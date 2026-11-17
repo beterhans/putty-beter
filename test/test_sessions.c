@@ -123,6 +123,21 @@ static bool listed(const char *name)
     return found;
 }
 
+/* Where a name appears in the session list, or -1 if it is not there. */
+static int list_position(const char *name)
+{
+    struct sesslist sl;
+    int pos = -1;
+
+    get_sesslist(&sl, true);
+    for (int i = 0; i < sl.nsessions; i++)
+        if (!strcmp(sl.sessions[i], name))
+            pos = i;
+    get_sesslist(&sl, false);
+
+    return pos;
+}
+
 static void expect_listed(const char *name, bool want)
 {
     bool got = listed(name);
@@ -362,6 +377,31 @@ int main(void)
         expect_err("session_rmdir_force(Alpha)", session_rmdir_force("Alpha"));
         expect_err("session_rmdir_force(nothing)",
                    session_rmdir_force("Not There"));
+    }
+
+    /* Folders sort before sessions, at every level. */
+    {
+        char *err;
+
+        save("Zulu", "zulu.example.com");
+        err = session_mkdir("apple");
+        if (err) { fail("session_mkdir(apple): %s", err); sfree(err); }
+
+        if (list_position("Default Settings") != 0)
+            fail("\"Default Settings\" should still be first");
+
+        if (list_position("apple/") < 0 || list_position("Zulu") < 0 ||
+            list_position("apple/") > list_position("Zulu"))
+            fail("the folder apple/ should sort before the session Zulu");
+
+        if (list_position("Work/Sub/") > list_position("Work/beta"))
+            fail("the folder Work/Sub/ should sort before Work/beta");
+
+        del_settings("Zulu");
+        {
+            char *e2 = session_rmdir("apple");
+            if (e2) { fail("session_rmdir(apple): %s", e2); sfree(e2); }
+        }
     }
 
     /* The names a drag between rows would produce. */

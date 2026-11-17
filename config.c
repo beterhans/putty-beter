@@ -823,71 +823,23 @@ static char *selected_session_name(struct sessionsaver_data *ssd,
 }
 
 /*
- * PuTTY-beter: deleting a folder that still has sessions in it asks first,
- * because that is the one action here that can throw work away.
+ * PuTTY-beter: delete a set of sessions and folders. A folder is removed
+ * only when it is empty unless `force` is set, which is what the user agrees
+ * to when asked.
  */
-struct delfolder_ctx {
-    struct sessionsaver_data *ssd;
-    dlgparam *dlg;
-    char *name;
-};
-
-static void delfolder_answer(void *vctx, int button)
+static void delete_names(struct sessionsaver_data *ssd, dlgparam *dlg,
+                         char *const *names, int nnames, bool force)
 {
-    struct delfolder_ctx *c = (struct delfolder_ctx *)vctx;
-    char *err = NULL;
+    for (int i = 0; i < nnames; i++) {
+        char *err;
 
-    if (button == 0) {                 /* "Delete All" */
-        err = session_rmdir_force(c->name);
-        if (err) {
-            dlg_error_msg(c->dlg, err);
-            sfree(err);
+        if (sesslist_is_folder(names[i])) {
+            err = force ? session_rmdir_force(names[i])
+                        : session_rmdir(names[i]);
+        } else {
+            del_settings(names[i]);
+            err = NULL;
         }
-    }
-
-    get_sesslist(&c->ssd->sesslist, false);
-    get_sesslist(&c->ssd->sesslist, true);
-    dlg_refresh(c->ssd->listbox, c->dlg);
-
-    sfree(c->name);
-    sfree(c);
-}
-
-/*
- * PuTTY-beter: move a session, or a whole folder, as the result of a drag in
- * the list. `dst_id` is the folder it was dropped on, or -1 for the top
- * level.
- */
-static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg,
-                              int src_id, int dst_id)
-{
-    struct sessionsaver_data *ssd =
-        (struct sessionsaver_data *)ctrl->context.p;
-    const char *src, *dst;
-    char *newname, *err;
-
-    if (src_id < 0 || src_id >= ssd->sesslist.nsessions)
-        return;
-
-    src = ssd->sesslist.sessions[src_id];
-
-    /* "Default Settings" is not a real session and cannot be moved. */
-    if (!strcmp(src, "Default Settings"))
-        return;
-
-    dst = NULL;
-    if (dst_id >= 0 && dst_id < ssd->sesslist.nsessions)
-        dst = ssd->sesslist.sessions[dst_id];
-
-    /* The name it would have in the destination folder. */
-    newname = session_move_target_name(src, dst);
-
-    if (!strcmp(newname, src)) {
-        /* Dropped where it already was: nothing to move. */
-        sfree(newname);
-    } else {
-        err = session_move(src, newname);
-        sfree(newname);
 
         if (err) {
             dlg_error_msg(dlg, err);
@@ -895,10 +847,103 @@ static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg,
         }
     }
 
+    get_sesslist(&ssd->sesslist, false);
+    get_sesslist(&ssd->sesslist, true);
+    dlg_refresh(ssd->listbox, dlg);
+}
+
+static void free_names(char **names, int nnames)
+{
+    for (int i = 0; i < nnames; i++)
+        sfree(names[i]);
+    sfree(names);
+}
+
+/*
+ * Deleting folders that still have sessions in them asks first, because that
+ * is the one action here that can throw work away.
+ */
+struct delfolder_ctx {
+    struct sessionsaver_data *ssd;
+    dlgparam *dlg;
+    char **names;
+    int nnames;
+};
+
+static void delfolder_answer(void *vctx, int button)
+{
+    struct delfolder_ctx *c = (struct delfolder_ctx *)vctx;
+
+    if (button == 0)                   /* "Delete All" */
+        delete_names(c->ssd, c->dlg, c->names, c->nnames, true);
+
+    free_names(c->names, c->nnames);
+    sfree(c);
+}
+
+/*
+ * PuTTY-beter: move the selected sessions (or folders) into the folder they
+ * were dropped on, `dst_id` being that folder's row or -1 for the top level.
+ * Every selected row is moved, so that a group of sessions can be tidied up
+ * in one go.
+ */
+static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg, int dst_id)
+{
+    struct sessionsaver_data *ssd =
+        (struct sessionsaver_data *)ctrl->context.p;
+    const char *dst = NULL;
+    char *firsterr = NULL;
+    int *ids = NULL;
+    int nids;
+
+    if (dst_id >= 0 && dst_id < ssd->sesslist.nsessions)
+        dst = ssd->sesslist.sessions[dst_id];
+
+    nids = dlg_listbox_selected_ids(ctrl, dlg, &ids);
+
+    for (int i = 0; i < nids; i++) {
+        const char *src;
+        char *newname, *err;
+
+        if (ids[i] < 0 || ids[i] >= ssd->sesslist.nsessions)
+            continue;
+
+        src = ssd->sesslist.sessions[ids[i]];
+
+        /* "Default Settings" is not a real session and cannot be moved. */
+        if (!strcmp(src, "Default Settings"))
+            continue;
+
+        /* The name it would have in the destination folder. */
+        newname = session_move_target_name(src, dst);
+
+        if (!strcmp(newname, src)) {
+            /* Dropped where it already was: nothing to move. */
+            sfree(newname);
+            continue;
+        }
+
+        err = session_move(src, newname);
+        sfree(newname);
+
+        if (err) {
+            /* Report the first problem, but still move the rest. */
+            if (!firsterr)
+                firsterr = err;
+            else
+                sfree(err);
+        }
+    }
+    sfree(ids);
+
+    if (firsterr) {
+        dlg_error_msg(dlg, firsterr);
+        sfree(firsterr);
+    }
+
     /*
-     * The list is rebuilt from storage either way. The front end has already
-     * moved the row in its own model, and that move is only as good as the
-     * drop position, so this puts the display back in step with the disk.
+     * The list is rebuilt from storage either way, so that the display
+     * cannot drift from what is on disk.
      */
     get_sesslist(&ssd->sesslist, false);
     get_sesslist(&ssd->sesslist, true);
@@ -1033,58 +1078,65 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             dlg_refresh(ssd->listbox, dlg);
         } else if (!ssd->midsession &&
                    ssd->delbutton && ctrl == ssd->delbutton) {
-            int id = dlg_listbox_selected_id(ssd->listbox, dlg);
-            char *name = NULL, *err = NULL;
+            /*
+             * Everything selected goes, which may be several sessions and
+             * folders at once.
+             */
+            int *ids = NULL;
+            int nids = dlg_listbox_selected_ids(ssd->listbox, dlg, &ids);
+            char **names = snewn(nids + 1, char *);
+            int nnames = 0, ncontents = 0;
 
-            if (id > 0 && id < ssd->sesslist.nsessions)
-                name = dupstr(ssd->sesslist.sessions[id]);
+            for (int i = 0; i < nids; i++) {
+                const char *name;
 
-            if (!name) {
-                /* Nothing selected, or "Default Settings". */
-                dlg_beep(dlg);
-            } else if (sesslist_is_folder(name)) {
-                int entries = session_folder_entries(name);
+                if (ids[i] <= 0 || ids[i] >= ssd->sesslist.nsessions)
+                    continue;          /* skips "Default Settings" too */
 
-                if (entries == 0) {
-                    err = session_rmdir(name);
-                    if (err) {
-                        dlg_error_msg(dlg, err);
-                        sfree(err);
-                    }
-                } else if (entries > 0) {
-                    /*
-                     * A folder with sessions in it is only removed after the
-                     * user has been asked, since that throws them away.
-                     */
-                    static const char *const buttons[] = {
-                        "Delete All", "Cancel",
-                    };
-                    struct delfolder_ctx *c = snew(struct delfolder_ctx);
-                    char *question = dupprintf(
-                        "The folder \"%s\" contains %d item%s. "
-                        "Delete the folder and everything in it?",
-                        name, entries, entries == 1 ? "" : "s");
+                name = ssd->sesslist.sessions[ids[i]];
+                names[nnames++] = dupstr(name);
 
-                    c->ssd = ssd;
-                    c->dlg = dlg;
-                    c->name = name;    /* handed over to the callback */
-                    name = NULL;
-
-                    dlg_confirm(ssd->delbutton, dlg, "Delete Folder",
-                                question, buttons, 2, delfolder_answer, c);
-                    sfree(question);
-                    return;            /* the callback refreshes the list */
-                } else {
-                    dlg_error_msg(dlg, "That folder no longer exists.");
+                if (sesslist_is_folder(name)) {
+                    int entries = session_folder_entries(name);
+                    if (entries > 0)
+                        ncontents += entries;
                 }
-            } else {
-                del_settings(name);
             }
-            sfree(name);
+            sfree(ids);
 
-            get_sesslist(&ssd->sesslist, false);
-            get_sesslist(&ssd->sesslist, true);
-            dlg_refresh(ssd->listbox, dlg);
+            if (nnames == 0) {
+                dlg_beep(dlg);
+                free_names(names, nnames);
+            } else if (ncontents > 0) {
+                /*
+                 * Something in the selection is not empty, so ask before
+                 * throwing anything away.
+                 */
+                static const char *const buttons[] = {
+                    "Delete All", "Cancel",
+                };
+                struct delfolder_ctx *c = snew(struct delfolder_ctx);
+                char *question = dupprintf(
+                    nnames == 1 ?
+                    "The folder \"%s\" contains %d item%s. "
+                    "Delete the folder and everything in it?" :
+                    "The selection contains %d item%s in all, including "
+                    "sessions inside folders. Delete everything selected?",
+                    names[0], ncontents, ncontents == 1 ? "" : "s");
+
+                c->ssd = ssd;
+                c->dlg = dlg;
+                c->names = names;      /* handed over to the callback */
+                c->nnames = nnames;
+
+                dlg_confirm(ssd->delbutton, dlg, "Delete Sessions",
+                            question, buttons, 2, delfolder_answer, c);
+                sfree(question);
+                return;                /* the callback refreshes the list */
+            } else {
+                delete_names(ssd, dlg, names, nnames, false);
+                free_names(names, nnames);
+            }
         } else if (!ssd->midsession &&
                    ssd->newfolderbutton && ctrl == ssd->newfolderbutton) {
             /*
@@ -2151,6 +2203,7 @@ void setup_config_box(struct controlbox *b, bool midsession,
      * in folders, and a session can be dragged into a folder.
      */
     ssd->listbox->listbox.tree = true;
+    ssd->listbox->listbox.multisel = true;   /* so several can be dragged */
     ssd->listbox->listbox.drag_handler = sessionsaver_drag;
     if (!midsession) {
         ssd->loadbutton = ctrl_pushbutton(s, "Load", 'l',

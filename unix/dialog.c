@@ -849,22 +849,6 @@ void dlg_confirm(dlgcontrol *ctrl, dlgparam *dp,
                        dlg_confirm_done, c);
 }
 
-/*
- * PuTTY-beter: the row a drag started from. There is only ever one drag at a
- * time, so it is kept in a file-scope variable between the start of the drag
- * and the drop.
- */
-static int listbox_drag_source_id = -1;
-
-static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
-                               gpointer vdp)
-{
-    struct dlgparam *dp = (struct dlgparam *)vdp;
-    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
-
-    listbox_drag_source_id = ctrl ? dlg_listbox_selected_id(ctrl, dp) : -1;
-}
-
 static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
                                   gint x, gint y, GtkSelectionData *data,
                                   guint info, guint time, gpointer vdp)
@@ -877,8 +861,7 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
     int dest_id = -1;
     int tx, ty;
 
-    if (!ctrl || !view || !ctrl->listbox.drag_handler ||
-        listbox_drag_source_id < 0)
+    if (!ctrl || !view || !ctrl->listbox.drag_handler)
         return;
 
     model = gtk_tree_view_get_model(GTK_TREE_VIEW(view));
@@ -907,8 +890,7 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
         gtk_tree_path_free(path);
     }
 
-    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id, dest_id);
-    listbox_drag_source_id = -1;
+    ctrl->listbox.drag_handler(ctrl, dp, dest_id);
 }
 
 int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
@@ -925,10 +907,71 @@ int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
         return -1;
 
     sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
-    if (gtk_tree_selection_get_selected(sel, &model, &iter))
+    model = gtk_tree_view_get_model(GTK_TREE_VIEW(uc->treeview));
+
+    if (gtk_tree_selection_get_selected(sel, &model, &iter)) {
         gtk_tree_model_get(model, &iter, 0, &id, -1);
+    } else {
+        /*
+         * Nothing selected, or several rows are: fall back to the row the
+         * cursor is on, so that Load and Save still act on something.
+         */
+        GtkTreePath *path = NULL;
+
+        gtk_tree_view_get_cursor(GTK_TREE_VIEW(uc->treeview), &path, NULL);
+        if (path) {
+            if (gtk_tree_model_get_iter(model, &iter, path))
+                gtk_tree_model_get(model, &iter, 0, &id, -1);
+            gtk_tree_path_free(path);
+        }
+    }
 
     return id;
+}
+
+struct collect_ids_ctx {
+    GtkTreeSelection *sel;
+    int *ids;
+    int n;
+};
+
+static gboolean collect_selected_ids(GtkTreeModel *model, GtkTreePath *path,
+                                     GtkTreeIter *iter, gpointer vctx)
+{
+    struct collect_ids_ctx *c = (struct collect_ids_ctx *)vctx;
+
+    if (gtk_tree_selection_iter_is_selected(c->sel, iter)) {
+        int id = -1;
+
+        gtk_tree_model_get(model, iter, 0, &id, -1);
+        c->ids = sresize(c->ids, c->n + 1, int);
+        c->ids[c->n++] = id;
+    }
+
+    return false;
+}
+
+int dlg_listbox_selected_ids(dlgcontrol *ctrl, dlgparam *dp, int **ids)
+{
+    struct uctrl *uc = dlg_find_byctrl(dp, ctrl);
+    struct collect_ids_ctx c;
+
+    assert(uc->ctrl->type == CTRL_LISTBOX);
+
+    *ids = NULL;
+
+    if (!uc->treeview)
+        return 0;
+
+    c.sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
+    c.ids = NULL;
+    c.n = 0;
+
+    gtk_tree_model_foreach(gtk_tree_view_get_model(GTK_TREE_VIEW(uc->treeview)),
+                           collect_selected_ids, &c);
+
+    *ids = c.ids;
+    return c.n;
 }
 
 void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id)
@@ -2838,15 +2881,9 @@ GtkWidget *layout_ctrls(
                             { (gchar *)"text/plain", GTK_TARGET_SAME_APP, 0 },
                         };
 
-                        /*
-                         * "putty-ctrl" on both: the drop handler runs on
-                         * the scrolled window, and drag-begin on the tree
-                         * view (the drag source).
-                         */
                         g_object_set_data(G_OBJECT(scroll), "putty-ctrl",
                                           ctrl);
                         g_object_set_data(G_OBJECT(scroll), "putty-tree", w);
-                        g_object_set_data(G_OBJECT(w), "putty-ctrl", ctrl);
 
                         gtk_tree_view_enable_model_drag_source(
                             GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,
@@ -2854,8 +2891,6 @@ GtkWidget *layout_ctrls(
                         gtk_drag_dest_set(scroll, GTK_DEST_DEFAULT_ALL, targets,
                                           lenof(targets), GDK_ACTION_MOVE);
 
-                        g_signal_connect(G_OBJECT(w), "drag-begin",
-                                         G_CALLBACK(listbox_drag_begin), dp);
                         g_signal_connect(G_OBJECT(scroll),
                                          "drag-data-received",
                                          G_CALLBACK(listbox_drag_received),
