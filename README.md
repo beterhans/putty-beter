@@ -1,14 +1,27 @@
 # PuTTY for macOS
 
 A macOS build of [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) 0.85,
-plus the fixes needed to make its GTK front end behave properly on macOS, and
-**ZMODEM file transfer** (`sz`/`rz`) in both directions.
+plus the fixes needed to make its GTK front end behave properly on macOS,
+**ZMODEM file transfer** (`sz`/`rz`) in both directions, and an **MCP server**
+so an AI agent can watch and read a live session — see §13.
 
 Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICENCE`.
 
-A file-by-file account of every difference from the official PuTTY 0.85
-tarball, with the commands to reproduce the diff, is in
-[`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md).
+---
+
+## Documentation index
+
+| Document | What it is |
+|---|---|
+| **This file** | what the fork changes, how to build it, and how to use each feature |
+| [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) | every difference from the official PuTTY 0.85 tarball, file by file, with the commands to reproduce the diff |
+| [`PLAN.md`](PLAN.md) | the roadmap, and the reasoning behind each decision — §7 is the MCP design of record |
+| [`docs/mcp.md`](docs/mcp.md) | **how the MCP works**: the files, the wire protocol, the capture-buffer semantics, the socket and its permissions, the build, testing and debugging |
+| [`docs/mcp-user-manual.md`](docs/mcp-user-manual.md) | the manual the AI agent is given, as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, checked by `scripts/test-mcp.sh` |
+| [`mcp/README.md`](mcp/README.md) | the `putty-mcp` bridge: how to install it and point a client at it |
+| [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) | the canonical copy of the agent manual (what is actually served) |
+| [`docs/zmodem-protocol-notes.md`](docs/zmodem-protocol-notes.md) | byte-exact ZMODEM protocol reference, with the licence status of every source it draws on |
+| [`tools/README.md`](tools/README.md) | why `gtk-mac-bundler` is not vendored, and how to fetch it |
 
 ---
 
@@ -85,8 +98,10 @@ PNG is newer than the `.icns`.
 
 `PUTTY_DIAG=1` traces key events, clipboard activity, font metrics and cursor
 placement to stderr. `PUTTY_CONFIG_DEBUG=1` traces the configuration folder
-resolution and relocation, and the remembered configuration-box size. Neither
-has any effect when unset.
+resolution and relocation, and the remembered configuration-box size.
+`PUTTY_MCP_DEBUG=1` traces the MCP server (§13) — whether a session offered
+itself, where the socket went and with what permissions, and every request and
+reply. None of them has any effect when unset.
 
 ### 7. Configuration box
 
@@ -189,6 +204,115 @@ GTK's dialog windows also had **see-through title bars** on macOS: GTK gives a
 it. Fixed with one line of ordinary GTK API per dialog (no Objective-C) — see
 `gtk_dialog_fix_macos_titlebar()` in `unix/gtkcompat.h`. The configuration box,
 About box and message boxes were never affected.
+
+---
+
+### 13. MCP: let an AI agent read a session
+
+An AI agent can read a session **in the window you are looking at**, so you can
+watch what it is doing, take over at any moment, and answer the prompts it
+cannot, and can type into it (`send` text, `key` one keystroke). What is
+missing is anything that *waits* for a command to finish — that is phase 4b.
+
+It is **off by default and per session** — *Session → Automation (MCP) → Offer
+this session to an MCP client* — because turning it on offers the session to
+anything that can reach the socket. With it off, there is no socket, no token
+and no file at all.
+
+**Why this exists when `ssh` already runs commands.** An exec-per-command client
+is better for a Linux shell: it gets real exit codes and separated stderr. MCP
+in PuTTY is for what only PuTTY can do — a session that is already
+authenticated, network gear whose only interface *is* an interactive CLI, a
+serial console where there is no second session to be had, and a human who wants
+to watch.
+
+**How it is put together:**
+
+```
+OpenCode --stdio MCP (JSON-RPC)--> putty-mcp --Unix socket--> PuTTY
+             ("putty-mcp")          (mcp/, Node)             (unix/mcp.c)
+```
+
+The socket protocol is deliberately dumb — a list of length-prefixed fields, no
+JSON, no escaping — because the C side has no JSON parser and should not grow
+one. All of the MCP and JSON lives in `mcp/`, so MCP's spec churn never touches
+the fork, and the socket can be driven with no LLM in the loop at all.
+
+**The capture buffer is its own record of the output**, not the terminal's
+scrollback: scrollback is a display setting, and MCP must see every byte. Line
+ids are **absolute and never reused**, so a client can tell exactly what it
+missed when its cursor falls out of the retained window, and the reply says so
+explicitly rather than losing output silently.
+
+**Setting it up:**
+
+```sh
+# once, for the bridge's dependencies
+cd mcp && npm install
+
+# and rebuild the app: the server is compiled into the front end, so a
+# PuTTY.app built before this change will not have it
+scripts/build-macos.sh arm64 && scripts/bundle-macos.sh arm64
+```
+
+then add to `~/.config/opencode/opencode.json`:
+
+```json
+"putty-mcp": {
+  "type": "local",
+  "command": ["node", "/path/to/putty-beter/mcp/bin/putty-mcp.mjs", "mcp"]
+}
+```
+
+It is also a plain command-line client, which is the first thing to reach for
+when something is wrong — no LLM involved:
+
+```sh
+node mcp/bin/putty-mcp.mjs list              # sessions PuTTY is offering
+node mcp/bin/putty-mcp.mjs read 1            # the output, with line ids
+node mcp/bin/putty-mcp.mjs read 1 --since 12 # follow from a cursor
+node mcp/bin/putty-mcp.mjs screen 1          # the visible screen
+node mcp/bin/putty-mcp.mjs manual            # what the agent reads
+```
+
+The agent is given a **user manual** — the `user_manual` tool, the
+`putty://manual` resource, and a pointer in MCP's handshake instructions — so it
+does not have to guess how cursors, gaps and unfinished prompt lines work.
+
+**The socket** lives in `$TMPDIR/putty-mcp-<uid>/` (`sock`, `token`,
+`endpoint`; the endpoint is also copied into the configuration folder as
+`mcp-endpoint`). It is `0600`, or `0660` in the `putty-mcp` group if that group
+exists — plain `0660` would use macOS's default group, which contains every
+local account.
+
+**Debug:** `PUTTY_MCP_DEBUG=1` in PuTTY's environment traces the socket, the
+handshake and every request and reply; `putty-mcp list --debug` traces the
+bridge's side.
+
+**Test:** `scripts/test-mcp.sh` starts its own `pterm` against a throwaway
+configuration folder and checks the whole path end to end (18 checks). It needs
+a display, and touches nothing of yours. `mcp/test/protocol.test.mjs` covers the
+bridge's own framing and discovery with no PuTTY at all.
+
+**Working on the bridge?** An MCP client spawns `putty-mcp mcp` **once** and
+keeps that process for the whole life of its session, so an edit under `mcp/` is
+invisible until the client is restarted — and the old code keeps working, just
+wrongly. Killing the process does not help: the client drops the server and does
+not respawn it. Use the CLI meanwhile (it starts a fresh process every time), and
+restart the client when you are done.
+
+**Where to read more:**
+
+* [`docs/mcp.md`](docs/mcp.md) — **how it works**: the files, the wire protocol
+  (with a snippet for driving the socket by hand), the capture-buffer semantics,
+  the socket and its permissions, the build, and what is still missing.
+* [`docs/mcp-user-manual.md`](docs/mcp-user-manual.md) — the manual the agent is
+  given, as a plain document. `mcp/USER-MANUAL.md` is the canonical copy, and
+  the two are kept identical by a check in the smoke test.
+* [`mcp/README.md`](mcp/README.md) — installing the bridge and pointing a client
+  at it.
+* `PLAN.md` §7 — the design and the decisions; §7.11 for what was actually
+  built, and the nine places it departed from the sketch.
 
 ---
 

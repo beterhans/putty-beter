@@ -1,0 +1,26 @@
+{
+  "name": "putty-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP bridge for PuTTY-beter: lets an AI agent read a live PuTTY session",
+  "type": "module",
+  "bin": {
+    "putty-mcp": "bin/putty-mcp.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "USER-MANUAL.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoke": "node bin/putty-mcp.mjs help > /dev/null && node bin/putty-mcp.mjs manual > /dev/null && echo 'putty-mcp: the CLI runs (this does not need PuTTY)'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  }
+}

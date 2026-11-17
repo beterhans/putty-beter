@@ -46,29 +46,34 @@ fixes, so `git log` alone shows only the later work.
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
+| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — and type into it, over a Unix socket, with a `putty-mcp` bridge and an agent-facing user manual. Off by default, per session, with reading and typing as separate opt-ins. Nothing waits for a command to finish yet. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
-| Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
+| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1` and `PUTTY_MCP_DEBUG=1` runtime traces. |
 
 ---
 
 ## Modified upstream files
 
-Line counts are `+added / -removed` against the 0.85 tarball.
+Line counts are `+added / -removed` against the 0.85 tarball, from
+`git diff --no-index --numstat putty-0.85/<file> <file>`. They are a rough size
+guide, not a contract: `git` and GNU `diff` group hunks differently, so another
+tool will give slightly different numbers for the same change.
 
 | File | +/- | What changed |
 |---|---|---|
-| `conf.h` | +54 / -7 | Seven default values changed (see below); `session_comment` and `zmodem_dir` added |
-| `config.c` | +399 / -31 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added |
+| `conf.h` | +70 / -7 | Seven default values changed (see below); `session_comment`, `zmodem_dir`, `mcp_enabled` and `mcp_write` added |
+| `config.c` | +419 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added |
 | `dialog.h` | +75 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
 | `dialog.c` | +7 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
 | `settings.c` | +133 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
-| `terminal/terminal.c` | +69 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
+| `terminal/terminal.c` | +151 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server |
+| `putty.h` | +2 / -0 | Declares `term_get_screen_text()` |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
-| `unix/CMakeLists.txt` | +16 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
+| `unix/CMakeLists.txt` | +20 / -1 | Build `unix/config-location.c`, `unix/mcp.c` and `unix/mcp-buffer.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
 | `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
 | `unix/config-location.c` | new | See the new-files table |
-| `unix/dialog.c` | +970 / -40 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; every file selector routed through the shared chooser |
+| `unix/dialog.c` | +969 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; every file selector routed through the shared chooser |
 | `unix/gtkcompat.h` | +26 / -0 | `gtk_dialog_fix_macos_titlebar()` — gives a `GtkDialog` an opaque title bar on macOS |
 | `unix/gtkmisc.h` | +10 / -0 | Declares `our_file_chooser_run()` |
 | `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
@@ -76,14 +81,14 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
 | `unix/platform.h` | +54 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
 | `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
-| `unix/storage.c` | +1110 / -28 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
+| `unix/storage.c` | +1107 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
-| `unix/window.c` | +760 / -16 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window) |
+| `unix/window.c` | +846 / -14 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback) |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
 | `storage.h` | +26 / -0 | Declarations for the folder operations and the name checks |
-| `CMakeLists.txt` | +27 / -1 | `test_sessions`, `test_zmodem` and `test_zmodem_interop` targets |
+| `CMakeLists.txt` | +34 / -1 | `test_sessions`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
 | `.gitignore` | +21 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
@@ -101,6 +106,17 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `docs/zmodem-protocol-notes.md` | Byte-exact protocol reference, with the licence status of every source it draws on |
 | `unix/utils/filechooser.c` | `our_file_chooser_run()` — the one file/folder chooser, with the full-path box |
 | `unix/config-location.c` | The "where should the configuration live?" dialog |
+| `unix/mcp.c` | The MCP server: the Unix socket, the session registry, the handshake, the length-prefixed wire protocol, and the endpoint files. Deliberately has no JSON — that lives in `mcp/` |
+| `unix/mcp.h` | The front end's interface to it: one session per window, a stream tap, and a callback for the visible screen |
+| `unix/mcp-buffer.c` | The capture buffer: escape stripping, line assembly, and the sliding window over absolute line ids. Free of GTK, of the terminal and of the socket, so it is testable on its own |
+| `unix/mcp-buffer.h` | Its interface, and the reasoning behind the id and gap semantics |
+| `test/test_mcp_buffer.c` | 95 checks over the capture buffer: escapes split across reads, a bare CR as a progress bar, chunking, eviction and the explicit gap, paging, truncation, author tags, and a sent line staying its own line |
+| `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
+| `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
+| `mcp/test/protocol.test.mjs` | 10 checks over the bridge's framing and its endpoint discovery, including following a `config-location` redirect. No PuTTY, no socket, no display |
+| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (18 checks) |
+| `docs/mcp.md` | **How the MCP works**, for whoever works on it next: the files, the wire protocol with a snippet for driving the socket by hand, the capture-buffer semantics, the socket and its permissions, the build, testing, debugging, and what is still missing |
+| `docs/mcp-user-manual.md` | The agent's manual as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, kept in step by a check in `scripts/test-mcp.sh` |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
 | `PLAN.md` | Roadmap and the reasoning behind it |
@@ -282,13 +298,17 @@ window that stays the size you made it, the list is the natural thing to grow.
 
 ## 8. Diagnostics
 
-Both are runtime switches and cost nothing when unset.
+These are runtime switches and cost nothing when unset.
 
 * `PUTTY_DIAG=1` — key events (keyval, name, modifier state), clipboard
   activity, font metrics, cursor placement, ZMODEM engine traces
   (`[zmodem] …`) and file-chooser results (`[filechooser] "…" -> …`).
 * `PUTTY_CONFIG_DEBUG=1` — configuration folder resolution and relocation, and
   the resulting default log file name.
+* `PUTTY_MCP_DEBUG=1` — MCP traces (`[mcp] …`): whether a session offered
+  itself, where the socket was created and with what permissions, the handshake,
+  and every request and reply. The bridge has its own `--debug` for the other
+  end of the same conversation.
 * `ZMODEM_INTEROP_TRACE=1`, `ZMODEM_INTEROP_DUMP=1` (raw streams to
   `/tmp/zm-in-*.bin` and `zm-out-*.bin`) and `ZMODEM_INTEROP_PRINTABLE=1` —
   only for `test/test_zmodem_interop`.
@@ -498,6 +518,143 @@ screen's plain system visual before the dialog is realized, which makes the
 window opaque again. That is one line of ordinary GTK API at each of the few
 real `GtkDialog` sites — no Objective-C and no AppKit internals.
 
+## 13. MCP: an AI agent can read a session
+
+An MCP client — OpenCode, in practice — can attach to a session **in the window
+the human is looking at**, read it, and type into it. Reading and typing are
+separate opt-ins; nothing yet *waits* for a command to finish (prompt detection,
+`run` and pager auto-answer are phase 4b of `PLAN.md` §7).
+
+**Off by default, and per session**, under *Session → Automation (MCP)*: turning
+the first setting on offers the session to anything that can reach the socket,
+and the second lets it be driven, so both are decisions the user makes per
+session rather than something the fork decides for them. With the first off
+there is no socket, no token and no file at all.
+
+**Typing is real, and it goes through the line discipline** — the same path a
+keystroke takes — so local echo and line editing behave normally. It is refused
+during a ZMODEM transfer, where those bytes would be protocol rather than input.
+A line a client sends gets its own line in the transcript, tagged `m`, so that
+what the agent typed can be told apart from what the device printed; the
+interrupted prompt is kept as a device line rather than being merged with it.
+
+**Why it exists when `ssh` already runs commands.** An exec-per-command client
+is better for a Linux shell: real exit codes, separated stderr, structural
+output attribution. MCP-in-PuTTY is for what only PuTTY can do — a session that
+is *already authenticated* (MFA, a jump host), network gear whose only interface
+*is* an interactive CLI, a serial console where there is no second session to be
+had, and a human who wants to watch and be able to take over.
+
+**Shape.**
+
+```
+OpenCode --stdio MCP (JSON-RPC)--> putty-mcp --Unix socket--> PuTTY
+             ("putty-mcp")          (mcp/, Node)             (unix/mcp.c)
+```
+
+**No JSON in the C code.** The socket speaks a list of length-prefixed fields —
+`u32 nfields`, then `nfields × (u32 length, length bytes)`, big-endian, no
+escaping — and the bridge does all of the MCP and JSON translation. That keeps
+MCP's spec churn out of the fork, and means the socket can be driven with no LLM
+in the loop at all: `putty-mcp list`, `putty-mcp read 1`, `putty-mcp screen 1`.
+
+**The capture buffer is its own record of the output.** It is deliberately *not*
+the terminal's scrollback: scrollback is a display setting, so a user can turn
+it down to nothing, while MCP has to see every byte regardless. It holds roughly
+the last 4 MB per session.
+
+It is tapped in `zm_terminal_output()` — the point where the bytes are about to
+be handed to the terminal — rather than in `gtk_seat_output()` where the ZMODEM
+engine is fed. At the latter the bytes have not been classified yet, so the
+prologue of a transfer (`**B00…`) would land in the transcript as junk and the
+engine's own pass-through text would be missed.
+
+**Line ids are absolute and never reused.** Line 1 is the first line of the
+session, forever. The window slides over that numbering, so when a reader's
+cursor falls out of it the reply says so explicitly —
+`gap: {missing_from, missing_to}` — rather than silently losing output, and
+`total_lines` is monotonic so a reader can always tell how far behind it is.
+
+**Two details worth recording, because both are easy to get wrong:**
+
+* A **bare carriage return** is "back to column 0", not a line ending — that is
+  what a progress bar does. Only `\r\n` or `\n` ends a line, decided by looking
+  at the byte *after* the CR. Otherwise a 60-second download turns into 600
+  lines of output.
+* The **unfinished last line** — the prompt — is reported, and does **not** move
+  the cursor, because it can still grow. It is also never truncated: a fragment
+  of it ("Rout") is worse than nothing. A *completed* line is truncated when it
+  exceeds the whole read budget, because the cursor has to be able to move past
+  it.
+
+**The socket** lives in `$TMPDIR/putty-mcp-<uid>/`, as **one set of files per
+process**: `sock.<pid>`, `token.<pid>` and `endpoint.<pid>`, with the endpoint
+also written into the configuration folder as `mcp-endpoint.<pid>` (a GUI app
+and a shell can disagree about `$TMPDIR`). It is `0600`, or `0660` in the
+`putty-mcp` group if that group exists — plain `0660` would use macOS's default
+group, `staff`, which contains every local account, and would let any local user
+type into your switches. A 32-byte token in a `0600` file is required in the
+handshake as well.
+
+**Per process, because the plain `putty` and `pterm` binaries run one process per
+window.** A single fixed socket name was a real bug: the second PuTTY unlinked
+the first one's socket and bound the same path, so the first became silently
+unreachable, and the second's cleanup then unlinked the path again. The bridge
+now merges every server it finds, and a session id carries the pid
+(`72377001`) so ids stay unique across processes without any shared state. The
+bridge also follows a `config-location` redirect when looking for the endpoint
+file, so a *relocated* configuration is found — which is the shape most
+installations actually have.
+
+**The agent is given a manual.** `mcp/USER-MANUAL.md` is served by the
+`user_manual` tool, by the `putty://manual` resource, and as a pointer in MCP's
+handshake instructions. An agent that has to guess how cursors, gaps and
+unfinished lines work will get them wrong, and prose is the only way to explain
+semantics that no schema can express.
+
+**Debug:** `PUTTY_MCP_DEBUG=1` in PuTTY's environment traces the socket, the
+handshake and every request and reply; `putty-mcp list --debug` traces the
+bridge's side of the same conversation.
+
+### What driving a real session found
+
+The feature was exercised against a live SSH login to an Intel Mac, and the
+session found three bugs the test suite had not. All three were in the
+"obviously fine" category, which is the argument for doing it:
+
+1. **A second PuTTY stole the first one's socket.** The socket had a single
+   fixed name, but the plain `putty` and `pterm` binaries run one process per
+   window. The second process unlinked the first one's socket and bound the same
+   path, so the first became silently unreachable, and the second's cleanup then
+   unlinked the path again. Files are now per process (`sock.<pid>` and friends)
+   and the bridge merges every server it finds; session ids carry the pid so they
+   stay unique across processes.
+2. **A sent line was merged with the far end's echo**, and worse, our own Return
+   set the buffer's "pending CR" flag — so the echo's first character was read as
+   "back to column 0" and *discarded the line*, losing both the prompt and the
+   command. `mcp_buffer_note_sent()` now closes any in-progress line first and
+   treats a CR from us as a line ending.
+3. **`read` refused to work on any session with more than about 19 lines of
+   output.** A 64-field sanity limit on incoming messages is ample for requests
+   (the most is four fields) but nonsense for replies: `read` returns three fields
+   per line, so an ordinary 8 KB reply from a 200-line session carries 607. It
+   failed as "malformed response from PuTTY", which pointed at nothing.
+
+**And one thing that is not a bug but bites anyway:** an MCP client spawns
+`putty-mcp mcp` once and keeps that process for the life of its session, so
+editing the bridge has no effect until the client restarts, and a running Node
+process cannot reload itself. Killing the stale process does *not* help — the
+client drops the server for the rest of the session and does not respawn it
+(verified). Three mitigations: the protocol version is checked at the handshake,
+so a format change is reported rather than misread; the bridge warns on stderr if
+its own source files are newer than its process; and the CLI always runs the
+current code, because it starts a fresh process per invocation.
+
+**Test:** `scripts/test-mcp.sh` (18 checks) starts its own `pterm` against a
+throwaway configuration folder and verifies the whole path, including the
+escape stripping, the paging and the refusal of an unknown session id. It needs
+a display and touches nothing of yours.
+
 ## Worth reporting upstream
 
 1. **`OSX_GTK` is never defined by the CMake build**, so every macOS-specific
@@ -515,6 +672,7 @@ real `GtkDialog` sites — no Objective-C and no AppKit internals.
 
 * Still GTK 3, as upstream. Only AppKit would be "universal" without bundling
   every dependency, and that is a rewrite, not a fork.
-* No ZMODEM, session folders, saved passwords or MCP server yet — see `PLAN.md`.
+* No saved passwords, and no *writing* to a session from MCP yet — see
+  `PLAN.md`.
 * Copy-on-select (`CLIPUI_DEFAULT_AUTOCOPY`) is still off, matching the macOS
   Human Interface Guidelines.

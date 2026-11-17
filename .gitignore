@@ -165,3 +165,7 @@ Makefile
 
 # macOS Finder metadata
 .DS_Store
+
+# The MCP bridge's dependencies. Recreate them with `cd mcp && npm install`;
+# package-lock.json is committed, so the SDK version is pinned.
+/mcp/node_modules/

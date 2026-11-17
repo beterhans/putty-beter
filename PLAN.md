@@ -3,9 +3,10 @@
 Status: **in development.** Phases 0, 1a, most of 2 and all of 3 are done: a
 native arm64 `.app` builds and bundles, with session folders, per-session
 comments, a relocatable configuration folder, a reworked configuration box, and
-ZMODEM `sz`/`rz` file transfer working in both directions. The universal
-(Intel + ARM) signed `.app` and MCP are still to come — MCP is specified in §7;
-see the milestones at the end.
+ZMODEM `sz`/`rz` file transfer working in both directions. MCP is also working — an agent can list sessions, read their output and read the
+visible screen, see §7. The universal (Intel + ARM) signed `.app`, and the
+rest of MCP (driving a session, completion detection, human-in-the-loop), are
+still to come; see the milestones at the end.
 
 Base: vanilla **PuTTY 0.85** source, MIT-licensed.
 Repo: <https://github.com/beterhans/putty-beter>
@@ -57,10 +58,9 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
 
 | Runtime | Version | Planned use |
 |---|---|---|
-| system python3 | 3.9.6 | gtk-mac-bundler (if it works) |
-| uv python | 3.12 (`~/.local/bin/python3.12`) | MCP server option B (Python) |
-| node | v26.11.1 | MCP server option A (TypeScript) |
-| npm | 11.20.0 | MCP SDK install |
+| system python3 | 3.9.6 | gtk-mac-bundler (if it works); `scripts/test-mcp.sh` |
+| node | v26.11.1 | **the MCP bridge** (chosen over Python: the reference SDK) |
+| npm | 11.20.0 | `@modelcontextprotocol/sdk` into `mcp/node_modules` |
 
 **Platform model in the source**
 
@@ -105,6 +105,26 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
   Mach-O in the two bundles into one, then re-sign.
 - **Signing / notarisation — not started.** Needs an Apple Developer account, a
   hardened runtime and `notarytool`.
+
+**Phase 1b is easier than this section assumes — checked on real hardware
+(2026-11-18).** `MacMini2018.local` is an **Intel Core i7-8700B on macOS 15.8.2
+(x86_64)**, and it has an **Intel Homebrew already, natively, at `/usr/local`**
+(`HOMEBREW_PREFIX: /usr/local`, `CPU: dodeca-core 64-bit kabylake`). No Rosetta,
+no second Homebrew, no cross-arch prefix juggling. Its toolchain:
+
+| Needed | There |
+|---|---|
+| cmake / ninja / pkgconf | 4.5.0 / 1.13.2 / 3.0.11 ✓ |
+| halibut / git / perl | 1.3 / 2.56.0_1 / 5.34.1 (system) ✓ |
+| Xcode CLT | full Xcode, Apple clang 17.0.0 ✓ |
+| **gtk+3** | **missing** — the only thing to install |
+
+So step 2 below becomes `brew install gtk+3 adwaita-icon-theme` *on the Intel
+machine*, and the x86_64 build is native. The lipo step (1c) is unchanged: two
+per-arch bundles still have to be merged, because the *arm64* side's GTK is
+single-arch. A native x86_64 build is also the honest way to verify the Intel
+slice, rather than Rosetta on an Apple Silicon machine — which matters, since
+Rosetta is on its way out anyway.
 
 **Reality check (researched 2026-11-16)**
 - **Rosetta 2 is going away.** macOS 27 (this machine) is the *last* release with Rosetta;
@@ -711,7 +731,11 @@ the human watches, can take over, and handles the prompts the AI cannot (passwor
 confirmations). Where a password prompt appears, the AI pauses, the human types into the GUI, and
 the AI continues.
 
-Status: **specified, not started.** Decisions below were settled 2026-11-17.
+Status: **phase 4a (M6a) is built and working.** The socket server, the capture
+buffer and `sessions` / `read` / `screen` / `send` / `key`, the `putty-mcp` bridge
+and its user manual all exist and are tested. Phases 4b–4e are not started.
+Decisions below were settled 2026-11-17; the "As built" notes at the end of this
+section record where the implementation departed from the sketch, and why.
 
 ### 7.1 Why this exists, and what it is not
 
@@ -756,9 +780,13 @@ Reuse the socket + shared-secret + protocol-version handshake from `ssh/sharing.
 - **Unix domain socket, mode `0660`, in a dedicated group** (`putty-mcp`) holding only the users
   who should drive it. macOS defaults files to group `staff`, which includes every local account,
   so `0660` + `staff` would let any local user type into your switches.
-- **Location: a local, private path** — `$TMPDIR/putty-mcp-<uid>.sock`, recorded in config so the
+- **Location: a local, private path** — `$TMPDIR/putty-mcp-<uid>/`, recorded in config so the
   bridge can find it. Not the config folder: `~/Documents` can be iCloud Drive, and a Unix socket
   cannot live on a synced or network filesystem.
+- **One socket per process**, not one per user — see §7.11. The plain `putty` and `pterm`
+  binaries run one process per window, so a single fixed name lets the second PuTTY unlink the
+  first one's socket. The bridge merges every server it finds, and session ids carry the pid so
+  they stay unique across processes.
 - **No TCP in v1.** If a second machine ever needs to reach it, add a TCP listener **bound to
   `127.0.0.1` only** and reach it through an SSH tunnel (`ssh -N -L …`). Never bind to `0.0.0.0`:
   that puts "type into my switches" on the LAN.
@@ -888,8 +916,8 @@ mitigation is a policy layer plus the audit log, not prompt engineering.
 
 | Phase | Content |
 |---|---|
-| **4a** | Socket server + handshake + `sessions` / `read` / `screen` (read-only), and a `putty-mcp` CLI usable by a human (`putty-mcp list`, `putty-mcp run <sess> "show version"`) so the whole thing is testable and debuggable with no LLM in the loop |
-| **4b** | `run` with echo/quiet/prompt detection, pager auto-answer, author tagging — **the core** |
+| **4a** | Socket server + handshake + `sessions` / `read` / `screen` (read-only), and a `putty-mcp` CLI usable by a human (`putty-mcp list`, `putty-mcp read <sess>`) so the whole thing is testable and debuggable with no LLM in the loop. **As built, also `send` and `key`** — see §7.11 |
+| **4b** | `run` with echo/quiet/prompt detection, pager auto-answer, and the human's keystrokes tagged `h` — **the core** |
 | **4c** | Human-in-the-loop: prompt events, `needs_human`, reusing `prompts_t` |
 | **4d** | Safety: audit log, read-only/confirm modes, GUI "AI is driving" badge |
 | **4e** | `open_session`, `run_on_sessions`, ZMODEM tools, shadow-terminal upgrade |
@@ -901,6 +929,131 @@ which keeps v1 out of the credentials business entirely.
 `unix/window.c` (stream tap, key handling), `unix/dialog.c` + `config.c` (a
 `Session → Automation (MCP)` panel: prompt pattern, echo on/off/auto, quiet ms, buffer size,
 default read budget), `CMakeLists.txt`; new `mcp/` for the bridge.
+
+### 7.11 As built (2026-11-18) — phase 4a
+
+| Where | What |
+|---|---|
+| `unix/mcp-buffer.c/.h` (new) | the capture buffer: escape stripping, line assembly, the sliding window over absolute ids, `read` with gaps, paging and truncation |
+| `unix/mcp.c/.h` (new) | the socket server, the session registry, the wire protocol, the handshake, the endpoint files |
+| `test/test_mcp_buffer.c` (new) | 95 checks over the buffer; no socket, no GTK, links only `utils` |
+| `mcp/test/protocol.test.mjs` (new) | 10 checks over the bridge's framing and endpoint discovery; no PuTTY, no socket, no display |
+| `terminal/terminal.c`, `putty.h` | `term_get_screen_text()` — the visible screen as plain UTF-8, for `screen()` |
+| `unix/window.c` | `McpSession *mcp` in `GtkFrontend`; `mcp_start()` / `mcp_stop()` / `mcp_get_view()`; the stream tap in `zm_terminal_output()` |
+| `conf.h`, `config.c` | `CONF_mcp_enabled` (`McpEnabled`) and `CONF_mcp_write` (`McpWrite`), and the `Session/Automation (MCP)` panel with a checkbox for each |
+| `unix/CMakeLists.txt`, `CMakeLists.txt` | `mcp.c mcp-buffer.c` into `guiterminal`; new `test_mcp_buffer` target |
+| `mcp/` (new) | the Node bridge: `bin/putty-mcp.mjs`, `src/protocol.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/manual.mjs`, `USER-MANUAL.md`, `README.md` |
+| `scripts/test-mcp.sh` (new) | the smoke test: starts its own `pterm` against a throwaway `PUTTYDIR` and drives the bridge |
+
+**The wire protocol**, which the sketch left open. Both directions are
+`u32 nfields`, then `nfields × (u32 length, length bytes)`, big-endian. A field
+is a byte string: no escaping, no quoting. Integers travel as decimal text, so
+the two ends never have to agree on an integer width. Requests are `hello
+<version> <token>`, `sessions`, `read <id> <since> <max-bytes>`, `screen <id>`,
+`version` and `ping`; replies are `ok` followed by positional fields, or
+`error <message>`. A failed handshake or a malformed message drops the
+connection.
+
+**Where it departed from the sketch, and why.**
+
+1. **The capture buffer is its own translation unit** (`unix/mcp-buffer.c`), not
+   part of `unix/mcp.c`. Same reasoning the plan used for `terminal/zmodem.c`:
+   keeping it free of GTK, of the terminal and of the socket is what makes it
+   testable on its own, and it is where the subtle logic lives.
+2. **The socket is created lazily**, when the first MCP-enabled session
+   registers, and removed with the last one. This turned out to be the cleanest
+   reading of "opt-in": with the setting off there is no socket, no token and no
+   file at all, and `main-gtk-simple.c` and `main-gtk-application.c` needed no
+   change whatever.
+3. **The endpoint file is written twice** — next to the socket *and* into the
+   configuration folder. The sketch said the config folder; the socket's own
+   directory is the more reliable of the two, because a GUI app and a shell can
+   disagree about `$TMPDIR`.
+4. **A missing `putty-mcp` group means `0600`, not `0660`.** Falling back to
+   0660 with macOS's default group would be worse than not having the feature.
+5. **The session name is `conf_dest()`** — the host name or the serial line.
+   The sketch implied the saved-session name, but that is not available in
+   `puttyapp` (which is built against `stubs/no-cmdline.c`), and the id is what
+   clients key on anyway.
+6. **The unfinished last line is never truncated.** It is the prompt, it does
+   not move the cursor, and a fragment of it ("Rout") is worse than nothing. A
+   *completed* line is still truncated when it exceeds the whole budget, because
+   the cursor has to be able to move past it.
+7. **A user manual is part of the bridge**, which the sketch did not anticipate:
+   an agent that has to be told in prose how cursors and gaps work will get it
+   wrong otherwise. It is served by the `user_manual` tool, the
+   `putty://manual` resource, and a pointer in MCP's `instructions`.
+8. **Author tagging is not wired up yet.** `mcp_buffer_note_sent()` exists and
+   is tested, but nothing calls it from the front end: that is phase 4b, with
+   the rest of the run/expect machinery. Every line currently reports `d`.
+9. **One socket per process, and session ids carry the pid.** §7.3 said
+   `$TMPDIR/putty-mcp-<uid>.sock` — singular. That is fine for the `.app`,
+   which runs every window in one process, and wrong for the plain `putty` and
+   `pterm` binaries, which run one process per window: the second PuTTY
+   unlinked the first one's socket and bound the same path, leaving the first
+   silently unreachable, and its own cleanup then unlinked the path again. Found
+   by running two PuTTYs at once. The files are now `sock.<pid>` /
+   `token.<pid>` / `endpoint.<pid>` (and `mcp-endpoint.<pid>` in the config
+   folder), the bridge merges every server it finds, and the server's id base
+   is `pid * 1000` so ids are unique across processes with no shared state or
+   locking. The bridge does not depend on the arithmetic: `read` and `screen`
+   ask each server in turn.
+10. **The bridge follows `config-location`.** The endpoint file goes into the
+   *effective* configuration folder, so a bridge that only looked at
+   `~/.putty` would never find it in a relocated installation — which is the
+   shape most installations actually have. `mcp/src/protocol.mjs` mirrors
+   `config_redirect_read()` from `unix/storage.c`.
+11. **`send` and `key` were pulled forward out of 4b**, because they are what
+   makes the feature useful at all and they are small — §7.7 already listed them
+   as tools separate from `run`. They go through `ldisc_send()`, exactly as a
+   keystroke does, so local echo and line editing behave normally, and they are
+   refused during a ZMODEM transfer. Typing is a **separate opt-in**
+   (`McpWrite`) from reading (`McpEnabled`): offering a session to be read
+   should not quietly grant the ability to drive it. Everything that makes
+   typing *safe* — waiting, prompt detection, `needs_input`, cancelling — is
+   still 4b; until then the caller does the waiting by reading.
+   The protocol version went to 2 (`sessions` gained the `ro`/`rw` field), and
+   the handshake checks it, so a stale bridge says "unsupported protocol
+   version" rather than appearing to find no server.
+12. **A sent line is its own line in the transcript.**
+   `mcp_buffer_note_sent()` closes any line the far end is part-way through
+   before appending what we sent, and treats a CR from us as a line ending
+   rather than leaving it pending. Without the first, our text merges into the
+   device's prompt line and cannot be told apart from device output. Without the
+   second, our Return sets the pending-CR flag and the far end's *echo* of the
+   next character is read as "back to column 0", which discards the line and
+   loses both the prompt and the command — a real bug, now pinned by
+   `test_sent_lines`.
+13. **The tap is in `zm_terminal_output()`, not in `gtk_seat_output()`** where
+   ZMODEM is fed. §7.4 said "the same point ZMODEM does", but the same point
+   turns out to be the wrong one: at that point the bytes have not yet been
+   classified, so the prologue of a transfer (`**B00…`) lands in the transcript
+   as junk, and the engine's own pass-through text ("rz waiting to receive…")
+   is missed. `zm_terminal_output()` is called for exactly the bytes the
+   terminal is about to be shown, which is the correct definition of what MCP
+   should capture. The ZMODEM feed stays where it was.
+
+**Verified 2026-11-18:** `scripts/test-mcp.sh` — 18 checks, all passing, against
+a real `pterm` session: the server comes up, `list` finds the session by name,
+the bridge's own tests pass, `read` returns the lines in order with the escape
+sequences stripped and the unfinished prompt line present but not advancing the
+cursor, `read --since <cursor>` returns only that line, `read --max-bytes 8`
+pages down to one line without handing back a cut fragment, `screen` returns the
+visible rows and the size, **`send` + `key enter` reaches a shell that was
+waiting at a prompt and it answers**, our own text is tagged `m` while the
+interrupted prompt is kept as a device line, an unknown key name and an unknown
+session id are refused. Also: `test_mcp_buffer` 95/95,
+`mcp/test/protocol.test.mjs` 10/10, the other standalone tests, cryptsuite
+90/90, and the bundled `.app` carrying the server.
+
+Two PuTTYs offering sessions at once were checked by hand: both appear in
+`list` with distinct ids, `read` routes to the right process, and the second one
+no longer disturbs the first.
+
+The MCP server was driven by **OpenCode itself**, against a real SSH session to
+`MacMini2018.local`: `user_manual`, `sessions`, `read`, `screen` and `version`
+all answered correctly, and `read` returned the live prompt as an unfinished
+line exactly as designed.
 
 **Verification:** `putty-mcp list` sees open sessions; `read` returns lines with absolute ids and
 explicit gaps when a cursor is evicted; `run "show version"` on a switch returns exactly the output
@@ -979,7 +1132,10 @@ crates*, not a port of PuTTY:
 - [x] **M5** — ZMODEM upload + cancel (Phase 3, T2) — both directions verified against real
       `lrzsz`, 250000 bytes byte-for-byte; **serial untested**
 - [ ] **M6** — MCP: AI drives session, human-in-the-loop at prompts (Phase 4, O2) — see §7
-      - [ ] **M6a** — socket + `sessions`/`read`/`screen`, read-only, `putty-mcp` CLI (4a)
+      - [x] **M6a** — socket + `sessions`/`read`/`screen`, and `send`/`key` for typing,
+            with the `putty-mcp` CLI (4a) —
+            built and verified 2026-11-18; the bridge is Node/TypeScript with a `user_manual`
+            tool and a `putty://manual` resource. See §7.11
       - [ ] **M6b** — `run` with prompt detection and pager auto-answer (4b)
       - [ ] **M6c** — human-in-the-loop at prompts (4c)
       - [ ] **M6d** — audit log, read-only/confirm modes, GUI badge (4d)
