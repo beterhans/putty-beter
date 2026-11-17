@@ -86,6 +86,9 @@ char *session_rmdir(const char *name);
 /* False if a name is empty or has an empty, "." or ".." component. */
 bool session_name_is_valid(const char *name);
 
+/* The name `src` would have if moved into folder `dst` (NULL = top level). */
+char *session_move_target_name(const char *src, const char *dst);
+
 /*
  * Enumerate all saved sessions.
  */

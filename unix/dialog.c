@@ -50,6 +50,13 @@ struct Shortcuts {
 
 struct selparam;
 
+/* PuTTY-beter: tree list box helpers, defined further down. */
+static char *tree_display_name(const char *path);
+static void tree_get_iter_for_path(GtkTreeStore *store, const char *path,
+                                   int folder_col, GtkTreeIter *iter);
+static bool tree_find_id_rec(GtkTreeModel *model, GtkTreeIter *parent,
+                             int id, GtkTreeIter *out);
+
 struct uctrl {
     dlgcontrol *ctrl;
     GtkWidget *toplevel;
@@ -65,7 +72,10 @@ struct uctrl {
 #endif
 #if GTK_CHECK_VERSION(2,0,0)
     GtkWidget *treeview;      /* for listbox (GTK2), droplist+combo (>=2.4) */
-    GtkListStore *listmodel;  /* for all types of list box */
+    /* PuTTY-beter: a GtkTreeStore rather than a GtkListStore, so that
+     * tree list boxes work; with every row at top level it behaves
+     * exactly like a list store for the flat ones. */
+    GtkTreeStore *listmodel;
 #endif
     GtkWidget *text;          /* for text */
     GtkWidget *label;         /* for dlg_label_change */
@@ -423,7 +433,7 @@ void dlg_listbox_clear(dlgcontrol *ctrl, dlgparam *dp)
 #endif
 #if GTK_CHECK_VERSION(2,0,0)
     if (uc->listmodel) {
-        gtk_list_store_clear(uc->listmodel);
+        gtk_tree_store_clear(uc->listmodel);
         return;
     }
 #endif
@@ -456,7 +466,7 @@ void dlg_listbox_del(dlgcontrol *ctrl, dlgparam *dp, int index)
         assert(uc->listmodel != NULL);
         path = gtk_tree_path_new_from_indices(index, -1);
         gtk_tree_model_get_iter(GTK_TREE_MODEL(uc->listmodel), &iter, path);
-        gtk_list_store_remove(uc->listmodel, &iter);
+        gtk_tree_store_remove(uc->listmodel, &iter);
         gtk_tree_path_free(path);
         return;
     }
@@ -594,32 +604,284 @@ void dlg_listbox_addwithid(dlgcontrol *ctrl, dlgparam *dp,
     if (uc->listmodel) {
         GtkTreeIter iter;
         int i, cols;
+        bool tree = (uc->ctrl->type == CTRL_LISTBOX && ctrl->listbox.tree);
+        int folder_col = 0;
+        char *leaf = NULL;
+
+        cols = (uc->ctrl->type == CTRL_LISTBOX ? ctrl->listbox.ncols : 1);
+        cols = cols ? cols : 1;
+
+        if (tree) {
+            /*
+             * PuTTY-beter: a tree row shows only the last component of the
+             * name; the rows for the folders above it are made as needed.
+             */
+            folder_col = 1 + cols;
+            leaf = tree_display_name(text);
+        }
 
         dp->flags |= FLAG_UPDATING_LISTBOX;/* inhibit drag-list update */
-        gtk_list_store_append(uc->listmodel, &iter);
+        if (tree)
+            tree_get_iter_for_path(uc->listmodel, text, folder_col, &iter);
+        else
+            gtk_tree_store_append(uc->listmodel, &iter, NULL);
         dp->flags &= ~FLAG_UPDATING_LISTBOX;
-        gtk_list_store_set(uc->listmodel, &iter, 0, id, -1);
+        gtk_tree_store_set(uc->listmodel, &iter, 0, id, -1);
+
+        if (tree) {
+            size_t tlen = strlen(text);
+
+            if (tlen > 0 && text[tlen-1] == '/')
+                gtk_tree_store_set(uc->listmodel, &iter, folder_col, true, -1);
+            text = leaf;
+        }
 
         /*
          * Now go through text and divide it into columns at the tabs,
          * as necessary.
          */
-        cols = (uc->ctrl->type == CTRL_LISTBOX ? ctrl->listbox.ncols : 1);
-        cols = cols ? cols : 1;
         for (i = 0; i < cols; i++) {
             int collen = strcspn(text, "\t");
             char *tmpstr = mkstr(make_ptrlen(text, collen));
-            gtk_list_store_set(uc->listmodel, &iter, i+1, tmpstr, -1);
+            gtk_tree_store_set(uc->listmodel, &iter, i+1, tmpstr, -1);
             sfree(tmpstr);
             text += collen;
             if (*text) text++;
         }
+        sfree(leaf);
         goto done;
     }
 #endif
     unreachable("bad control type in listbox_addwithid");
   done:
     dp->flags &= ~FLAG_UPDATING_COMBO_LIST;
+}
+
+/*
+ * PuTTY-beter: helpers for tree list boxes.
+ *
+ * Entries are added as ordinary names; a '/' splits one into nested rows, and
+ * a trailing '/' marks a row as a folder, so that empty folders can appear.
+ * Folder rows carry a flag in an extra model column that is not displayed.
+ */
+
+/* The leaf of a session name: "Work/Sub/" -> "Sub". */
+static char *tree_display_name(const char *path)
+{
+    size_t len = strlen(path), i, start = 0;
+
+    while (len > 0 && path[len-1] == '/')
+        len--;
+
+    for (i = 0; i < len; i++)
+        if (path[i] == '/')
+            start = i + 1;
+
+    return mkstr(make_ptrlen(path + start, len - start));
+}
+
+/*
+ * Find or create the row for `path`, making a row for each folder along the
+ * way, and return its iterator. `folder_col` is the model column holding the
+ * folder flag, which is set on the rows created for folders.
+ */
+/* Expand `iter` in the view that is displaying `store`, if there is one. */
+static void tree_expand(GtkTreeStore *store, GtkTreeIter *iter)
+{
+    GtkWidget *view = g_object_get_data(G_OBJECT(store), "user-data");
+
+    if (view) {
+        GtkTreePath *path = gtk_tree_model_get_path(GTK_TREE_MODEL(store),
+                                                    iter);
+        gtk_tree_view_expand_row(GTK_TREE_VIEW(view), path, false);
+        gtk_tree_path_free(path);
+    }
+}
+
+static void tree_get_iter_for_path(GtkTreeStore *store, const char *path,
+                                   int folder_col, GtkTreeIter *iter)
+{
+    GtkTreeIter parent, *pparent = NULL;
+    const char *p = path;
+
+    while (1) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+        char *name = mkstr(make_ptrlen(p, len));
+        bool found = false;
+
+        if (gtk_tree_model_iter_children(GTK_TREE_MODEL(store), iter,
+                                         pparent)) {
+            do {
+                char *text = NULL;
+                gtk_tree_model_get(GTK_TREE_MODEL(store), iter, 1, &text, -1);
+                if (text && !strcmp(text, name)) {
+                    found = true;
+                    g_free(text);
+                    break;
+                }
+                g_free(text);
+            } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store), iter));
+        }
+
+        if (!found) {
+            gtk_tree_store_append(store, iter, pparent);
+            gtk_tree_store_set(store, iter, 0, -1, 1, name, -1);
+            /*
+             * A row that is gaining a child is a folder, so show it open.
+             * (Doing this when the folder was created instead would not
+             * work, because it had no children then.)
+             */
+            if (pparent)
+                tree_expand(store, pparent);
+        }
+        if (slash)
+            gtk_tree_store_set(store, iter, folder_col, true, -1);
+
+        sfree(name);
+
+        if (!slash)
+            return;
+
+        parent = *iter;
+        pparent = &parent;
+        p = slash + 1;
+        if (!*p)
+            return;                    /* the folder itself is the target */
+    }
+}
+
+/*
+ * Show folder rows in bold, so that an empty folder is still recognisable as
+ * one when it has no expander triangle.
+ */
+static void listbox_folder_weight(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                                  GtkTreeModel *model, GtkTreeIter *iter,
+                                  gpointer data)
+{
+    int folder_col = GPOINTER_TO_INT(data);
+    bool is_folder = false;
+
+    gtk_tree_model_get(model, iter, folder_col, &is_folder, -1);
+    g_object_set(G_OBJECT(cell), "weight",
+                 is_folder ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL, NULL);
+}
+
+/* Depth-first search for the row with the given id. */
+static bool tree_find_id_rec(GtkTreeModel *model, GtkTreeIter *parent,
+                             int id, GtkTreeIter *out)
+{
+    GtkTreeIter child;
+
+    if (!gtk_tree_model_iter_children(model, &child, parent))
+        return false;
+
+    do {
+        int rowid = -1;
+
+        gtk_tree_model_get(model, &child, 0, &rowid, -1);
+        if (rowid == id) {
+            *out = child;
+            return true;
+        }
+        if (tree_find_id_rec(model, &child, id, out))
+            return true;
+    } while (gtk_tree_model_iter_next(model, &child));
+
+    return false;
+}
+
+/*
+ * PuTTY-beter: the source row of a drag, remembered between drag-begin and
+ * the drop. There is only ever one drag at a time.
+ */
+static int listbox_drag_source_id = -1;
+
+static void listbox_drag_begin(GtkWidget *widget, GdkDragContext *ctx,
+                               gpointer vdp)
+{
+    struct dlgparam *dp = (struct dlgparam *)vdp;
+    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+
+    listbox_drag_source_id = ctrl ? dlg_listbox_selected_id(ctrl, dp) : -1;
+}
+
+static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
+                                  gint x, gint y, GtkSelectionData *data,
+                                  guint info, guint time, gpointer vdp)
+{
+    struct dlgparam *dp = (struct dlgparam *)vdp;
+    dlgcontrol *ctrl = g_object_get_data(G_OBJECT(widget), "putty-ctrl");
+    GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(widget));
+    GtkTreeIter iter, parent;
+    int dst_id = -1;
+
+    if (!ctrl || !ctrl->listbox.drag_handler || listbox_drag_source_id < 0)
+        return;
+
+    /*
+     * GTK has already moved the row in the model, so where it now sits says
+     * where it was dropped: inside a folder row, or at the top level.
+     */
+    if (tree_find_id_rec(model, NULL, listbox_drag_source_id, &iter) &&
+        gtk_tree_model_iter_parent(model, &parent, &iter))
+        gtk_tree_model_get(model, &parent, 0, &dst_id, -1);
+
+    ctrl->listbox.drag_handler(ctrl, dp, listbox_drag_source_id, dst_id);
+    listbox_drag_source_id = -1;
+}
+
+int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
+{
+    struct uctrl *uc = dlg_find_byctrl(dp, ctrl);
+    GtkTreeSelection *sel;
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+    int id = -1;
+
+    assert(uc->ctrl->type == CTRL_LISTBOX);
+
+    if (!uc->treeview)
+        return -1;
+
+    sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
+    if (gtk_tree_selection_get_selected(sel, &model, &iter))
+        gtk_tree_model_get(model, &iter, 0, &id, -1);
+
+    return id;
+}
+
+void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id)
+{
+    struct uctrl *uc = dlg_find_byctrl(dp, ctrl);
+    GtkTreeSelection *sel;
+    GtkTreeModel *model;
+    GtkTreeIter iter;
+
+    assert(uc->ctrl->type == CTRL_LISTBOX);
+
+    if (!uc->treeview)
+        return;
+
+    sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(uc->treeview));
+    model = gtk_tree_view_get_model(GTK_TREE_VIEW(uc->treeview));
+
+    if (id < 0) {
+        gtk_tree_selection_unselect_all(sel);
+        return;
+    }
+
+    if (!tree_find_id_rec(model, NULL, id, &iter))
+        return;
+
+    {
+        GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
+        gtk_tree_view_expand_to_path(GTK_TREE_VIEW(uc->treeview), path);
+        gtk_tree_selection_select_iter(sel, &iter);
+        gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(uc->treeview), path,
+                                     NULL, false, 0, 0);
+        gtk_tree_path_free(path);
+    }
 }
 
 int dlg_listbox_getid(dlgcontrol *ctrl, dlgparam *dp, int index)
@@ -2072,7 +2334,7 @@ GtkWidget *layout_ctrls(
                 /*
                  * GTK 2 combo box.
                  */
-                uc->listmodel = gtk_list_store_new(2, G_TYPE_INT,
+                uc->listmodel = gtk_tree_store_new(2, G_TYPE_INT,
                                                    G_TYPE_STRING);
                 w = gtk_combo_box_new_with_model_and_entry(
                     GTK_TREE_MODEL(uc->listmodel));
@@ -2240,13 +2502,20 @@ GtkWidget *layout_ctrls(
 
                 cols = ctrl->listbox.ncols;
                 cols = cols ? cols : 1;
-                types = snewn(1 + cols, GType);
+                /*
+                 * PuTTY-beter: a tree list box gets one extra, undisplayed
+                 * column holding a flag that marks a row as a folder.
+                 */
+                types = snewn(1 + cols + (ctrl->listbox.tree ? 1 : 0), GType);
 
                 types[0] = G_TYPE_INT;
                 for (i = 0; i < cols; i++)
                     types[i+1] = G_TYPE_STRING;
+                if (ctrl->listbox.tree)
+                    types[1 + cols] = G_TYPE_BOOLEAN;
 
-                uc->listmodel = gtk_list_store_newv(1 + cols, types);
+                uc->listmodel = gtk_tree_store_newv(
+                    1 + cols + (ctrl->listbox.tree ? 1 : 0), types);
 
                 sfree(types);
             }
@@ -2418,6 +2687,33 @@ GtkWidget *layout_ctrls(
                                      G_CALLBACK(listbox_reorder), dp);
                 }
 
+                if (ctrl->listbox.tree) {
+                    /*
+                     * PuTTY-beter: a row can be dragged onto a folder row to
+                     * move it there. GTK's model drag and drop does the move
+                     * in the model; listbox_drag_received() then reports
+                     * where the row ended up, and the control's drag_handler
+                     * does the same move in storage. The list is refreshed
+                     * afterwards, so a move that storage refuses springs
+                     * back.
+                     */
+                    static const GtkTargetEntry targets[] = {
+                        { (gchar *)"text/plain", GTK_TARGET_SAME_WIDGET, 0 },
+                    };
+                    g_object_set_data(G_OBJECT(w), "putty-ctrl", ctrl);
+                    gtk_tree_view_enable_model_drag_source(
+                        GTK_TREE_VIEW(w), GDK_BUTTON1_MASK, targets,
+                        lenof(targets), GDK_ACTION_MOVE);
+                    gtk_tree_view_enable_model_drag_dest(
+                        GTK_TREE_VIEW(w), targets, lenof(targets),
+                        GDK_ACTION_MOVE);
+                    g_signal_connect(G_OBJECT(w), "drag-begin",
+                                     G_CALLBACK(listbox_drag_begin), dp);
+                    g_signal_connect_after(G_OBJECT(w), "drag-data-received",
+                                           G_CALLBACK(listbox_drag_received),
+                                           dp);
+                }
+
                 {
                     int i;
                     int cols;
@@ -2444,6 +2740,10 @@ GtkWidget *layout_ctrls(
                             "heading", cellrend, "text", i+1, (char *)NULL);
                         gtk_tree_view_column_set_sizing(
                             column, GTK_TREE_VIEW_COLUMN_GROW_ONLY);
+                        if (ctrl->listbox.tree && i == 0)
+                            gtk_tree_view_column_set_cell_data_func(
+                                column, cellrend, listbox_folder_weight,
+                                GINT_TO_POINTER(1 + cols), NULL);
                         gtk_tree_view_append_column(GTK_TREE_VIEW(w), column);
                     }
                 }

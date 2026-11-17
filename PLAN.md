@@ -409,6 +409,31 @@ for every keystroke — that names the key macOS actually delivers.
 
 ---
 
+## 4g. Session folders  *(done 2026-11-17)*
+
+**Goal:** organise saved sessions in folders, in a tree, with drag and drop.
+
+Implemented (M2, part 1):
+
+| Where | What |
+|---|---|
+| `unix/storage.c`, `storage.h` | `/` in a session name separates folder names, and folders are real directories; recursive enumeration reporting folders as `Name/`; `session_mkdir()`, `session_move()` (sessions and folders, refusing to move a folder into itself), `session_rmdir()` (empty only), `session_move_target_name()`, `session_name_is_valid()` |
+| `dialog.h`, `dialog.c` | `listbox.tree` flag, `listbox.drag_handler` hook, `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` |
+| `unix/dialog.c` | `GtkTreeStore` (a tree store with top-level rows behaves exactly like the old list store), hierarchy built from `/`, folder flag in an extra undisplayed column, bold folder rows, expand as a folder gains children, drag source + drop target calling `drag_handler` |
+| `config.c` | list filled with ids, selection by id, **New Folder** button, Delete = session or empty folder, Load on a folder = beep, drag handler |
+| `unix/window.c` | the right-click saved-session menu skips folder entries |
+| `windows/*` | flat fallback so that front end still builds |
+| `test/test_sessions.c` | new `test_sessions` target |
+
+**Verified:** `./build-arm64/test_sessions` — see the list in
+`CHANGES-FROM-UPSTREAM.md` section 9. The tree was also checked visually in the
+`.app` (folders bold, triangles, nesting, empty folder).
+
+**Not done yet (rest of M2/M3):** renaming a folder, remembering which folders
+are expanded, per-session comments, and saved passwords via the Keychain.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.

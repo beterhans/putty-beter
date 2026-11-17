@@ -781,11 +781,94 @@ static void sshbug_handler_manual_only(dlgcontrol *ctrl, dlgparam *dlg,
 
 struct sessionsaver_data {
     dlgcontrol *editbox, *listbox, *loadbutton, *savebutton, *delbutton;
+    dlgcontrol *newfolderbutton;
     dlgcontrol *okbutton, *cancelbutton;
     struct sesslist sesslist;
     bool midsession;
     char *savedsession;     /* the current contents of ssd->editbox */
 };
+
+/* PuTTY-beter: is this list entry a folder rather than a session? */
+static bool sesslist_is_folder(const char *name)
+{
+    size_t len = strlen(name);
+    return len > 0 && name[len-1] == '/';
+}
+
+/*
+ * PuTTY-beter: the name of the session selected in the list, or NULL if
+ * nothing usable is selected. Folders are not sessions, so they count as
+ * nothing usable for loading or saving.
+ */
+static char *selected_session_name(struct sessionsaver_data *ssd,
+                                   dlgparam *dlg, bool *is_folder)
+{
+    int id = dlg_listbox_selected_id(ssd->listbox, dlg);
+    const char *name;
+
+    if (is_folder)
+        *is_folder = false;
+
+    if (id < 0 || id >= ssd->sesslist.nsessions)
+        return NULL;
+
+    name = ssd->sesslist.sessions[id];
+    if (sesslist_is_folder(name)) {
+        if (is_folder)
+            *is_folder = true;
+        return NULL;
+    }
+
+    return dupstr(name);
+}
+
+/*
+ * PuTTY-beter: move a session, or a whole folder, as the result of a drag in
+ * the list. `dst_id` is the folder it was dropped on, or -1 for the top
+ * level.
+ */
+static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg,
+                              int src_id, int dst_id)
+{
+    struct sessionsaver_data *ssd =
+        (struct sessionsaver_data *)ctrl->context.p;
+    const char *src, *dst;
+    char *newname, *err;
+
+    if (src_id < 0 || src_id >= ssd->sesslist.nsessions)
+        return;
+
+    src = ssd->sesslist.sessions[src_id];
+
+    /* "Default Settings" is not a real session and cannot be moved. */
+    if (!strcmp(src, "Default Settings"))
+        return;
+
+    dst = NULL;
+    if (dst_id >= 0 && dst_id < ssd->sesslist.nsessions)
+        dst = ssd->sesslist.sessions[dst_id];
+
+    /* The name it would have in the destination folder. */
+    newname = session_move_target_name(src, dst);
+
+    if (!strcmp(newname, src)) {
+        /* Dropped where it already was. */
+        sfree(newname);
+        return;
+    }
+
+    err = session_move(src, newname);
+    sfree(newname);
+
+    if (err) {
+        dlg_error_msg(dlg, err);
+        sfree(err);
+    }
+
+    get_sesslist(&ssd->sesslist, false);
+    get_sesslist(&ssd->sesslist, true);
+    dlg_refresh(ssd->listbox, dlg);
+}
 
 static void sessionsaver_data_free(void *ssdv)
 {
@@ -804,22 +887,27 @@ static bool load_selected_session(
     struct sessionsaver_data *ssd,
     dlgparam *dlg, Conf *conf, bool *maybe_launch)
 {
-    int i = dlg_listbox_index(ssd->listbox, dlg);
+    int id = dlg_listbox_selected_id(ssd->listbox, dlg);
+    char *name = selected_session_name(ssd, dlg, NULL);
     bool isdef;
-    if (i < 0) {
+
+    if (!name) {
+        /* Nothing selected, or a folder: neither can be loaded. */
         dlg_beep(dlg);
         return false;
     }
-    isdef = !strcmp(ssd->sesslist.sessions[i], "Default Settings");
-    load_settings(ssd->sesslist.sessions[i], conf);
+
+    isdef = !strcmp(name, "Default Settings");
+    load_settings(name, conf);
     sfree(ssd->savedsession);
-    ssd->savedsession = dupstr(isdef ? "" : ssd->sesslist.sessions[i]);
+    ssd->savedsession = dupstr(isdef ? "" : name);
+    sfree(name);
     if (maybe_launch)
         *maybe_launch = !isdef;
     dlg_refresh(NULL, dlg);
     /* Restore the selection, which might have been clobbered by
      * changing the value of the edit box. */
-    dlg_listbox_select(ssd->listbox, dlg, i);
+    dlg_listbox_select_id(ssd->listbox, dlg, id);
     return true;
 }
 
@@ -837,8 +925,14 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             int i;
             dlg_update_start(ctrl, dlg);
             dlg_listbox_clear(ctrl, dlg);
+            /*
+             * PuTTY-beter: the id of each row is its index in the session
+             * list, so that the row can be found again after the list is
+             * rebuilt. The front end turns names containing '/' into a tree
+             * and shows only the last component of each.
+             */
             for (i = 0; i < ssd->sesslist.nsessions; i++)
-                dlg_listbox_add(ctrl, dlg, ssd->sesslist.sessions[i]);
+                dlg_listbox_addwithid(ctrl, dlg, ssd->sesslist.sessions[i], i);
             dlg_update_done(ctrl, dlg);
         }
     } else if (event == EVENT_VALCHANGE) {
@@ -860,7 +954,7 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             if (top == ssd->sesslist.nsessions) {
                 top -= 1;
             }
-            dlg_listbox_select(ssd->listbox, dlg, top);
+            dlg_listbox_select_id(ssd->listbox, dlg, top);
         }
     } else if (event == EVENT_ACTION) {
         bool mbl = false;
@@ -881,15 +975,15 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
         } else if (ctrl == ssd->savebutton) {
             bool isdef = !strcmp(ssd->savedsession, "Default Settings");
             if (!ssd->savedsession[0]) {
-                int i = dlg_listbox_index(ssd->listbox, dlg);
-                if (i < 0) {
+                char *name = selected_session_name(ssd, dlg, NULL);
+                if (!name) {
                     dlg_beep(dlg);
                     return;
                 }
-                isdef = !strcmp(ssd->sesslist.sessions[i], "Default Settings");
+                isdef = !strcmp(name, "Default Settings");
                 sfree(ssd->savedsession);
-                ssd->savedsession = dupstr(isdef ? "" :
-                                           ssd->sesslist.sessions[i]);
+                ssd->savedsession = dupstr(isdef ? "" : name);
+                sfree(name);
             }
             {
                 char *errmsg = save_settings(ssd->savedsession, conf);
@@ -904,15 +998,59 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             dlg_refresh(ssd->listbox, dlg);
         } else if (!ssd->midsession &&
                    ssd->delbutton && ctrl == ssd->delbutton) {
-            int i = dlg_listbox_index(ssd->listbox, dlg);
-            if (i <= 0) {
+            int id = dlg_listbox_selected_id(ssd->listbox, dlg);
+            char *name = NULL, *err = NULL;
+
+            if (id > 0 && id < ssd->sesslist.nsessions)
+                name = dupstr(ssd->sesslist.sessions[id]);
+
+            if (!name) {
+                /* Nothing selected, or "Default Settings". */
                 dlg_beep(dlg);
+            } else if (sesslist_is_folder(name)) {
+                /*
+                 * A folder is removed only when it is empty, so that this
+                 * button cannot throw away sessions by accident.
+                 */
+                err = session_rmdir(name);
+                if (err) {
+                    dlg_error_msg(dlg, err);
+                    sfree(err);
+                }
             } else {
-                del_settings(ssd->sesslist.sessions[i]);
-                get_sesslist(&ssd->sesslist, false);
-                get_sesslist(&ssd->sesslist, true);
-                dlg_refresh(ssd->listbox, dlg);
+                del_settings(name);
             }
+            sfree(name);
+
+            get_sesslist(&ssd->sesslist, false);
+            get_sesslist(&ssd->sesslist, true);
+            dlg_refresh(ssd->listbox, dlg);
+        } else if (!ssd->midsession &&
+                   ssd->newfolderbutton && ctrl == ssd->newfolderbutton) {
+            /*
+             * PuTTY-beter: create a folder. Its name is taken from the
+             * Saved Sessions box, the same way Save takes a session name.
+             */
+            char *errmsg;
+
+            if (!ssd->savedsession[0]) {
+                dlg_beep(dlg);
+                return;
+            }
+            if (sesslist_is_folder(ssd->savedsession)) {
+                dlg_error_msg(dlg, "A folder name should not end in '/'.");
+                return;
+            }
+
+            errmsg = session_mkdir(ssd->savedsession);
+            if (errmsg) {
+                dlg_error_msg(dlg, errmsg);
+                sfree(errmsg);
+            }
+
+            get_sesslist(&ssd->sesslist, false);
+            get_sesslist(&ssd->sesslist, true);
+            dlg_refresh(ssd->listbox, dlg);
         } else if (ctrl == ssd->okbutton) {
             if (ssd->midsession) {
                 /* In a mid-session Change Settings, Apply is always OK. */
@@ -1948,6 +2086,12 @@ void setup_config_box(struct controlbox *b, bool midsession,
      * user has a long list of saved sessions.
      */
     ssd->listbox->vexpand = true;
+    /*
+     * PuTTY-beter: the session list is a tree, so that sessions can be kept
+     * in folders, and a session can be dragged into a folder.
+     */
+    ssd->listbox->listbox.tree = true;
+    ssd->listbox->listbox.drag_handler = sessionsaver_drag;
     if (!midsession) {
         ssd->loadbutton = ctrl_pushbutton(s, "Load", 'l',
                                           HELPCTX(session_saved),
@@ -1981,6 +2125,20 @@ void setup_config_box(struct controlbox *b, bool midsession,
     } else {
         /* Disable the Delete button mid-session too, for UI consistency. */
         ssd->delbutton = NULL;
+    }
+    if (!midsession) {
+        /*
+         * PuTTY-beter: make a folder. The name is taken from the Saved
+         * Sessions box, the same way the Save button takes a session name,
+         * so no extra prompt is needed.
+         */
+        ssd->newfolderbutton = ctrl_pushbutton(s, "New Folder", 'f',
+                                               HELPCTX(session_saved),
+                                               sessionsaver_handler, P(ssd));
+        ssd->newfolderbutton->column = 1;
+        ssd->newfolderbutton->force_left = true;
+    } else {
+        ssd->newfolderbutton = NULL;
     }
     ctrl_columns(s, 1, 100);
 

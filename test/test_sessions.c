@@ -225,6 +225,50 @@ int main(void)
     }
     expect_listed("Work/beta", true);
 
+    /* Moving a whole folder into another folder, as a drag would. */
+    {
+        char *err = session_mkdir("Other");
+        if (err) { fail("session_mkdir(Other): %s", err); sfree(err); }
+    }
+    save("Other/stays", "stays.example.com");
+    {
+        char *err = session_move("Work/Sub/", "Other/Sub/");
+        if (err) { fail("session_move(Work/Sub/ -> Other/Sub/): %s", err);
+                   sfree(err); }
+    }
+    expect_listed("Work/Sub/", false);
+    expect_listed("Other/Sub/", true);
+    expect_listed("Other/Sub/gamma", true);    /* contents moved with it */
+    if (!exists("Other/Sub/gamma") || exists("Work/Sub"))
+        fail("Work/Sub should have moved into Other");
+
+    /* A folder must not be moved inside itself. */
+    expect_err("session_move(Other/Sub/ into itself)",
+               session_move("Other/Sub/", "Other/Sub/Inner/"));
+    expect_listed("Other/Sub/", true);
+
+    /* Moving a folder back out to the top level. */
+    {
+        char *err = session_move("Other/Sub/", "Sub/");
+        if (err) { fail("session_move(Other/Sub/ -> Sub/): %s", err);
+                   sfree(err); }
+    }
+    expect_listed("Sub/", true);
+    expect_listed("Sub/gamma", true);
+    {
+        char *err = session_move("Sub/", "Work/Sub/");
+        if (err) { fail("session_move(Sub/ -> Work/Sub/): %s", err);
+                   sfree(err); }
+    }
+    expect_listed("Work/Sub/gamma", true);
+
+    /* Tidying up the extra folder from this section. */
+    del_settings("Other/stays");
+    {
+        char *err = session_rmdir("Other");
+        if (err) { fail("session_rmdir(Other): %s", err); sfree(err); }
+    }
+
     /* Deleting a session inside a folder. */
     del_settings("Work/Sub/gamma");
     expect_listed("Work/Sub/gamma", false);
@@ -279,6 +323,29 @@ int main(void)
     /* "Default Settings" still works, and stays top level. */
     save("Default Settings", "default.example.com");
     expect_listed("Default Settings", true);
+
+    /* The names a drag between rows would produce. */
+    {
+        static const struct {
+            const char *src, *dst, *want;
+        } cases[] = {
+            { "beta", "Work/", "Work/beta" },      /* into a folder */
+            { "Work/beta", NULL, "beta" },         /* out to the top level */
+            { "Work/beta", "Other/", "Other/beta" },
+            { "Work/Sub/", "Other/", "Other/Sub/" }, /* folders keep their / */
+            { "Work/Sub/", NULL, "Sub/" },
+            { "Work/Sub/gamma", "Home Routers/", "Home Routers/gamma" },
+        };
+
+        for (size_t i = 0; i < lenof(cases); i++) {
+            char *got = session_move_target_name(cases[i].src, cases[i].dst);
+            if (strcmp(got, cases[i].want))
+                fail("move %s into %s: got \"%s\", wanted \"%s\"",
+                     cases[i].src, cases[i].dst ? cases[i].dst : "(root)",
+                     got, cases[i].want);
+            sfree(got);
+        }
+    }
 
     if (nfail) {
         printf("%d failure(s)\n", nfail);

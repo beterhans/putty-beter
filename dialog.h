@@ -353,6 +353,27 @@ struct dlgcontrol {
              * right-hand side.
              */
             bool hscroll;
+            /*
+             * PuTTY-beter: display the entries as a tree.
+             *
+             * Entries are added exactly as before, but a '/' in an entry
+             * splits it into nested rows: "Work/beta" appears as "beta"
+             * inside a "Work" row, and an entry that ends in '/' is a
+             * folder on its own, so that empty folders can be shown.
+             *
+             * With a tree, a row index is no longer a useful way to
+             * identify a row, so use dlg_listbox_selected_id() and
+             * dlg_listbox_select_id() instead of the index-based calls.
+             */
+            bool tree;
+            /*
+             * PuTTY-beter: called when the user drags one row of a tree
+             * list box onto another, with the ids of the source row and
+             * the row it was dropped on. Front ends that do not implement
+             * dragging simply never call it.
+             */
+            void (*drag_handler)(dlgcontrol *ctrl, dlgparam *dp,
+                                 int src_id, int dst_id);
         } listbox;
         struct { /* for CTRL_FILESELECT */
             char shortcut;
@@ -604,6 +625,12 @@ int dlg_listbox_getid(dlgcontrol *ctrl, dlgparam *dp, int index);
 int dlg_listbox_index(dlgcontrol *ctrl, dlgparam *dp);
 bool dlg_listbox_issel(dlgcontrol *ctrl, dlgparam *dp, int index);
 void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index);
+/*
+ * PuTTY-beter: the same two operations by id rather than row index, for
+ * tree list boxes, where a row index is ambiguous.
+ */
+int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp);
+void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id);
 void dlg_text_set(dlgcontrol *ctrl, dlgparam *dp, char const *text);
 void dlg_filesel_set(dlgcontrol *ctrl, dlgparam *dp, Filename *fn);
 Filename *dlg_filesel_get(dlgcontrol *ctrl, dlgparam *dp);

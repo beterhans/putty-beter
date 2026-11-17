@@ -5263,8 +5263,18 @@ static void update_savedsess_menu(GtkMenuItem *menuitem, gpointer data)
     get_sesslist(&sesslist, true);
     /* skip sesslist.sessions[0] == Default Settings */
     for (i = 1; i < sesslist.nsessions; i++) {
-        GtkWidget *menuitem =
-            gtk_menu_item_new_with_label(sesslist.sessions[i]);
+        GtkWidget *menuitem;
+        size_t len = strlen(sesslist.sessions[i]);
+
+        /*
+         * PuTTY-beter: folders are reported with a trailing '/', and there
+         * is nothing to launch from one, so leave them out of this menu.
+         * The configuration box is where folders can be browsed.
+         */
+        if (len > 0 && sesslist.sessions[i][len-1] == '/')
+            continue;
+
+        menuitem = gtk_menu_item_new_with_label(sesslist.sessions[i]);
         gtk_container_add(GTK_CONTAINER(inst->sessionsmenu), menuitem);
         gtk_widget_show(menuitem);
         g_object_set_data(G_OBJECT(menuitem), "user-data",

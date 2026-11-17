@@ -94,7 +94,24 @@ the list is the part that grows when the window does — useful once you have a
 lot of saved sessions. The Load/Save/Delete buttons keep their natural width,
 and the list runs right up to them, so no horizontal space is wasted either.
 
-### 8. Changed defaults
+### 8. Session folders
+
+Sessions can be kept in folders. A session called `Work/beta` lives in the
+real folder `Work`, so the structure is visible in the Finder and a folder can
+be empty.
+
+In the configuration box the session list is a **collapsible tree**: folders
+are in bold with a disclosure triangle, and a session is moved into a folder
+by dragging its row onto it. Under the list are **Load**, **Save**, **Delete**
+and **New Folder**; New Folder takes the name from the Saved Sessions box, the
+same way Save does. Delete removes a folder only when it is empty, so it
+cannot throw sessions away by accident.
+
+You can also just type a name with a slash: saving as `Work/beta` creates the
+folder as it goes. Names are checked, so a session name can never escape the
+sessions directory.
+
+### 9. Changed defaults
 
 These only affect **new** sessions, and settings a saved session already stores
 keep their saved values.

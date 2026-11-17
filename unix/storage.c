@@ -1469,28 +1469,98 @@ char *session_mkdir(const char *name)
     return err;
 }
 
+/*
+ * The name that moving `src` into the folder `dst` (NULL for the top level)
+ * would give it. Used by the configuration box when a row is dragged, and
+ * kept here so that it can be tested without a front end.
+ *
+ * A folder keeps its trailing '/' marker, and only the last component of
+ * `src` is kept, so "Work/Sub/" moved into "Other/" becomes "Other/Sub/".
+ */
+char *session_move_target_name(const char *src, const char *dst)
+{
+    size_t len, start = 0, i;
+    char *leaf, *ret;
+    bool is_folder;
+
+    len = strlen(src);
+    is_folder = (len > 0 && src[len-1] == '/');
+
+    while (len > 0 && src[len-1] == '/')
+        len--;
+    for (i = 0; i < len; i++)
+        if (src[i] == '/')
+            start = i + 1;
+
+    leaf = mkstr(make_ptrlen(src + start, len - start));
+    ret = dupprintf("%s%s%s", dst ? dst : "", leaf, is_folder ? "/" : "");
+    sfree(leaf);
+
+    return ret;
+}
+
 char *session_move(const char *oldname, const char *newname)
 {
     char *oldpath, *newpath, *err = NULL;
+    char *olds, *news;
+    struct stat st;
 
     if (!oldname || !*oldname || !newname || !*newname)
         return dupstr("Bad session name.");
 
-    if (!strcmp(oldname, newname))
+    /*
+     * A folder name from get_sesslist() ends in '/'; that marks it as a
+     * folder but is not part of the path.
+     */
+    olds = session_name_strip(oldname);
+    news = session_name_strip(newname);
+
+    if (!*olds || !*news) {
+        sfree(olds);
+        sfree(news);
+        return dupstr("Bad session name.");
+    }
+
+    if (!strcmp(olds, news)) {
+        sfree(olds);
+        sfree(news);
         return NULL;
+    }
 
-    oldpath = make_filename(INDEX_SESSION, oldname);
-    newpath = make_filename(INDEX_SESSION, newname);
+    oldpath = make_filename(INDEX_SESSION, olds);
+    newpath = make_filename(INDEX_SESSION, news);
 
-    if (access(oldpath, F_OK) != 0)
-        err = dupprintf("There is no session called \"%s\".", oldname);
-    else if (access(newpath, F_OK) == 0)
-        err = dupprintf("\"%s\" already exists.", newname);
-    else if (rename(oldpath, newpath) < 0)
-        err = dupprintf("Unable to move \"%s\": %s", oldname, strerror(errno));
+    if (lstat(oldpath, &st) < 0) {
+        err = dupprintf("There is no session called \"%s\".", olds);
+        goto out;
+    }
 
+    if (S_ISDIR(st.st_mode)) {
+        /*
+         * Moving a folder. It must not be moved inside itself, or the
+         * rename would make the whole thing disappear.
+         */
+        size_t oldlen = strlen(oldpath);
+
+        if (!strncmp(newpath, oldpath, oldlen) && newpath[oldlen] == '/') {
+            err = dupprintf("\"%s\" cannot be moved inside itself.", olds);
+            goto out;
+        }
+    }
+
+    if (access(newpath, F_OK) == 0) {
+        err = dupprintf("\"%s\" already exists.", news);
+        goto out;
+    }
+
+    if (rename(oldpath, newpath) < 0)
+        err = dupprintf("Unable to move \"%s\": %s", olds, strerror(errno));
+
+  out:
     sfree(oldpath);
     sfree(newpath);
+    sfree(olds);
+    sfree(news);
     return err;
 }
 

@@ -2346,6 +2346,37 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index)
     SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, index, 0);
 }
 
+/*
+ * PuTTY-beter: selecting by id rather than row index, for tree list boxes.
+ * This front end does not implement tree list boxes (it shows the entries as
+ * a flat list), so an id is simply a row index here.
+ */
+int dlg_listbox_selected_id(dlgcontrol *ctrl, dlgparam *dp)
+{
+    int index = dlg_listbox_index(ctrl, dp);
+
+    if (index < 0)
+        return -1;
+    return dlg_listbox_getid(ctrl, dp, index);
+}
+
+void dlg_listbox_select_id(dlgcontrol *ctrl, dlgparam *dp, int id)
+{
+    struct winctrl *c = dlg_findbyctrl(dp, ctrl);
+    int n, msg;
+    assert(c && c->ctrl->type == CTRL_LISTBOX);
+
+    msg = (c->ctrl->listbox.height != 0 ? LB_GETCOUNT : CB_GETCOUNT);
+    n = SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, 0, 0);
+
+    for (int i = 0; i < n; i++) {
+        if (dlg_listbox_getid(ctrl, dp, i) == id) {
+            dlg_listbox_select(ctrl, dp, i);
+            return;
+        }
+    }
+}
+
 void dlg_text_set(dlgcontrol *ctrl, dlgparam *dp, char const *text)
 {
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);

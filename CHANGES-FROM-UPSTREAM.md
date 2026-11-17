@@ -40,6 +40,7 @@ fixes, so `git log` alone shows only the later work.
 | Keyboard input | IME pre-edit cursor offset fixed (upstream had an out-of-bounds read here). |
 | Configuration folder | The configuration directory can be moved, with a one-time dialog and a redirect file. |
 | Configuration box | Resizable, size remembered in the configuration folder, and the saved-session list grows with the window. |
+| Session folders | Sessions can be kept in folders, shown as a tree and moved by dragging. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `CMakePresets.json`, a self-contained `PuTTY.app`. |
 | Diagnostics | `PUTTY_DIAG=1` and `PUTTY_CONFIG_DEBUG=1` runtime traces. |
@@ -53,8 +54,8 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | File | +/- | What changed |
 |---|---|---|
 | `conf.h` | +19 / -7 | Seven default values changed (see below) |
-| `config.c` | +44 / -11 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
-| `dialog.h` | +20 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
+| `config.c` | +197 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width |
+| `dialog.h` | +47 / -0 | `vexpand` flag on `struct controlset`, and `vexpand` / `force_left` flags on `struct dlgcontrol` (per front end; Windows ignores them) |
 | `dialog.c` | +3 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` |
 | `settings.c` | +5 / -1 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform |
 | `terminal/terminal.c` | +66 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing |
@@ -62,15 +63,19 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `unix/CMakeLists.txt` | +14 / -1 | Build `unix/config-location.c` into `guiterminal`; link `ApplicationServices` on Apple |
 | `unix/columns.c` | +54 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
-| `unix/dialog.c` | +144 / -2 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
+| `unix/dialog.c` | +412 / -14 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout |
 | `unix/main-gtk-application.c` | +8 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +9 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
 | `unix/platform.h` | +51 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
 | `unix/putty.bundle` | +20 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
-| `unix/storage.c` | +545 / -4 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
-| `unix/window.c` | +186 / -6 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
+| `unix/storage.c` | +880 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
+| `unix/window.c` | +196 / -8 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG` |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
+| `windows/controls.c` | +26 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index) |
+| `windows/storage.c` | +18 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
+| `storage.h` | +19 / -0 | Declarations for the folder operations and the name checks |
+| `CMakeLists.txt` | +7 / -0 | `test_sessions` target |
 | `.gitignore` | +14 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
@@ -83,6 +88,7 @@ Line counts are `+added / -removed` against the 0.85 tarball.
 | `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, ad-hoc re-sign |
 | `unix/config-location.c` | The "where should the configuration live?" dialog |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
+| `test/test_sessions.c` | Tests for the session-folder storage layer |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 
@@ -258,6 +264,58 @@ Both are runtime switches and cost nothing when unset.
   activity, font metrics, cursor placement.
 * `PUTTY_CONFIG_DEBUG=1` — configuration folder resolution and relocation, and
   the resulting default log file name.
+
+---
+
+## 9. Session folders
+
+Sessions can be kept in folders, shown as a collapsible tree in the
+configuration box, and moved between folders by dragging.
+
+* A session name may contain `/`, which separates folder names: `Work/beta`
+  is the file `<sessions>/Work/beta`, and `Work` is a **real directory**. So
+  folders can be empty, and the structure is visible in the Finder.
+  (`make_session_filename()` already percent-encoded `/` as `%2F`, so names
+  with a slash were representable but meant nothing; the encoder now treats
+  `/` as a separator and encodes each component separately.)
+* `get_sesslist()` reports a folder as a name with a trailing `/`, which is
+  how the front end tells folders from sessions. Enumeration is recursive
+  (depth-limited, and symlinks are not followed).
+* Names are validated: an empty, `.` or `..` component is refused, so a
+  session name cannot escape the sessions directory. `open_settings_w()`
+  rejects such a name outright rather than writing something odd.
+* `session_mkdir()`, `session_move()` (sessions *and* folders, refusing to
+  move a folder inside itself) and `session_rmdir()` (empty folders only)
+  live in `unix/storage.c`; `session_move_target_name()` works out the name a
+  drag would give, so that the fiddly part is testable without a front end.
+* The dialog layer gained a `tree` flag on list boxes, a `drag_handler` hook,
+  and `dlg_listbox_selected_id()` / `dlg_listbox_select_id()`: with a tree, a
+  row index is ambiguous, so the configuration box identifies rows by id
+  (the index of the name in the session list).
+* In tree mode the GTK front end builds the hierarchy from the `/` in the
+  names, keeps a folder flag in an extra, undisplayed model column, shows
+  folders in bold, expands them as they gain children, and drags rows onto
+  folder rows. GTK does the move in the model and `listbox_drag_received()`
+  reports where the row ended up; storage then performs the real move and the
+  list is refreshed, so a refused move springs back.
+* The Windows front end shows a flat list and gets `dlg_listbox_selected_id()`
+  / `dlg_listbox_select_id()` implemented in terms of row indices, plus
+  folder operations that report "not supported".
+
+**Verified** by `test/test_sessions.c` (a real test target, run with
+`./build-arm64/test_sessions`): plain sessions, empty folders, nesting, names
+with spaces, moving sessions in and out of folders, moving whole folders
+(including out of and back into a parent), refusing to clobber an existing
+name, refusing to move a folder inside itself, removing empty and non-empty
+folders, `../evil` being refused, and the drag-target name computation.
+
+**Not verified:** the drag gesture itself needs a human; everything either
+side of it (the move in storage, the target-name computation, the tree
+display) is covered.
+
+**Not implemented yet:** renaming a folder, remembering which folders are
+expanded, and per-folder metadata (comments, saved passwords) — see
+`PLAN.md` Phase 2.
 
 ---
 
