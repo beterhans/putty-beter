@@ -56,7 +56,7 @@ add_library(agent STATIC
 
 add_library(guiterminal STATIC
   terminal/terminal.c terminal/bidi.c
-  ldisc.c terminal/lineedit.c config.c dialog.c
+  ldisc.c terminal/lineedit.c terminal/zmodem.c config.c dialog.c
   $<TARGET_OBJECTS:logging>)
 
 add_library(noterminal STATIC
@@ -123,6 +123,13 @@ add_executable(test_cert_expr
   utils/cert-expr.c)
 target_compile_definitions(test_cert_expr PRIVATE TEST)
 target_link_libraries(test_cert_expr utils ${platform_libraries})
+
+# PuTTY-beter: the ZMODEM engine. Compiled straight into the test as well as
+# into guiterminal, so the test needs only utils and no front end.
+add_executable(test_zmodem
+  test/test_zmodem.c
+  terminal/zmodem.c)
+target_link_libraries(test_zmodem utils ${platform_libraries})
 
 add_executable(bidi_gettype
   terminal/bidi_gettype.c)
