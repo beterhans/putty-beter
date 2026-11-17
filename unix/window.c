@@ -646,34 +646,121 @@ static void zm_receive_close(void *ctx, ZmodemFile *f, bool complete)
 
 /* ---- sending ---- */
 
+/*
+ * Keep the path bar showing where we are: the full path of the selected file,
+ * or of the folder being browsed.
+ */
+static void zm_path_show_file(GtkFileChooser *chooser, gpointer ventry)
+{
+    char *fn = gtk_file_chooser_get_filename(chooser);
+    if (fn) {
+        gtk_entry_set_text(GTK_ENTRY(ventry), fn);
+        g_free(fn);
+    }
+}
+
+static void zm_path_show_folder(GtkFileChooser *chooser, gpointer ventry)
+{
+    char *dir = gtk_file_chooser_get_current_folder(chooser);
+    if (dir) {
+        gtk_entry_set_text(GTK_ENTRY(ventry), dir);
+        g_free(dir);
+    }
+}
+
+/*
+ * Enter in the path bar. A folder is navigated to; a file is chosen and the
+ * dialog accepted, so typing a path and pressing Return is enough to send.
+ */
+static void zm_path_activate(GtkEntry *entry, gpointer vdlg)
+{
+    GtkWidget *dlg = GTK_WIDGET(vdlg);
+    GtkWidget *chooser = g_object_get_data(G_OBJECT(dlg), "zm-chooser");
+    const char *p = gtk_entry_get_text(entry);
+
+    if (!chooser || !p || !*p)
+        return;
+
+    if (g_file_test(p, G_FILE_TEST_IS_DIR)) {
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), p);
+    } else if (g_file_test(p, G_FILE_TEST_IS_REGULAR)) {
+        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(chooser), p);
+        gtk_dialog_response(GTK_DIALOG(dlg), GTK_RESPONSE_ACCEPT);
+    }
+}
+
 static ZmodemFile *zm_send_open(void *ctx, char **name, uint64_t *size,
                                 unsigned long *mtime)
 {
     GtkFrontend *inst = (GtkFrontend *)ctx;
     char *dir = zm_folder(inst);
-    GtkWidget *fc;
+    GtkWidget *dlg, *content, *row, *entry, *chooser;
     char *path = NULL;
     const char *base;
     struct stat st;
     FILE *fp;
 
     /*
-     * rz cannot say which local file to send, so this is the one place a
-     * chooser is unavoidable. It starts in the transfer folder.
+     * Built by hand rather than with gtk_file_chooser_dialog_new(), for three
+     * reasons.
+     *
+     * rz cannot name the file it wants, so this chooser is the only place a
+     * local file is chosen, and a full-path bar is the quickest way to say
+     * which one - the stock dialog hides its location bar behind Ctrl+L.
+     *
+     * The stock dialog also came up with its title greyed and its buttons
+     * invisible, because GTK puts a GtkDialog's action widgets in a header bar
+     * that was rendering blank in this bundle.
+     *
+     * And a hand-built dialog can be given a sane size, so the buttons are
+     * actually on screen.
      */
-    fc = gtk_file_chooser_dialog_new(
+    dlg = gtk_dialog_new_with_buttons(
         "Choose a file to send", GTK_WINDOW(inst->window),
-        GTK_FILE_CHOOSER_ACTION_OPEN,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Send", GTK_RESPONSE_ACCEPT,
         (const gchar *)NULL);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 820, 560);
+    gtk_window_set_position(GTK_WINDOW(dlg), GTK_WIN_POS_CENTER_ON_PARENT);
+
+    content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+
+    row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(row), 6);
+    gtk_box_pack_start(GTK_BOX(content), row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Path:"), FALSE, FALSE, 0);
+    entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry),
+                                   "Type a full path and press Return,"
+                                   " or browse below");
+    gtk_box_pack_start(GTK_BOX(row), entry, TRUE, TRUE, 0);
+
+    chooser = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
+    gtk_box_pack_start(GTK_BOX(content), chooser, TRUE, TRUE, 0);
     if (g_file_test(dir, G_FILE_TEST_IS_DIR))
-        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(fc), dir);
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), dir);
     sfree(dir);
 
-    if (gtk_dialog_run(GTK_DIALOG(fc)) == GTK_RESPONSE_ACCEPT)
-        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
-    gtk_widget_destroy(fc);
+    g_object_set_data(G_OBJECT(dlg), "zm-chooser", chooser);
+    g_signal_connect(G_OBJECT(entry), "activate",
+                     G_CALLBACK(zm_path_activate), dlg);
+    g_signal_connect(G_OBJECT(chooser), "selection-changed",
+                     G_CALLBACK(zm_path_show_file), entry);
+    g_signal_connect(G_OBJECT(chooser), "current-folder-changed",
+                     G_CALLBACK(zm_path_show_folder), entry);
+    zm_path_show_folder(GTK_FILE_CHOOSER(chooser), entry);
+
+    gtk_widget_show_all(dlg);
+    /*
+     * Present it, or it comes up behind the terminal with its title greyed and
+     * no keyboard focus.
+     */
+    gtk_window_present(GTK_WINDOW(dlg));
+
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT)
+        path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    gtk_widget_destroy(dlg);
 
     if (!path)
         return NULL;
