@@ -564,6 +564,39 @@ export async function readSession({ session, since = 0, maxBytes } = {}, opts = 
 }
 
 /*
+ * One run at a time per session.
+ *
+ * Two commands in the same stream interleave, and the results are **silently**
+ * contaminated: each run's window - "everything after my own line" - catches
+ * the other's echo and output. Nothing in the reply says so, so an agent reads
+ * a wrong answer with no way to know. Found by doing exactly that: two `run`
+ * calls in a Promise.all against a real Synology NAS, where run A's output came
+ * back with run B's command and output appended, and looked entirely plausible.
+ *
+ * PLAN.md section 7.9 already names this hazard for a human and an agent; this
+ * is the same hazard for two agents. The queue is per session and per process,
+ * so two *different* MCP clients can still race - that is what the
+ * human-cancel rule and the transcript's author tags are for.
+ *
+ * `fn` runs once, behind anything already queued for `key`. A rejection does
+ * not poison the queue: the next caller still runs.
+ */
+const queues = new Map();
+
+export function serialise(key, fn) {
+    const prev = queues.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => fn());
+
+    queues.set(key, next);
+    next.catch(() => {}).finally(() => {
+        /* Only clear our own entry, so a newer waiter is not dropped. */
+        if (queues.get(key) === next)
+            queues.delete(key);
+    });
+    return next;
+}
+
+/*
  * `run`: send one command and wait for it to finish.
  *
  * The one command that is not a single request and reply. The whole run shares
@@ -573,6 +606,12 @@ export async function readSession({ session, since = 0, maxBytes } = {}, opts = 
  * strings with no PuTTY at all.
  */
 export async function runCommand({ session, command, ...runOpts } = {}, opts = {}) {
+    /* Keyed by the session, normalised, so 1 and "1" queue together. */
+    return serialise(String(session), () =>
+        runCommandNow({ session, command, ...runOpts }, opts));
+}
+
+async function runCommandNow({ session, command, ...runOpts } = {}, opts = {}) {
     return withSession(session, opts, (c) => runOnSession({
         read: ({ since, maxBytes }) => readOn(c, session, since, maxBytes),
         send: async (text) => {

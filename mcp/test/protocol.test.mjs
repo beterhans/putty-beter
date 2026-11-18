@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { encode, decode, endpointCandidates } from '../src/protocol.mjs';
+import { encode, decode, endpointCandidates, serialise } from '../src/protocol.mjs';
 
 let passes = 0, failures = 0;
 
@@ -192,6 +192,61 @@ function testMultipleServersAndStale() {
 }
 
 /* ------------------------------------------------------------------ */
+/* One run at a time per session                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Two commands in one stream interleave, and each run's window - "everything
+ * after my own line" - catches the other's output. The reply does not say so,
+ * which is what makes it dangerous: found by two runs in a Promise.all against
+ * a real Synology NAS, where one result came back with the other's command in
+ * it and looked entirely plausible.
+ */
+async function testSerialise() {
+    const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    /* Same key: one at a time, in the order asked. */
+    const order = [];
+    const queued = (name, ms) => serialise('queue-test', async () => {
+        order.push(`${name}:start`);
+        await tick(ms);
+        order.push(`${name}:end`);
+        return name;
+    });
+    const results = await Promise.all([queued('a', 30), queued('b', 5), queued('c', 1)]);
+
+    check(order.join(',') === 'a:start,a:end,b:start,b:end,c:start,c:end',
+          'serialise: one at a time, in the order asked', order.join(','));
+    check(JSON.stringify(results) === JSON.stringify(['a', 'b', 'c']),
+          'serialise: each caller still gets its own result',
+          JSON.stringify(results));
+
+    /* Different keys do not wait for each other. */
+    const order2 = [];
+    const keyed = (key, name, ms) => serialise(key, async () => {
+        order2.push(`${name}:start`);
+        await tick(ms);
+        order2.push(`${name}:end`);
+    });
+    await Promise.all([keyed('key-x', 'slow', 30), keyed('key-y', 'fast', 5)]);
+
+    check(order2.join(',') === 'slow:start,fast:start,fast:end,slow:end',
+          'serialise: different sessions do not block each other', order2.join(','));
+
+    /* A failure must not poison the queue behind it. */
+    const bad = serialise('key-z', async () => { throw new Error('boom'); });
+    const good = serialise('key-z', async () => 'after');
+    let caught = '';
+    await bad.catch((e) => { caught = e.message; });
+    check(caught === 'boom', 'serialise: the failing caller sees its own error', caught);
+    check(await good === 'after', 'serialise: and the next caller still runs');
+
+    /* And the queue does not leak: after everything settles, a fresh call runs. */
+    check(await serialise('key-z', async () => 'again') === 'again',
+          'serialise: the queue is cleaned up, so it does not grow for ever');
+}
+
+/* ------------------------------------------------------------------ */
 
 console.log('putty-mcp bridge tests\n');
 try {
@@ -205,6 +260,8 @@ try {
     testBrokenRedirect();
     console.log('  [test] several processes, one stale');
     testMultipleServersAndStale();
+    console.log('  [test] one run at a time per session');
+    await testSerialise();
 } finally {
     restore();
 }

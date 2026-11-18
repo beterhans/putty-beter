@@ -446,6 +446,27 @@ esac
 check "run: and a wrapped echo does not leak into the output" "1 line, 300 chars" \
       "$(printf '%s' "$long_run" | python3 -c 'import sys; s=sys.stdin.read().rstrip("\n"); print("%d line, %d chars" % (len(s.split("\n")), len(s)))')"
 
+# Two runs at once, in one process - which is what an MCP client does when an
+# agent issues two calls without awaiting the first. Before the per-session
+# queue in the bridge, both commands went into the one stream and each result
+# came back with the other's command and output in it, looking entirely
+# plausible. Found on a real Synology NAS by doing exactly this.
+cat > "$work/concurrent.mjs" <<'CONCURRENT'
+import { runCommand } from 'BRIDGE_DIR/protocol.mjs';
+const session = Number(process.argv[2]);
+const [a, b] = await Promise.all([
+    runCommand({ session, command: '!echo CONCURRENT-A' }, {}),
+    runCommand({ session, command: '!echo CONCURRENT-B' }, {}),
+]);
+console.log(`${a.output}|${b.output}`);
+CONCURRENT
+sed -i '' "s|BRIDGE_DIR|$root/mcp/src|" "$work/concurrent.mjs"
+
+both=$(HOME="$home" node "$work/concurrent.mjs" "$sid" 2>&1) || true
+say "concurrent runs: $both"
+check "run: two runs at once do not contaminate each other" \
+      "CONCURRENT-A|CONCURRENT-B" "$both"
+
 # A prompt that wants input: the run stops and reports rather than guessing.
 # Answering it is the caller's decision, and a password is never the agent's.
 pw_out=$(HOME="$home" node "$bridge" run "$sid" \

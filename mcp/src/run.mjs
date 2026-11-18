@@ -40,10 +40,23 @@ export const DEFAULTS = {
     pollMs: 50,
     /* Give up after this long and hand back what there is. */
     timeoutMs: 30000,
-    /* Budget for one read; paging is handled, so this only affects chunking. */
+    /*
+     * Budget for one read; paging is handled, so this only affects chunking.
+     */
     maxBytes: 8192,
-    /* Total output to keep, so `show running-config` cannot exhaust anything. */
-    maxOutputBytes: 256 * 1024,
+    /*
+     * Total output to keep. This is what bounds the *whole* command, and it is
+     * the number that decides how much of the caller's context one `run` can
+     * occupy - 32 KB is roughly 8k tokens.
+     *
+     * It used to be 256 KB, which is about 65k tokens: the cap protected the
+     * socket and this process's memory, not the model, and it was not settable
+     * from the MCP tool at all. A `find` over a media library would have handed
+     * back 65k tokens with nothing in the reply to say so. `truncated` and
+     * `omitted_lines` now say so, and the caller can raise this or read the
+     * rest from the transcript with the returned cursor.
+     */
+    maxOutputBytes: 32 * 1024,
     /* Answer `--More--` and friends with a space. */
     answerPager: true,
     maxPagerAnswers: 500,
@@ -177,6 +190,7 @@ export async function runOnSession(session, command, options = {}) {
     let pagedAnswers = 0;
     let gap = null;
     let truncated = false;
+    let omittedLines = 0;
     let trailingPromptRemoved = false;
     let needsInput = null;
     let cancelled = false;
@@ -200,11 +214,23 @@ export async function runOnSession(session, command, options = {}) {
             if (seen.has(l.id))
                 continue;
             seen.add(l.id);
-            if (bytes + l.text.length > o.maxOutputBytes) {
-                truncated = true;             /* seen, but not kept */
+            /*
+             * The line *and its newline*: the cap is on the string the caller
+             * receives, which is the lines joined with '\n', so counting only
+             * the text would let the output run over by one byte per line.
+             */
+            const cost = l.text.length + 1;
+            if (bytes + cost > o.maxOutputBytes) {
+                /*
+                 * Seen, but not kept: the cursor still moves past it, so the
+                 * caller can read the rest from the transcript. Counting them
+                 * is what makes `truncated` actionable rather than a shrug.
+                 */
+                truncated = true;
+                omittedLines++;
                 continue;
             }
-            bytes += l.text.length;
+            bytes += cost;
             lines.push(l);
             grew = true;
         }
@@ -388,6 +414,13 @@ export async function runOnSession(session, command, options = {}) {
         elapsed_ms: now() - started,
         truncated,
     };
+    /*
+     * Only when it happened: `truncated` alone says something was dropped, and
+     * the caller needs to know how much before deciding whether to raise
+     * max_output_bytes or read the rest with the cursor.
+     */
+    if (truncated)
+        result.omitted_lines = omittedLines;
     if (needsInput)
         result.needs_input = needsInput;
     if (trailingPromptRemoved)
@@ -395,8 +428,8 @@ export async function runOnSession(session, command, options = {}) {
     if (gap)
         result.gap = gap;
     if (truncated)
-        log(`output capped at ${o.maxOutputBytes} bytes; the cursor has ` +
-            `still advanced past everything`);
+        log(`output capped at ${o.maxOutputBytes} bytes: ${omittedLines} ` +
+            `line(s) dropped, and the cursor has still advanced past them`);
 
     return result;
 }

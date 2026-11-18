@@ -13,7 +13,7 @@
  */
 
 import { classify, compileExpect, promptReason } from '../src/detect.mjs';
-import { runOnSession } from '../src/run.mjs';
+import { runOnSession, DEFAULTS } from '../src/run.mjs';
 
 let passes = 0, failures = 0;
 
@@ -631,6 +631,35 @@ async function testWrappedEcho() {
                'run: so output that looks like a suffix is not eaten as well');
 }
 
+async function testDefaultOutputCap() {
+    /*
+     * The default cap is the number that decides how much of a *caller's
+     * context* one run can occupy, so it is pinned deliberately: 32 KB is about
+     * 8k tokens. It was 256 KB - about 65k tokens - which protected this
+     * process's memory rather than the model, and was not settable from the MCP
+     * tool at all. Changing it should be a decision, not an accident.
+     */
+    checkEqual(DEFAULTS.maxOutputBytes, 32 * 1024,
+               'defaults: the output cap is a context budget, not a memory one');
+
+    /* A big listing is bounded, and says so, rather than arriving whole. */
+    const steps = [];
+    for (let i = 0; i < 400; i++)
+        steps.push({ afterMs: 50, text: `entry ${i} `.repeat(10) });
+    steps.push({ afterMs: 200, open: true, text: 'Router>' });
+    const s = new FakeSession({ echo: false, steps });
+    const r = await run(s, 'find / -type f');
+
+    checkEqual(r.truncated, true, 'defaults: a listing past the cap is truncated');
+    check(r.output.length <= DEFAULTS.maxOutputBytes,
+          'defaults: and the output is within the cap',
+          `got ${r.output.length} bytes`);
+    check(r.omitted_lines > 0, 'defaults: and the dropped lines are counted',
+          `omitted ${r.omitted_lines}`);
+    checkEqual(r.completed_by, 'prompt',
+               'defaults: truncation does not stop the run finishing');
+}
+
 async function testBadInput() {
     for (const [cmd, what] of [['', 'an empty command'],
                                ['ls\nls', 'a command containing a newline'],
@@ -671,6 +700,13 @@ async function testGapAndPaging() {
     checkEqual(r2.truncated, true, 'run: too much output is truncated and reported');
     check(r2.output.length <= 200, 'run: and the cap is respected',
           `got ${r2.output.length} bytes`);
+    /*
+     * `truncated` alone says something was dropped. How much is what decides
+     * whether to raise max_output_bytes or read the rest with the cursor, so
+     * the count is reported and has to be right.
+     */
+    checkEqual(r2.omitted_lines, 30 - r2.lines.length,
+               'run: and says how many lines were dropped');
     checkEqual(r2.completed_by, 'prompt',
                'run: truncation does not stop the run finishing');
 }
@@ -701,6 +737,8 @@ try {
     await testTrailingPrompt();
     console.log('  [test] a command wider than the terminal');
     await testWrappedEcho();
+    console.log('  [test] the default output cap');
+    await testDefaultOutputCap();
     console.log('  [test] bad input');
     await testBadInput();
     console.log('  [test] options that are explicitly undefined');

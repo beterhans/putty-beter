@@ -42,7 +42,11 @@ Usage:
 
 Options:
   --since <id>        (read) return lines with an id greater than this
-  --max-bytes <n>     (read, run) budget for one call, default 8192
+  --max-bytes <n>     (read, run) budget for one read, default 8192
+  --max-output-bytes <n>
+                      (run) cap on the total output kept, default 32768. This
+                      is how much of a context one run can occupy, so raise it
+                      deliberately for a big listing.
   --expect <regex>    (run) the prompt pattern, if the default family does
                       not fit this device. Replaces the default.
   --timeout <ms>      (run) give up after this long, default 30000
@@ -74,6 +78,7 @@ function parseArgs(argv) {
         };
         if (a === '--since') opts.since = Number(need());
         else if (a === '--max-bytes') opts.maxBytes = Number(need());
+        else if (a === '--max-output-bytes') opts.maxOutputBytes = Number(need());
         else if (a === '--text') opts.text = need();
         else if (a === '--expect') opts.expect = need();
         else if (a === '--timeout') opts.timeoutMs = Number(need());
@@ -246,6 +251,7 @@ async function cmdRun(opts, args) {
         timeoutMs: opts.timeoutMs,
         quietMs: opts.quietMs,
         maxBytes: opts.maxBytes,
+        maxOutputBytes: opts.maxOutputBytes,
         answerPager: opts.pager,
         keepTrailingPrompt: opts.keepPrompt,
     }, opts);
