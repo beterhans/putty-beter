@@ -19,6 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runOnSession } from './run.mjs';
+
 /* Bumped to 2 when `sessions` gained the read-only/read-write field and `send`
  * and `key` were added. Both ends ship together, so a mismatch is a mistake
  * rather than a compatibility question, and the handshake reports it. */
@@ -528,34 +530,65 @@ export async function listSessions(opts = {}) {
     return sessions;
 }
 
+/* The read body, shared by read() and by run()'s poll loop. */
+async function readOn(c, session, since, maxBytes) {
+    const f = await c.request(
+        'read', String(session),
+        since ? String(since) : '',
+        maxBytes ? String(maxBytes) : '');
+
+    const [cursor, totalLines, missingFrom, missingTo, omitted, nlines] = f;
+    const lines = [];
+    for (let i = 0; i < Number(nlines); i++) {
+        const base = 6 + 3 * i;
+        lines.push({
+            id: Number(f[base]),
+            author: f[base + 1],
+            text: f[base + 2],
+        });
+    }
+
+    const out = {
+        cursor: Number(cursor),
+        total_lines: Number(totalLines),
+        omitted: Number(omitted),
+        lines,
+    };
+    if (missingTo)
+        out.gap = { missing_from: Number(missingFrom), missing_to: Number(missingTo) };
+    return out;
+}
+
 export async function readSession({ session, since = 0, maxBytes } = {}, opts = {}) {
-    return withSession(session, opts, async (c) => {
-        const f = await c.request(
-            'read', String(session),
-            since ? String(since) : '',
-            maxBytes ? String(maxBytes) : '');
+    return withSession(session, opts, (c) => readOn(c, session, since, maxBytes));
+}
 
-        const [cursor, totalLines, missingFrom, missingTo, omitted, nlines] = f;
-        const lines = [];
-        for (let i = 0; i < Number(nlines); i++) {
-            const base = 6 + 3 * i;
-            lines.push({
-                id: Number(f[base]),
-                author: f[base + 1],
-                text: f[base + 2],
-            });
-        }
-
-        const out = {
-            cursor: Number(cursor),
-            total_lines: Number(totalLines),
-            omitted: Number(omitted),
-            lines,
-        };
-        if (missingTo)
-            out.gap = { missing_from: Number(missingFrom), missing_to: Number(missingTo) };
-        return out;
-    });
+/*
+ * `run`: send one command and wait for it to finish.
+ *
+ * The one command that is not a single request and reply. The whole run shares
+ * one connection - the poll loop makes twenty small requests a second, and
+ * reconnecting for each would be silly - and everything that decides *when* a
+ * command is finished lives in run.mjs, where it can be tested from a table of
+ * strings with no PuTTY at all.
+ */
+export async function runCommand({ session, command, ...runOpts } = {}, opts = {}) {
+    return withSession(session, opts, (c) => runOnSession({
+        read: ({ since, maxBytes }) => readOn(c, session, since, maxBytes),
+        send: async (text) => {
+            const [bytes] = await c.request('send', String(session), text);
+            return Number(bytes);
+        },
+        key: async (name) => {
+            await c.request('key', String(session), name);
+            return name;
+        },
+    }, command, {
+        ...runOpts,
+        log: opts.debug
+            ? (m) => process.stderr.write(`[putty-mcp] run: ${m}\n`)
+            : undefined,
+    }));
 }
 
 export async function screenSession({ session } = {}, opts = {}) {

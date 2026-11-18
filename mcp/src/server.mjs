@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 import {
     listSessions, readSession, screenSession, sendToSession, sendKey,
-    serverVersion,
+    serverVersion, runCommand,
 } from './protocol.mjs';
 import { userManual, INSTRUCTIONS } from './manual.mjs';
 
@@ -95,6 +95,71 @@ export function buildServer(opts = {}) {
         try {
             return json(await readSession(
                 { session, since, maxBytes: max_bytes }, opts));
+        } catch (e) {
+            return failed(e);
+        }
+    });
+
+    server.registerTool('run', {
+        title: 'Run one command and wait for it to finish',
+        description:
+            'Type `command` followed by Return, wait for the device to finish, ' +
+            'and return just that command\'s output - everything after the ' +
+            'device\'s echo of the command, with the trailing prompt removed. ' +
+            'This is the tool to prefer over send() for anything you want an ' +
+            'answer from.\n\n' +
+            'It waits, which send() does not: it answers a `--More--` pager by ' +
+            'itself (counted in `paged_answers`), and it stops rather than ' +
+            'guessing at a prompt that wants input. Read `completed_by`:\n' +
+            '  "prompt"  - quiet, and the last line looks like a prompt: trust it\n' +
+            '  "quiet"   - the device stopped talking, but the last line does not\n' +
+            '              look like a prompt: probably finished, check the output\n' +
+            '  "timeout" - still talking when the timeout expired: the output is\n' +
+            '              partial, and the command may still be running\n' +
+            '  "needs_input" - see `needs_input`, and do NOT send the next\n' +
+            '              command: answer it deliberately, or ask the human to\n' +
+            '  "cancelled" - a human typed into the window; the run stopped so\n' +
+            '              the two of you do not drive the same stream at once\n' +
+            '  "pager_limit" - too many pages; raise max_pager_answers or use\n' +
+            '              a command that does not page\n\n' +
+            'A password is never yours to give: if `needs_input` says a password ' +
+            'is wanted, ask the human to type it in the window.',
+        inputSchema: {
+            session: z.number().int().describe('Session id from sessions().'),
+            command: z.string().describe(
+                'One line, without a newline. Return is added for you.'),
+            expect: z.string().optional().describe(
+                'Regular expression for the prompt, if the default family ' +
+                'does not fit this device. Replaces the default, not adds to it.'),
+            timeout_ms: z.number().int().optional().describe(
+                'Give up after this long. Default 30000.'),
+            quiet_ms: z.number().int().optional().describe(
+                'How long the device must be silent before the command counts ' +
+                'as finished. Default 400. Raise it for a slow device.'),
+            max_bytes: z.number().int().optional().describe(
+                'Budget for one read while polling. Default 8192.'),
+            answer_pager: z.boolean().optional().describe(
+                'Answer `--More--` with a space. Default true. Set false to be ' +
+                'told about the pager instead of having it answered.'),
+            pager_patterns: z.array(z.string()).optional().describe(
+                'Extra pager patterns, e.g. "^:$" for less/more.'),
+            keep_trailing_prompt: z.boolean().optional().describe(
+                'Keep a prompt the device terminated with a newline. Default ' +
+                'false: it is removed, because it is not output.'),
+        },
+    }, async (args) => {
+        try {
+            return json(await runCommand({
+                session: args.session,
+                command: args.command,
+                expect: args.expect,
+                timeoutMs: args.timeout_ms,
+                quietMs: args.quiet_ms,
+                maxBytes: args.max_bytes,
+                answerPager: args.answer_pager,
+                pagerPatterns: args.pager_patterns,
+                keepTrailingPrompt: args.keep_trailing_prompt,
+            }, opts));
         } catch (e) {
             return failed(e);
         }

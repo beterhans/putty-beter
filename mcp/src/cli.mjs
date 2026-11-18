@@ -16,7 +16,7 @@
 
 import {
     listSessions, readSession, screenSession, sendToSession, sendKey,
-    serverVersion, ping, endpointCandidates, McpError,
+    serverVersion, ping, endpointCandidates, McpError, runCommand,
 } from './protocol.mjs';
 import { userManual, manualPath } from './manual.mjs';
 import { runServer, VERSION } from './server.mjs';
@@ -31,6 +31,9 @@ Usage:
   putty-mcp screen <session>        Print the visible screen
   putty-mcp send <session> <text>   Type text into a session ("\n" = Return;
                                     or pass --text with real newlines)
+  putty-mcp run <session> <command> Run one command and wait for it to finish,
+                                    printing just its output. Answers a
+                                    "--More--" pager by itself.
   putty-mcp key <session> <key>     Send one keystroke: enter, tab, esc,
                                     backspace, up, down, left, right, ctrl-c
   putty-mcp manual                  Print the user manual the agent reads
@@ -39,12 +42,20 @@ Usage:
 
 Options:
   --since <id>        (read) return lines with an id greater than this
-  --max-bytes <n>     (read) budget for this call, default 8192
+  --max-bytes <n>     (read, run) budget for one call, default 8192
+  --expect <regex>    (run) the prompt pattern, if the default family does
+                      not fit this device. Replaces the default.
+  --timeout <ms>      (run) give up after this long, default 30000
+  --quiet <ms>        (run) how long the device must be silent before the
+                      command counts as finished, default 400
+  --no-pager          (run) report a --More-- pager instead of answering it
+  --keep-prompt       (run) keep a prompt that the device ended with a newline
   --json              print the raw result instead of a human summary
   --endpoint <file>   read the socket and token from this endpoint file
   --socket <path>     the server's Unix socket, if not discovered
   --token-file <path> the file holding the handshake token
-  --debug             trace the socket traffic on stderr
+  --debug             trace the socket traffic on stderr (and, for run, why
+                      it decided the command had finished)
   -h, --help          this text
 
 With no server running, the socket only exists while a PuTTY session has
@@ -64,6 +75,11 @@ function parseArgs(argv) {
         if (a === '--since') opts.since = Number(need());
         else if (a === '--max-bytes') opts.maxBytes = Number(need());
         else if (a === '--text') opts.text = need();
+        else if (a === '--expect') opts.expect = need();
+        else if (a === '--timeout') opts.timeoutMs = Number(need());
+        else if (a === '--quiet') opts.quietMs = Number(need());
+        else if (a === '--no-pager') opts.pager = false;
+        else if (a === '--keep-prompt') opts.keepPrompt = true;
         else if (a === '--endpoint') opts.endpoint = need();
         else if (a === '--socket') opts.socket = need();
         else if (a === '--token-file') opts.tokenFile = need();
@@ -211,6 +227,54 @@ async function cmdKey(opts, args) {
     return 0;
 }
 
+/*
+ * `run`: send one command, wait for it to finish, print its output. This is
+ * the command to use when a human wants to know whether prompt detection is
+ * working on a particular device, and `--debug` says why it decided what it
+ * decided.
+ */
+async function cmdRun(opts, args) {
+    const session = sessionId(args[0]);
+    const command = opts.text !== undefined ? opts.text : args.slice(1).join(' ');
+    if (!command)
+        throw new McpError('run needs a command');
+
+    const r = await runCommand({
+        session,
+        command,
+        expect: opts.expect,
+        timeoutMs: opts.timeoutMs,
+        quietMs: opts.quietMs,
+        maxBytes: opts.maxBytes,
+        answerPager: opts.pager,
+        keepTrailingPrompt: opts.keepPrompt,
+    }, opts);
+
+    if (opts.json) {
+        process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+        return 0;
+    }
+
+    if (r.output)
+        process.stdout.write(r.output + '\n');
+
+    process.stderr.write(
+        `(${r.completed_by}` +
+        (r.echo ? ', echo seen' : ', no echo') +
+        (r.paged_answers ? `, ${r.paged_answers} page(s) answered` : '') +
+        (r.needs_input ? `, wants ${r.needs_input.reason}` : '') +
+        (r.cancelled_by_human ? ', a human typed' : '') +
+        (r.truncated ? ', output truncated' : '') +
+        `, ${r.elapsed_ms}ms, cursor ${r.cursor})\n`);
+
+    if (r.needs_input) {
+        process.stderr.write(
+            `        the session is waiting: ${r.needs_input.reason}\n` +
+            `        ${JSON.stringify(r.needs_input.prompt)}\n`);
+    }
+    return 0;
+}
+
 async function cmdVersion(opts) {
     const v = await serverVersion(opts);
     process.stdout.write(
@@ -257,6 +321,8 @@ export async function main(argv) {
             return await cmdScreen(opts, rest);
           case 'send':
             return await cmdSend(opts, rest);
+          case 'run':
+            return await cmdRun(opts, rest);
           case 'key':
             return await cmdKey(opts, rest);
           case 'version':
