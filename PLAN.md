@@ -611,6 +611,7 @@ dropped whenever the session list is rebuilt: Save, Delete, New Folder, drag.
 | `utils/CMakeLists.txt` | add `sesssearch.c` to the `utils` object library |
 | `config.c` | `sessionsaver_data`: the per-session match cache; `sessionsaver_fill_list()`; the `EVENT_VALCHANGE` branch; the Save / New Folder guards; drop the cache wherever `get_sesslist(..., false)` is called |
 | `test/test_sesssearch.c` (new), `CMakeLists.txt` | unit tests for the helpers, beside `test_sessions` |
+| `docs/session-search.md` (new) | how the search works: the rule, the cache, driving the dialog by hand, and the limits |
 | `README.md`, `CHANGES-FROM-UPSTREAM.md` | the feature, and the file-by-file diff |
 | `PLAN.md` | this section, and the milestone |
 
@@ -643,6 +644,8 @@ dropped whenever the session list is rebuilt: Save, Delete, New Folder, drag.
    `PUTTY_CONFIG_DEBUG`. Silent when unset.
 8. **Docs** — a short "Searching saved sessions" paragraph (README §8 area or
    its own numbered entry), and the file list in `CHANGES-FROM-UPSTREAM.md`.
+   (Ended up as README §9b, `CHANGES-FROM-UPSTREAM.md` §10b, and a page of its
+   own, `docs/session-search.md`.)
 9. **Build and test** — `ninja -C build-arm64`, run `test_sesssearch`, then
    the manual pass below.
 

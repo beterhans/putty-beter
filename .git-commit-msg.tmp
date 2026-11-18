@@ -1,0 +1,12 @@
+Document the saved-session search, and how to work on it
+
+docs/session-search.md: the *how* for the search added in fdba524 - the
+prefix rule, what is matched (name, HostName, SessionComment), why a
+leading / is free, what the user sees, the per-session cache and where it
+is invalidated, the PUTTY_SESS_SEARCH_DEBUG trace, how to drive the dialog
+from osascript when no human is available (including the 5-tab route to
+the box and the PuTTY-bin gotcha), and what is deliberately left out.
+
+Also: a row for it in the README documentation index, a pointer from
+README 9b, a row in the CHANGES-FROM-UPSTREAM new-files table, and a note
+in PLAN 4j about where the docs ended up.

@@ -17,6 +17,7 @@ Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICEN
 | [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) | every difference from the official PuTTY 0.85 tarball, file by file, with the commands to reproduce the diff |
 | [`PLAN.md`](PLAN.md) | the roadmap, and the reasoning behind each decision — §7 is the MCP design of record |
 | [`docs/mcp.md`](docs/mcp.md) | **how the MCP works**: the files, the wire protocol, the capture-buffer semantics, the socket and its permissions, the build, testing and debugging |
+| [`docs/session-search.md`](docs/session-search.md) | **how the saved-session search works**: the prefix rule, what is matched, the per-session cache, and how to drive the dialog by hand |
 | [`docs/mcp-user-manual.md`](docs/mcp-user-manual.md) | the manual the AI agent is given, as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, checked by `scripts/test-mcp.sh` |
 | [`mcp/README.md`](mcp/README.md) | the `putty-mcp` bridge: how to install it and point a client at it |
 | [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) | the canonical copy of the agent manual (what is actually served) |
@@ -175,7 +176,9 @@ so searching for a session and then loading it is two steps, not three. **Save**
 and **New Folder** beep while a search is on: `/beta` is not a session name.
 
 `PUTTY_SESS_SEARCH_DEBUG=1` traces each search — the query, the match count and
-whether the session files had to be read again — to stderr.
+whether the session files had to be read again — to stderr. For the design, the
+cache and how to drive the dialog from a script, see
+[`docs/session-search.md`](docs/session-search.md).
 
 ### 10. Changed defaults
 

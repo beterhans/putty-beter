@@ -127,6 +127,7 @@ tool will give slightly different numbers for the same change.
 | `utils/sesssearch.c` | The saved-session search: what counts as a search, the text a session is searched by, and the case-insensitive match. Pure - no I/O, no GTK - so it is testable on its own |
 | `utils/sesssearch.h` | Its interface, and the `PUTTY_SESS_SEARCH_DEBUG` switch |
 | `test/test_sesssearch.c` | Tests for the above: the prefix rule, host and comment hits, case folding, folder-name queries, and no false matches |
+| `docs/session-search.md` | **How the search works**: the prefix rule, what is matched, the per-session cache and its invalidation, how to drive the dialog from a script, and what is deliberately not done |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 | `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
