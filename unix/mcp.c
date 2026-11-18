@@ -1126,3 +1126,9 @@ void mcp_session_note_sent(McpSession *s, McpAuthor author,
     if (s)
         mcp_buffer_note_sent(s->buf, author, data, len);
 }
+
+void mcp_session_note_typed(McpSession *s, const void *data, size_t len)
+{
+    if (s)
+        mcp_buffer_note_typed(s->buf, data, len);
+}

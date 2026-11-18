@@ -2033,6 +2033,23 @@ void term_nopaste(Terminal *);
 void term_copyall(Terminal *, const int *, int);
 /* PuTTY-beter: the visible screen as plain UTF-8 text, for the MCP server. */
 char *term_get_screen_text(Terminal *);
+
+/*
+ * PuTTY-beter: a tap on the bytes a human puts into a session - typed or
+ * pasted - called just before they reach the line discipline.
+ *
+ * The MCP server uses it to say who typed a line. Without it, text the human
+ * typed is indistinguishable from the device's own output, which is the
+ * difference between "something changed this configuration" and "the human
+ * changed it while you were watching".
+ *
+ * This is the whole of the front end's input path: term_keyinput(),
+ * term_keyinputw() and both paste paths all funnel through it, and the
+ * terminal's own generated replies (answers to query sequences) do not, which
+ * is exactly the distinction wanted.
+ */
+typedef void (*term_input_tap_fn)(void *ctx, const void *data, size_t len);
+void term_set_input_tap(Terminal *term, term_input_tap_fn fn, void *ctx);
 void term_pre_reconfig(Terminal *, Conf *);
 void term_reconfig(Terminal *, Conf *);
 void term_request_copy(Terminal *, const int *clipboards, int n_clipboards);

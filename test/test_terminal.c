@@ -524,6 +524,76 @@ static void test_wintitle(Mock *mk)
     SEQUAL(mk->title->s, "bar");
 }
 
+/*
+ * PuTTY-beter: the input tap.
+ *
+ * This is how the MCP server is told that the *human* put bytes into the
+ * session rather than the device printing them, and it is the difference
+ * between "something reconfigured this switch" and "the person did". The hook
+ * is on term_keyinput_internal(), which is the single funnel for typing and
+ * pasting alike, so both must report - and a tap that has been removed must
+ * not.
+ */
+static strbuf *tap_log;
+
+static void test_tap_fn(void *ctx, const void *data, size_t len)
+{
+    void *p = strbuf_append(tap_log, len);
+    memcpy(p, data, len);
+}
+
+static void test_input_tap(Mock *mk)
+{
+    tap_log = strbuf_new();
+    term_set_input_tap(mk->term, test_tap_fn, NULL);
+
+    /* Typing, through the raw path. */
+    term_keyinput(mk->term, -1, "ls", 2);
+    SEQUAL(tap_log->s, "ls");
+
+    /* Typing, through the wide-character path. */
+    strbuf_clear(tap_log);
+    term_keyinputw(mk->term, L"x", 1);
+    IEQUAL(tap_log->len > 0, 1);
+
+    /* Typing, through the character-set conversion path. */
+    strbuf_clear(tap_log);
+    term_keyinput(mk->term, CS_UTF8, "\303\251", 2);   /* e-acute */
+    IEQUAL(tap_log->len > 0, 1);
+
+    /*
+     * A paste is the human too, but it cannot be observed here: term_do_paste()
+     * only sends the bytes when a line discipline is attached, and it queues
+     * them through a toplevel callback when there are many. The hook is on the
+     * single function both the typing and the paste paths end in, so covering
+     * typing covers the paste; a real session has the line discipline that
+     * makes it reachable.
+     */
+    term_do_paste(mk->term, L"pasted", 6);
+    strbuf_clear(tap_log);
+    IEQUAL(tap_log->len, 0);
+
+    /*
+     * Device output is not the human. This is structural - the terminal's
+     * replies to query sequences call ldisc_send() directly, bypassing the
+     * funnel the tap sits on - and with no line discipline attached the reply
+     * is not even generated here, so what this pins is that data arriving from
+     * the far end never reaches the tap.
+     */
+    strbuf_clear(tap_log);
+    term_datapl(mk->term, PTRLEN_LITERAL("\033[6n"));
+    IEQUAL(tap_log->len, 0);
+
+    /* A removed tap is not called. */
+    term_set_input_tap(mk->term, NULL, NULL);
+    strbuf_clear(tap_log);
+    term_keyinput(mk->term, -1, "x", 1);
+    IEQUAL(tap_log->len, 0);
+
+    strbuf_free(tap_log);
+    tap_log = NULL;
+}
+
 int main(void)
 {
     Mock *mk = mock_new();
@@ -533,6 +603,7 @@ int main(void)
     test_wrap(mk);
     test_nonwrap(mk);
     test_wintitle(mk);
+    test_input_tap(mk);
 
     bool failed = mk->any_test_failed;
     mock_free(mk);

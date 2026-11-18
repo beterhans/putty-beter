@@ -63,6 +63,27 @@ void mcp_buffer_feed(McpBuffer *b, const void *data, size_t len);
 void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
                           const void *data, size_t len);
 
+/*
+ * A line the human is typing, keystroke by keystroke.
+ *
+ * Separate from note_sent() for two reasons, and both come from human input
+ * arriving one character at a time rather than as a whole line:
+ *
+ *   - note_sent() closes the line in progress on every call, so typing "ls"
+ *     would produce one line per character. Here a line the human is already
+ *     typing is continued instead.
+ *   - the bytes are not written at all. The device echoes what the human types,
+ *     and that echo is the record of it - one copy, in the device's own words,
+ *     rather than our copy plus the echo, which is how "ls" became "llss".
+ *     Not writing them also keeps a password out of the transcript: a device
+ *     does not echo a password, so nothing is recorded for one.
+ *
+ * An MCP client's own text is deliberately not treated this way: it is sent a
+ * line at a time, so there is no interleaving to undo, and the device's echo
+ * of it stays in the transcript as the fence that `run` looks for.
+ */
+void mcp_buffer_note_typed(McpBuffer *b, const void *data, size_t len);
+
 /* Id of the oldest line still in the window, or 0 when it is empty. */
 uint64_t mcp_buffer_first_id(McpBuffer *b);
 /* Id of the newest *completed* line, or 0 when there is none. */

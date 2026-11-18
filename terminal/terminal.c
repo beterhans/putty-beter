@@ -1269,6 +1269,18 @@ static termline *lineptr(Terminal *term, int y, int lineno)
 termline *term_get_line(Terminal *term, int y) { return lineptr(y); }
 
 /*
+ * PuTTY-beter: where a human's keystrokes and pastes are announced.
+ *
+ * The front end installs one of these so the MCP server can tag the
+ * transcript; see putty.h for why the funnel is the right place for it.
+ */
+void term_set_input_tap(Terminal *term, term_input_tap_fn fn, void *ctx)
+{
+    term->input_tap = fn;
+    term->input_tap_ctx = ctx;
+}
+
+/*
  * PuTTY-beter: the visible screen as plain text, for the MCP server's
  * screen() call.
  *
@@ -3629,6 +3641,19 @@ static inline void term_bracketed_paste_stop(Terminal *term)
 static inline void term_keyinput_internal(
     Terminal *term, const void *buf, int len, bool interactive)
 {
+    /* Mimic the special case of negative length in ldisc_send */
+    int true_len = len >= 0 ? len : (int)strlen((const char *)buf);
+
+    /*
+     * PuTTY-beter: tell the front end what the human just put in, before it
+     * reaches the line discipline. This function is the single funnel for
+     * typing and pasting alike, and the terminal's own generated replies
+     * bypass it - they call ldisc_send() directly - so what arrives here is
+     * exactly "the human did this".
+     */
+    if (term->input_tap && true_len > 0)
+        term->input_tap(term->input_tap_ctx, buf, (size_t)true_len);
+
     if (term->srm_echo) {
         /*
          * Implement the terminal-level local echo behaviour that
@@ -3642,9 +3667,6 @@ static inline void term_keyinput_internal(
          * ldisc_send(term->ldisc, ...) and won't go through this
          * function.
          */
-
-        /* Mimic the special case of negative length in ldisc_send */
-        int true_len = len >= 0 ? len : strlen(buf);
 
         bufchain_add(&term->inbuf, buf, true_len);
         term_added_data(term, false);

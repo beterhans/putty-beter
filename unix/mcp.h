@@ -68,6 +68,14 @@ void mcp_session_feed(McpSession *s, const void *data, size_t len);
 void mcp_session_note_sent(McpSession *s, McpAuthor author,
                            const void *data, size_t len);
 
+/*
+ * Bytes the human put in - typed or pasted. Called from the front end's input
+ * tap, which is the single funnel every human keystroke goes through. Separate
+ * from note_sent() because human input arrives one keystroke at a time and the
+ * device echoes it back; see mcp_buffer_note_typed().
+ */
+void mcp_session_note_typed(McpSession *s, const void *data, size_t len);
+
 /* For diagnostics and for the front end's own debug output. */
 bool mcp_server_running(void);
 const char *mcp_server_socket_path(void);

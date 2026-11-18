@@ -253,6 +253,13 @@ static void buf_put_byte(McpBuffer *b, unsigned char c)
         b->pending_cr = false;
         if (c == '\n') {
             cur_finalise(b);
+            /*
+             * A device newline ends the line, and the next one is the
+             * device's - which is how "the human typed this" lasts for
+             * exactly one line: the echo builds the human's line, and the
+             * moment it ends the attribution goes back.
+             */
+            b->cur_author = MCP_AUTHOR_DEVICE;
             return;
         }
         cur_discard(b);
@@ -264,6 +271,7 @@ static void buf_put_byte(McpBuffer *b, unsigned char c)
         return;
       case '\n':
         cur_finalise(b);
+        b->cur_author = MCP_AUTHOR_DEVICE;
         return;
       case '\b':
       case 0x7f:
@@ -401,6 +409,47 @@ void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
         }
     }
     b->cur_author = MCP_AUTHOR_DEVICE;
+}
+
+/*
+ * A line the human is typing.
+ *
+ * The bytes are deliberately **not** written here. The device echoes what the
+ * human types, and that echo is the record of it: one copy, in the device's
+ * own words, instead of our copy plus the echo - which is how "ls" turned into
+ * "llss", because the echo of each character landed inside the line we had just
+ * written.
+ *
+ * Not writing them also keeps a password out of the transcript. A device does
+ * not echo a password, so nothing is written for one - and the tap, which does
+ * see those keystrokes, never records them. Writing them and trying to drop the
+ * echo instead would have put the password in the transcript in clear text.
+ *
+ * So all this does is say who the next line belongs to.
+ */
+void mcp_buffer_note_typed(McpBuffer *b, const void *data, size_t len)
+{
+    (void)data;
+
+    if (!len)
+        return;
+
+    /*
+     * Close a line the *device* is part-way through - a prompt with no newline
+     * after it is the normal case - so that what the human types is not merged
+     * into device output. A line the human is already typing is left alone:
+     * their keystrokes arrive one at a time and belong on the same line.
+     */
+    if (b->cur_active && b->cur.len && b->cur.author != MCP_AUTHOR_HUMAN)
+        cur_finalise(b);
+
+    b->cur_author = MCP_AUTHOR_HUMAN;
+
+    /*
+     * Not a pending CR either: it belongs to whatever the device was doing,
+     * and leaving it set would discard the human's first character.
+     */
+    b->pending_cr = false;
 }
 
 /* ------------------------------------------------------------------ */

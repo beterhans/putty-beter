@@ -166,6 +166,13 @@ struct terminal_tag {
     bool bracketed_paste, bracketed_paste_active;
     bool no_bracketed_paste;           /* disabled in configuration */
 
+    /*
+     * PuTTY-beter: where everything a human puts in is announced, on its way
+     * to the line discipline. See term_set_input_tap() in putty.h.
+     */
+    void (*input_tap)(void *ctx, const void *data, size_t len);
+    void *input_tap_ctx;
+
     int cset_attr[2];
 
 /*

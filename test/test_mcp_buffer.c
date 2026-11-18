@@ -555,6 +555,20 @@ static void test_sent_lines(void)
           (unsigned long)before,
           (unsigned long long)mcp_buffer_total_lines(b));
 
+    /*
+     * A client's text that contains a Return keeps the client's tag on both
+     * sides of it. The attribution that returns to the device after a newline
+     * is about the *human's* keystrokes, which arrive one at a time and are
+     * finished by the device's echo - not about text a client sent whole.
+     */
+    mcp_buffer_note_sent(b, MCP_AUTHOR_MCP, "first\rsecond", 12);
+    r = mcp_buffer_read(b, 0, 0);
+    CHECK(r->nlines >= 2 &&
+          r->lines[r->nlines - 2].author == MCP_AUTHOR_MCP &&
+          r->lines[r->nlines - 1].author == MCP_AUTHOR_MCP,
+          "both halves of a client's multi-line text are the client's");
+    mcp_read_result_free(r);
+
     mcp_buffer_free(b);
 }
 
@@ -617,6 +631,150 @@ static void test_empty(void)
     mcp_buffer_free(b);
 }
 
+/*
+ * What the human types, keystroke by keystroke, and the device's echo of it.
+ *
+ * This is the case note_sent() cannot handle: human input arrives one character
+ * at a time, and the device echoes each character straight back. Writing the
+ * keystrokes *and* keeping the echo would record "ls" as "llss"; writing them
+ * and dropping the echo would put a password in the transcript. So the
+ * keystrokes are not written at all, and the echo is the record.
+ */
+static void test_typed_lines(void)
+{
+    McpBuffer *b = mcp_buffer_new(0);
+    McpReadResult *r;
+    char *joined;
+
+    /* The device is sitting at a prompt. */
+    feed(b, "Router>");
+
+    /*
+     * The human types "ls", one keystroke at a time, and the device echoes
+     * each character as it arrives. Every keystroke lands on one line, once.
+     */
+    const char *typed = "ls";
+    for (const char *p = typed; *p; p++) {
+        mcp_buffer_note_typed(b, p, 1);
+        feed_raw(b, p, 1);                   /* the echo, straight back */
+    }
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(!strcmp(joined, "Router>|ls"),
+          "typed characters are one line, not one per keystroke, and not "
+          "doubled by the echo: \"%s\"", joined);
+    CHECK(r->nlines == 2 && r->lines[1].author == MCP_AUTHOR_HUMAN,
+          "and the line is attributed to the human");
+    mcp_read_result_free(r);
+
+    /* Return: the echo comes back as CR LF, and neither half adds a line. */
+    mcp_buffer_note_typed(b, "\r", 1);
+    feed(b, "\r\n");
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(!strcmp(joined, "Router>|ls"),
+          "a typed Return does not add an empty line: \"%s\"", joined);
+    CHECK(mcp_buffer_total_lines(b) == 2, "two lines in total, got %llu",
+          (unsigned long long)mcp_buffer_total_lines(b));
+    mcp_read_result_free(r);
+
+    /* The command's output is ordinary device output again. */
+    feed(b, "file-a  file-b\r\nRouter>");
+    r = mcp_buffer_read(b, 2, 0);
+    joined = join_lines(r);
+    CHECK(!strcmp(joined, "file-a  file-b|Router>"),
+          "output after the human's line is the device's again: \"%s\"", joined);
+    CHECK(r->lines[1].author == MCP_AUTHOR_DEVICE,
+          "and is attributed to the device");
+    mcp_read_result_free(r);
+
+    mcp_buffer_free(b);
+}
+
+/*
+ * A device that does not echo. This is the password case, and the important
+ * one: what the human typed must not end up in the transcript, because a
+ * password is the one thing an agent must never be handed.
+ */
+static void test_typed_not_echoed(void)
+{
+    McpBuffer *b = mcp_buffer_new(0);
+    McpReadResult *r;
+    char *joined;
+
+    feed(b, "Password: ");
+
+    /* The human types a password. The device echoes none of it. */
+    const char *secret = "hunter2";
+    for (const char *p = secret; *p; p++)
+        mcp_buffer_note_typed(b, p, 1);
+
+    /* The device does echo the Return. */
+    feed(b, "\r\n");
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(strstr(joined, secret) == NULL,
+          "a password the human types is never in the transcript: \"%s\"",
+          joined);
+    CHECK(strstr(joined, "Password: ") != NULL,
+          "the prompt itself is kept: \"%s\"", joined);
+    CHECK(r->nlines == 2 && r->lines[0].author == MCP_AUTHOR_DEVICE &&
+          r->lines[1].author == MCP_AUTHOR_HUMAN && r->lines[1].len == 0,
+          "and the human's Return is an empty line of their own");
+    mcp_read_result_free(r);
+
+    /* The next device output is the device's again, not the human's. */
+    feed(b, "Welcome\r\n");
+    r = mcp_buffer_read(b, 2, 0);
+    joined = join_lines(r);
+    CHECK(!strcmp(joined, "Welcome"), "then output resumes: \"%s\"", joined);
+    CHECK(r->lines[0].author == MCP_AUTHOR_DEVICE, "attributed to the device");
+    mcp_read_result_free(r);
+
+    mcp_buffer_free(b);
+}
+
+/*
+ * A human typing while the device is mid-line, and a human's line next to a
+ * device line: the authors must stay apart, which is what makes "who changed
+ * this?" answerable.
+ */
+static void test_typed_between_device_lines(void)
+{
+    McpBuffer *b = mcp_buffer_new(0);
+    McpReadResult *r;
+    char *joined;
+
+    feed(b, "Router>");
+    mcp_buffer_note_typed(b, "q", 1);
+    feed(b, "q");                     /* echo */
+    mcp_buffer_note_typed(b, "\r", 1);
+    feed(b, "\r\n");
+    feed(b, "Router>");
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(!strcmp(joined, "Router>|q|Router>"),
+          "device, human, device: \"%s\"", joined);
+    CHECK(r->nlines == 3 &&
+          r->lines[0].author == MCP_AUTHOR_DEVICE &&
+          r->lines[1].author == MCP_AUTHOR_HUMAN &&
+          r->lines[2].author == MCP_AUTHOR_DEVICE,
+          "with the middle one attributed to the human");
+    mcp_read_result_free(r);
+
+    /* The tags a client sees. */
+    CHECK(mcp_author_tag(MCP_AUTHOR_HUMAN) == 'h' &&
+          mcp_author_tag(MCP_AUTHOR_DEVICE) == 'd' &&
+          mcp_author_tag(MCP_AUTHOR_MCP) == 'm',
+          "the one-letter tags are h, d and m");
+
+    mcp_buffer_free(b);
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -640,6 +798,9 @@ int main(void)
     printf("  [test] truncation\n");        test_truncation();
     printf("  [test] budget_bounded\n");    test_budget_bounded();
     printf("  [test] sent_lines\n");        test_sent_lines();
+    printf("  [test] typed_lines\n");       test_typed_lines();
+    printf("  [test] typed_not_echoed\n");  test_typed_not_echoed();
+    printf("  [test] typed_between\n");     test_typed_between_device_lines();
     printf("  [test] authors\n");           test_authors();
 
     printf("\n%d passed, %d failed\n", passes, failures);

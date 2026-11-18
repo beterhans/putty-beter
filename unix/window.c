@@ -916,6 +916,25 @@ static bool zm_takes_input(GtkFrontend *inst)
  */
 static bool mcp_send(void *ctx, const void *data, size_t len);
 
+/*
+ * Everything the human types or pastes, on its way to the line discipline.
+ *
+ * Without this the transcript cannot tell the human's typing from the device's
+ * own output, which matters most when an agent is driving the session: a line
+ * it did not send and did not cause is either the device or the person, and
+ * those call for opposite responses.
+ *
+ * The terminal is left without a tap while no session is offered, so a PuTTY
+ * with MCP off pays nothing at all.
+ */
+static void mcp_input_tap(void *ctx, const void *data, size_t len)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+
+    if (inst->mcp)
+        mcp_session_note_typed(inst->mcp, data, len);
+}
+
 static void mcp_get_view(void *ctx, McpView *out)
 {
     GtkFrontend *inst = (GtkFrontend *)ctx;
@@ -962,6 +981,14 @@ static void mcp_start(GtkFrontend *inst)
 
     inst->mcp = mcp_session_new(name, MCP_BUFFER_DEFAULT_BUDGET, writable,
                                 mcp_get_view, mcp_send, inst);
+
+    /*
+     * The tap is installed after the session, so that the input that starts a
+     * session (none of it - the window is not even up yet) cannot arrive
+     * before the session exists to be told about it.
+     */
+    if (inst->term)
+        term_set_input_tap(inst->term, mcp_input_tap, inst);
 }
 
 /*
@@ -996,6 +1023,8 @@ static void mcp_stop(GtkFrontend *inst)
         mcp_session_free(inst->mcp);
         inst->mcp = NULL;
     }
+    if (inst->term)
+        term_set_input_tap(inst->term, NULL, NULL);
 }
 
 static size_t gtk_seat_output(Seat *seat, SeatOutputType type,
