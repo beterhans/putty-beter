@@ -1142,7 +1142,14 @@ the command.
 9. **No prompt learning.** §7.5's guarded auto-learn is deliberately not done: it
    needs per-session state, and a wrong learned prompt is worse than
    `completed_by: "quiet"`. `expect` covers the same ground per call.
-10. **No config panel.** The prompt pattern, quiet period and budgets are
+10. **A wrapped echo is a suffix, not an exact match.** The shell emits a bare
+    CR at every visual wrap (measured: after 114 and 244 bytes of a 305-character
+    command in a 128-column terminal), and the capture buffer's "bare CR means
+    back to column 0" rule - the one that keeps a progress bar to one line -
+    discards every row of the echo but the last. `run` therefore also accepts a
+    long *suffix* of the command as its echo. Found on a real Synology NAS: the
+    fragment was being handed back as the command's output.
+11. **No config panel.** The prompt pattern, quiet period and budgets are
     arguments to `run` rather than entries in `Session → Automation (MCP)`. The
     plan's §7.5 wanted them per saved session; doing it half-way would leave
     `config.c` and `dialog.c` carrying settings that only the bridge reads.

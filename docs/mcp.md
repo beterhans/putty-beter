@@ -331,6 +331,20 @@ The order of the patterns is a matter of what a wrong answer costs:
 2. **A pager**, because we act on it by sending a space.
 3. **A prompt**, last, because a pager marker can end in `%`.
 
+* **A command wider than the terminal loses most of its echo.** The shell
+  emits a **bare carriage return** at every visual wrap, so that its own cursor
+  bookkeeping stays right; measured with a 305-character command in a 128-column
+  terminal, the bare CRs arrive after 114 and 244 bytes. The capture buffer
+  reads a bare CR as "back to column 0, this line is being redrawn" — which is
+  exactly what keeps a progress bar to one line instead of one line per redraw —
+  so every row but the last is discarded and what survives is the *tail* of the
+  command. `run` therefore treats a long line that is a **suffix** of the
+  command as its echo, not only an exact match, and the guards around that
+  (first line only, a fragment long enough to be a row, a command long enough to
+  have wrapped) are what stop real output being eaten. Found on a real Synology
+  NAS, by a command long enough to wrap — the smoke test's commands were all
+  short, so it had never come up.
+
 ## 6c. Human keystrokes
 
 Text the human types is tagged `h`, so an agent can tell "the device did this"

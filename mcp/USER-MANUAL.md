@@ -311,6 +311,12 @@ can, in the window you are both looking at.
 * **Gaps in the output** — the session printed more than the retained window
   while you were not reading. Read more often, or ask for a larger
   `max_bytes`.
+* **A long command's echo looks truncated in `read`** — if the command is wider
+  than the terminal, the shell wraps its echo and only the last row of it
+  survives in the transcript, so you may see a *tail* of your own command as a
+  device line. It is not output and nothing is lost: your command is in the
+  transcript in full, tagged `m`. `run` knows about this and its `output` is
+  clean.
 
 Set `PUTTY_MCP_DEBUG=1` in PuTTY's environment for a trace on stderr of the
 socket, the handshake, every request and every response. Set `PUTTY_MCP_DEBUG=1`

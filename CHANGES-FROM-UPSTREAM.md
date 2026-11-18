@@ -114,7 +114,7 @@ tool will give slightly different numbers for the same change.
 | `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
 | `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
 | `mcp/test/protocol.test.mjs` | 10 checks over the bridge's framing and its endpoint discovery, including following a `config-location` redirect. No PuTTY, no socket, no display |
-| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (33 checks) |
+| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (35 checks) |
 | `mcp/src/detect.mjs` | What the last line of output means: the prompt family, the pager patterns (including the two macOS pagers put where nobody expects them), the waiting-for-input patterns, and the order between them. Pure functions, so it is tested from a table of strings |
 | `mcp/src/run.mjs` | The `run` poll loop: baseline, send, the fence, pager answers, `needs_input`, quiet/prompt completion, timeout, and the human-cancel rule |
 | `mcp/test/run.test.mjs` | 124 checks over the two above, with a fake session on a virtual clock |
@@ -731,7 +731,19 @@ running against a real pty, which is the argument for doing it:
 6. **A `cur_author` reset in the wrong place** would have re-tagged a client's
    own text as the device's when it contained a Return.
 
-**Test:** `scripts/test-mcp.sh` (33 checks) starts its own `pterm` against a
+7. **A command wider than the terminal lost most of its echo.** The shell emits
+   a **bare carriage return** at every visual wrap so that its own cursor
+   bookkeeping stays right — measured with a 305-character command in a
+   128-column terminal, the bare CRs arrive after 114 and 244 bytes. The capture
+   buffer reads a bare CR as "back to column 0, this line is being redrawn",
+   which is what keeps a progress bar to one line, so every row but the last was
+   discarded and what survived was the *tail* of the command. `run` then did not
+   recognise it as the echo and handed it back as part of the output. Found on a
+   real Synology DS220+ by a command long enough to wrap; the smoke test's
+   commands were all short, so it had never come up. `run` now also accepts a
+   long *suffix* of the command as its echo.
+
+**Test:** `scripts/test-mcp.sh` (35 checks) starts its own `pterm` against a
 throwaway configuration folder and verifies the whole path end to end, including
 `run` against a real pty: a slow command waited for rather than cut off, a real
 `more` paged through, a stand-in for network gear's own `--More--`, and a
