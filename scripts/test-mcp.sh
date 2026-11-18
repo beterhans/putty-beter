@@ -427,6 +427,25 @@ case "$run_gear" in
 esac
 check "run: and finishes at the prompt after it" "prompt" "$(run_line "$work/gear.err")"
 
+# A command wider than the terminal. This is the case that was wrong on real
+# gear: the shell emits a **bare carriage return** at every visual wrap, so that
+# its own cursor bookkeeping stays right (measured: after 114 and 244 bytes of a
+# 305-character command in a 128-column terminal). The capture buffer reads a
+# bare CR as "back to column 0" - which is exactly what keeps a progress bar to
+# one line - so every row of the echo but the last is discarded, and what is
+# left is the tail of the command. That tail must not be handed back as output.
+longstr=$(printf '0123456789%.0s' $(seq 1 30))
+long_run=$(HOME="$home" node "$bridge" run "$sid" "!echo $longstr" 2>"$work/long.err") || true
+say "$(cat "$work/long.err")"
+case "$(cat "$work/long.err")" in
+    *"echo seen"*) check "run: a command wider than the terminal is still seen as echoed" \
+                          "seen" "seen" ;;
+    *)             check "run: a command wider than the terminal is still seen as echoed" \
+                          "seen" "$(cat "$work/long.err")" ;;
+esac
+check "run: and a wrapped echo does not leak into the output" "1 line, 300 chars" \
+      "$(printf '%s' "$long_run" | python3 -c 'import sys; s=sys.stdin.read().rstrip("\n"); print("%d line, %d chars" % (len(s.split("\n")), len(s)))')"
+
 # A prompt that wants input: the run stops and reports rather than guessing.
 # Answering it is the caller's decision, and a password is never the agent's.
 pw_out=$(HOME="$home" node "$bridge" run "$sid" \

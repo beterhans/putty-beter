@@ -561,6 +561,76 @@ async function testUndefinedOptions() {
               `defaults: quietMs=${JSON.stringify(bad)} is refused, not silently fatal`);
 }
 
+async function testWrappedEcho() {
+    /*
+     * A command wider than the terminal. The shell emits a bare CR at every
+     * visual wrap, the capture buffer reads a bare CR as "back to column 0"
+     * (which is what keeps a progress bar to one line), and so only the last
+     * row of the echo survives.
+     *
+     * Measured against a real bash in a 128-column pty with a 305-character
+     * command: bare CRs after 114 and 244 bytes. The segments below are those
+     * bytes, so this test is the real shape rather than an invented one.
+     */
+    const command = 'echo ' + '0123456789'.repeat(30);        /* 305 chars */
+    const row1 = 'echo ' + '0123456789'.repeat(11);           /* 115 - what the CR discarded */
+    const row2 = '0123456789'.repeat(13);                     /* 130 - discarded too */
+    const row3 = command.slice(row1.length + row2.length);    /* 60 - the survivor */
+    check(row1.length + row2.length + row3.length === command.length,
+          'the measured rows add up to the command',
+          `${row1.length}+${row2.length}+${row3.length} vs ${command.length}`);
+
+    const s = new FakeSession({
+        echo: false,                       /* the rows below *are* the echo */
+        before: [{ text: 'hans@S-D220:/$' }],
+        steps: [
+            { afterMs: 100, author: 'd', text: row3 },        /* the only row that survived */
+            { afterMs: 150, author: 'd', text: command.slice(5) },  /* the echo's output */
+            { afterMs: 200, open: true, text: 'hans@S-D220:/$' },
+        ],
+    });
+    const r = await run(s, command);
+
+    checkEqual(r.output, command.slice(5),
+               'run: a wrapped echo does not leak into the output');
+    checkEqual(r.echo, true,
+               'run: and the wrapped echo is still recognised as the echo');
+    checkEqual(r.completed_by, 'prompt', 'run: and the run completes normally');
+
+    /*
+     * The guards. Real output that merely happens to end like the command must
+     * not be swallowed - which is what would happen if a bare suffix were
+     * enough.
+     */
+    const s2 = new FakeSession({
+        echo: false,
+        steps: [
+            { afterMs: 100, author: 'd', text: 'some ordinary output' },
+            { afterMs: 200, open: true, text: 'Router>' },
+        ],
+    });
+    const r2 = await run(s2, 'echo some ordinary output');
+    checkEqual(r2.output, 'some ordinary output',
+               'run: short output that happens to end like the command is kept');
+    checkEqual(r2.echo, false, 'run: and is not called an echo');
+
+    /* A command long enough to wrap, whose first output line is a long suffix:
+     * only the first line after our own is ever considered for the echo, and
+     * the echo itself was exact here, so the output survives. */
+    const longCmd = 'grep -n ' + 'x'.repeat(90) + ' /var/log/messages';
+    const tail = longCmd.slice(9);
+    const s3 = new FakeSession({
+        steps: [
+            { afterMs: 150, author: 'd', text: tail },      /* output that is a suffix */
+            { afterMs: 200, open: true, text: 'Router>' },
+        ],
+    });
+    const r3 = await run(s3, longCmd);
+    checkEqual(r3.echo, true, 'run: an exact echo is recognised first');
+    checkEqual(r3.output, tail,
+               'run: so output that looks like a suffix is not eaten as well');
+}
+
 async function testBadInput() {
     for (const [cmd, what] of [['', 'an empty command'],
                                ['ls\nls', 'a command containing a newline'],
@@ -629,6 +699,8 @@ try {
     await testTimeout();
     console.log('  [test] a newline-terminated prompt');
     await testTrailingPrompt();
+    console.log('  [test] a command wider than the terminal');
+    await testWrappedEcho();
     console.log('  [test] bad input');
     await testBadInput();
     console.log('  [test] options that are explicitly undefined');

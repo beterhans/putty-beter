@@ -61,6 +61,41 @@ function byteLength(lines) {
 }
 
 /*
+ * Is this device line the device's echo of the command?
+ *
+ * An exact match is the normal case. The suffix test is for a command wider
+ * than the terminal, and the reason is not guesswork - it was measured:
+ *
+ *   A shell knows how wide the terminal is and emits a **bare carriage return**
+ *   at every visual wrap, so that its own cursor bookkeeping stays right.
+ *   Measured with a 305-character command in a 128-column terminal: bare CRs
+ *   arrive after 114 and 244 bytes, then CR LF at the end.
+ *
+ * The capture buffer reads a bare CR as "back to column 0, so this line is
+ * being redrawn" - which is exactly what keeps a progress bar to one line
+ * instead of one line per redraw, and is pinned by the buffer's own tests.
+ * Applied to a wrapped echo it discards every row but the last, so what reaches
+ * us is the *tail* of the command rather than the whole of it.
+ *
+ * Hence a suffix, not a prefix. The guards exist so that real output is not
+ * mistaken for an echo: only the first line after our own is considered at
+ * all, the fragment must be long enough to be a row of a wrapped line rather
+ * than a word, and the command must be long enough to have wrapped.
+ */
+const WRAP_FRAGMENT_MIN = 24;
+const WRAP_COMMAND_MIN = 80;
+
+function isEcho(line, command) {
+    if (!line || line.author !== 'd' || !line.text)
+        return false;
+    if (line.text === command)
+        return true;
+    return command.length >= WRAP_COMMAND_MIN &&
+        line.text.length >= WRAP_FRAGMENT_MIN &&
+        command.endsWith(line.text);
+}
+
+/*
  * Send `command` to a session and wait for it to finish.
  *
  * `session` is anything with `read({since, maxBytes})`, `send(text)` and
@@ -328,7 +363,7 @@ export async function runOnSession(session, command, options = {}) {
      */
     let body = ownLineId === null ? [] : lines.filter((l) => l.id > ownLineId);
     let echo = false;
-    if (body.length && body[0].author === 'd' && body[0].text === command) {
+    if (body.length && isEcho(body[0], command)) {
         echo = true;
         body = body.slice(1);
     }
