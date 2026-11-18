@@ -731,11 +731,13 @@ the human watches, can take over, and handles the prompts the AI cannot (passwor
 confirmations). Where a password prompt appears, the AI pauses, the human types into the GUI, and
 the AI continues.
 
-Status: **phase 4a (M6a) is built and working.** The socket server, the capture
-buffer and `sessions` / `read` / `screen` / `send` / `key`, the `putty-mcp` bridge
-and its user manual all exist and are tested. Phases 4b–4e are not started.
-Decisions below were settled 2026-11-17; the "As built" notes at the end of this
-section record where the implementation departed from the sketch, and why.
+Status: **phases 4a and 4b (M6a, M6b) are built and working.** The socket
+server, the capture buffer and `sessions` / `read` / `screen` / `send` / `key`,
+`run` with prompt detection and pager auto-answer, human keystrokes tagged `h`,
+the `putty-mcp` bridge and its user manual all exist and are tested. Phases 4c–4e
+are not started. Decisions below were settled 2026-11-17; the "As built" notes at
+the end of this section (§7.11, §7.12) record where the implementation departed
+from the sketch, and why.
 
 ### 7.1 Why this exists, and what it is not
 
@@ -917,7 +919,7 @@ mitigation is a policy layer plus the audit log, not prompt engineering.
 | Phase | Content |
 |---|---|
 | **4a** | Socket server + handshake + `sessions` / `read` / `screen` (read-only), and a `putty-mcp` CLI usable by a human (`putty-mcp list`, `putty-mcp read <sess>`) so the whole thing is testable and debuggable with no LLM in the loop. **As built, also `send` and `key`** — see §7.11 |
-| **4b** | `run` with echo/quiet/prompt detection, pager auto-answer, and the human's keystrokes tagged `h` — **the core** |
+| **4b** | `run` with echo/quiet/prompt detection, pager auto-answer, and the human's keystrokes tagged `h` — **the core**. **Done 2026-11-18**, in the bridge rather than the server, and without prompt learning or the config panel — see §7.12 |
 | **4c** | Human-in-the-loop: prompt events, `needs_human`, reusing `prompts_t` |
 | **4d** | Safety: audit log, read-only/confirm modes, GUI "AI is driving" badge |
 | **4e** | `open_session`, `run_on_sessions`, ZMODEM tools, shadow-terminal upgrade |
@@ -1010,8 +1012,8 @@ connection.
    refused during a ZMODEM transfer. Typing is a **separate opt-in**
    (`McpWrite`) from reading (`McpEnabled`): offering a session to be read
    should not quietly grant the ability to drive it. Everything that makes
-   typing *safe* — waiting, prompt detection, `needs_input`, cancelling — is
-   still 4b; until then the caller does the waiting by reading.
+   typing *safe* — waiting, prompt detection, `needs_input`, cancelling — was
+   still 4b at the time; §7.12 is where that arrived.
    The protocol version went to 2 (`sessions` gained the `ro`/`rw` field), and
    the handshake checks it, so a stale bridge says "unsupported protocol
    version" rather than appearing to find no server.
@@ -1033,7 +1035,7 @@ connection.
    terminal is about to be shown, which is the correct definition of what MCP
    should capture. The ZMODEM feed stays where it was.
 
-**Verified 2026-11-18:** `scripts/test-mcp.sh` — 18 checks, all passing, against
+**Verified 2026-11-18:** `scripts/test-mcp.sh` — 18 checks at the time, all passing, against
 a real `pterm` session: the server comes up, `list` finds the session by name,
 the bridge's own tests pass, `read` returns the lines in order with the escape
 sequences stripped and the unfinished prompt line present but not advancing the
@@ -1070,6 +1072,100 @@ and every line with its id and author.
 - Prompt detection will need tuning per device family; the per-session override and the debug dump
   are the escape hatch.
 - MCP spec/SDK churn — contained entirely inside the bridge, by design.
+
+---
+
+### 7.12 As built (2026-11-18) — phase 4b
+
+**Where the waiting lives: the bridge, not the server.** §7.5 specified the
+signals but not the side they run on. The alternative — a deferred-reply state
+machine in `unix/mcp.c` driven by `schedule_timer()`, with the tuning knobs in
+PuTTY's configuration — was rejected. It would have doubled the size of the
+change, turned the prompt heuristics into something testable only against a real
+`pterm`, and grown the C side an opinion about what a prompt looks like, which is
+exactly what the dumb-socket split exists to prevent. The socket protocol is
+**unchanged**: `run` is built from `read` and `send`, which were already there,
+so protocol version 2 still.
+
+| Where | What |
+|---|---|
+| `mcp/src/detect.mjs` (new) | prompt family, pager patterns, waiting-for-input patterns, and the precedence between them. Pure functions |
+| `mcp/src/run.mjs` (new) | the poll loop: baseline, send, fence, pager, `needs_input`, quiet/prompt completion, timeout |
+| `mcp/src/protocol.mjs` | `readOn()` extracted; `runCommand()` runs the whole loop over one connection |
+| `mcp/test/run.test.mjs` (new) | 124 checks: a fake session on a virtual clock, so a 30-second timeout is tested in microseconds |
+| `mcp/src/server.mjs`, `mcp/src/cli.mjs` | the `run` tool, and `putty-mcp run` with `--expect`, `--timeout`, `--quiet`, `--no-pager`, `--keep-prompt` |
+| `terminal/terminal.c`, `terminal/terminal.h`, `putty.h` | `term_set_input_tap()` — a tap on `term_keyinput_internal()`, the single funnel for typing and pasting |
+| `unix/window.c` | `mcp_input_tap()`, installed with the session and removed with it |
+| `unix/mcp-buffer.c/.h` | `mcp_buffer_note_typed()` |
+| `test/test_terminal.c` | 6 checks over the tap: typing on both paths reports, device data does not, a removed tap is not called |
+| `test/test_mcp_buffer.c` | 15 more checks: one line per typed word, not per keystroke; a password is never in the transcript; device/human/device attribution |
+
+**What `run` returns.** `completed_by` is the honesty mechanism, and it is the
+whole reason the caller can trust the output: `prompt` (quiet *and* the last line
+looks like a prompt), `quiet` (quiet, but nothing prompt-shaped — probably
+finished), `timeout` (still talking: the output is partial), `needs_input`,
+`cancelled` (a human typed), `pager_limit`. `paged_answers` counts the pagers
+answered on the caller's behalf, and `echo` reports whether the device echoed
+the command.
+
+**Departures from the sketch, and why.**
+
+1. **`run` is in the bridge.** See above.
+2. **`send`/`key` were already pulled forward** into 4a, so 4b's typing work was
+   only the *human* half of it.
+3. **The command and its Return go in one request.** §7.5 says "send → wait for
+   the echo"; it does not say the send must be atomic, and two requests leave a
+   gap in which the echo lands inside our own line, so the transcript reads
+   `pwd pwd` and the fence is unusable.
+4. **Quiet alone is not a completion.** §7.5 lists the quiet period's weakness as
+   "slow commands can stall mid-output"; the answer here is that there must be
+   something to judge (a prompt, or at least an unfinished line) before quiet
+   counts, which is what stops `sleep 1; echo done` completing with no output.
+5. **A bare progress percentage is not a prompt.** `100%` matches the prompt
+   family's shape, and calling it a prompt is the worst failure this code has:
+   the caller is handed a partial answer and told to trust it. Excluded.
+6. **macOS `more` and `less` do not print `--More--` on the first page.** Given a
+   file argument they put the *file name* there, in reverse video, which the
+   capture buffer strips; `:` is the prompt from page two. Both measured with a
+   pty probe. Missing them is not a hang: the pager keeps waiting and the next
+   command is eaten, because `more` reads a leading `!` as "run a shell command".
+7. **Waiting-for-input is checked before pagers, and both before prompts.** The
+   order is a matter of what a wrong answer costs: input is the judgement that
+   stops us doing something, so it wins every tie. `[y/n]` and `(yes/no)` are why
+   it has to be first.
+8. **Human keystrokes are tagged, but not written.** The tap marks the author and
+   closes the device's line; the device's own echo is the record of what was
+   typed. Writing the keystrokes *and* keeping the echo records `ls` as `llss`;
+   writing them and trying to drop the echo puts **a password in the
+   transcript**, because a device does not echo a password. So a password the
+   human types never appears.
+9. **No prompt learning.** §7.5's guarded auto-learn is deliberately not done: it
+   needs per-session state, and a wrong learned prompt is worse than
+   `completed_by: "quiet"`. `expect` covers the same ground per call.
+10. **No config panel.** The prompt pattern, quiet period and budgets are
+    arguments to `run` rather than entries in `Session → Automation (MCP)`. The
+    plan's §7.5 wanted them per saved session; doing it half-way would leave
+    `config.c` and `dialog.c` carrying settings that only the bridge reads.
+
+**Verified 2026-11-18.** `scripts/test-mcp.sh` — **33 checks**, all passing,
+against a real `pterm` on a real pty: `run` returns the command's output and
+nothing else, completes at a prompt, notices the echo, waits for a slow command
+rather than cutting it off, **answers 9 pages of a real `more` and a network-gear `--More--`**, stops at
+`Password:` and reports it, works again afterwards, and reports a hang as a
+timeout. Plus `test_mcp_buffer` 110/110, `test_terminal` (with the tap checks),
+`mcp/test/run.test.mjs` 124/124, `mcp/test/protocol.test.mjs` 12/12, and the rest
+of the standalone tests.
+
+Also fixed in the harness: `say()` wrote to **stdout**, and `run()` is called
+inside `$(run list | python3 ...)`, so `VERBOSE=1` piped its debug lines into the
+JSON parser. Now on stderr.
+
+**Verification (from §7.5, and how it is met):** `run "show version"` returns the
+output between the echo and the prompt with `--More--` answered automatically;
+`[confirm]` and `Password:` return `needs_input` rather than sending the next
+command; a human keystroke cancels an in-flight `run`; `screen` still matches the
+GUI. **Not yet verified against real network gear** — the `--More--` path is
+covered by the unit tests and by a real `more`, not by a router.
 
 ---
 
@@ -1136,7 +1232,11 @@ crates*, not a port of PuTTY:
             with the `putty-mcp` CLI (4a) —
             built and verified 2026-11-18; the bridge is Node/TypeScript with a `user_manual`
             tool and a `putty://manual` resource. See §7.11
-      - [ ] **M6b** — `run` with prompt detection and pager auto-answer (4b)
+      - [x] **M6b** — `run` with prompt detection and pager auto-answer (4b) —
+            built and verified 2026-11-18 against a real `pterm`: the waiting is in
+            the bridge (`mcp/src/run.mjs`, `detect.mjs`), a real `more` is paged
+            through, `Password:` stops the run, and human keystrokes are tagged `h`
+            through a tap on the terminal's input funnel. See §7.12
       - [ ] **M6c** — human-in-the-loop at prompts (4c)
       - [ ] **M6d** — audit log, read-only/confirm modes, GUI badge (4d)
       - [ ] **M6e** — `open_session`, fleet runs, ZMODEM tools (4e)

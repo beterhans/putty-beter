@@ -91,7 +91,13 @@ check() {
     fi
 }
 
-say() { [ "$VERBOSE" = 1 ] && echo "  ...   $*" || true; }
+/*
+ * Progress and debug go to stderr, not stdout. `run` is called inside command
+ * substitutions - `$(run list | python3 ...)` - so anything it writes to
+ * stdout is fed to the JSON parser along with the JSON, and VERBOSE=1 breaks
+ * the test it is meant to help with.
+ */
+say() { [ "$VERBOSE" = 1 ] && echo "  ...   $*" >&2 || true; }
 
 run() {
     say "putty-mcp $*"
@@ -128,16 +134,22 @@ fi
 # rather not litter the source tree with it.
 cd "$work" || exit 2
 # The shell prints a few lines, sits at an unfinished prompt (so the
-# "unfinished line" case is covered), then reads one line and reports it back -
+# "unfinished line" case is covered), then reads a line and reports it back -
 # which is what proves that text typed through MCP actually reached the shell.
+# It loops, so a prompt comes back after every command: that is what `run`
+# needs in order to detect completion, and it is what a real device does.
 HOME="$home" "$root/$BUILD/pterm" -e /bin/sh -c '
     printf "line one\n";
     printf "line two\n";
     printf "coloured \033[31mred\033[0m text\n";
-    printf "Router>";
-    IFS= read -r line;
-    printf "\ngot: %s\n" "$line";
-    sleep 120' > "$work/pterm.log" 2>&1 &
+    while :; do
+        printf "Router>";
+        IFS= read -r line || break;
+        case "$line" in
+            !*) eval "${line#!}" ;;
+            *) printf "got: %s\n" "$line" ;;
+        esac;
+    done' > "$work/pterm.log" 2>&1 &
 pterm_pid=$!
 say "pterm pid $pterm_pid"
 
@@ -194,6 +206,16 @@ if node "$root/mcp/test/protocol.test.mjs" > "$work/bridge.out" 2>&1; then
 else
     check "the bridge's own tests pass" "0 failed" "$(tail -1 "$work/bridge.out")"
     sed -n 's/^/        /p' "$work/bridge.out" >&2
+fi
+
+# The run loop and its prompt/pager/input detection, likewise with no PuTTY and
+# no display: a virtual session and a virtual clock.
+if node "$root/mcp/test/run.test.mjs" > "$work/run-tests.out" 2>&1; then
+    check "the run tests pass" "0 failed" \
+          "$(sed -n 's/.*, \([0-9]*\) failed/\1 failed/p' "$work/run-tests.out" | tail -1)"
+else
+    check "the run tests pass" "0 failed" "$(tail -1 "$work/run-tests.out")"
+    sed -n 's/^/        /p' "$work/run-tests.out" >&2
 fi
 
 # Everything so far, in order. The ANSI escapes must be gone, and the
@@ -305,6 +327,131 @@ else
     check "an unknown session id is refused" "no such session" \
           "$(sed -n 's/^putty-mcp: //p' "$work/err" | head -1)"
 fi
+
+# ------------------------------------------------------------------
+# run: send one command, wait for it to finish, print just its output.
+#
+# The shell above executes a line that starts with "!" and reports anything
+# else back as "got: ...", which is what the send tests above rely on.
+# ------------------------------------------------------------------
+
+# How `run` says why it stopped, from its summary line on stderr:
+# "(prompt, echo seen, 400ms, cursor 12)".
+run_line() {
+    sed -n 's/^(\([a-z_]*\).*/\1/p' "$1"
+}
+
+# The ordinary case: the device echoes the command, runs it, prints the result,
+# and puts the prompt back. What comes back is the result and nothing else -
+# not the echo, not the prompt we interrupted, not the prompt that returned.
+run_out=$(HOME="$home" node "$bridge" run "$sid" '!echo run-ok' 2>"$work/run.err") || true
+say "$run_out"
+say "$(cat "$work/run.err")"
+check "run: returns the command's output and nothing else" "run-ok" "$run_out"
+check "run: finishes at a prompt" "prompt" "$(run_line "$work/run.err")"
+case "$(cat "$work/run.err")" in
+    *"echo seen"*) check "run: notices the device echoed the command" "seen" "seen" ;;
+    *)             check "run: notices the device echoed the command" "seen" \
+                          "$(cat "$work/run.err")" ;;
+esac
+
+# A slow command is the weakness of the quiet signal: it prints nothing for a
+# second, and a bare quiet period would call it finished with no output at all.
+run_slow=$(HOME="$home" node "$bridge" run "$sid" '!sleep 1; echo slow-ok' 2>"$work/slow.err") || true
+say "$run_slow"
+check "run: a slow command is waited for, not cut off" "slow-ok" "$run_slow"
+check "run: and still finishes at a prompt" "prompt" "$(run_line "$work/slow.err")"
+
+# A pager is the case that hangs a naive client for ever: the device stops and
+# waits, and nothing about the stream says so. Real BSD `more`, deliberately,
+# because it is the awkward one: given a file argument it puts the *file name*
+# where the prompt goes on the first page, in reverse video, and `:` from the
+# second page on. Both are measured, not assumed - see the note in detect.mjs.
+i=0
+while [ "$i" -lt 200 ]; do
+    printf 'line %d\n' "$i"
+    i=$((i + 1))
+done > "$work/big.txt"
+
+run_more=$(HOME="$home" node "$bridge" run "$sid" "!more $work/big.txt" 2>"$work/more.err") || true
+say "$(cat "$work/more.err")"
+case "$(cat "$work/more.err")" in
+    *"page(s) answered"*) check "run: a real pager is answered without being asked" \
+                                "answered" "answered" ;;
+    *)                    check "run: a real pager is answered without being asked" \
+                                "answered" "$(cat "$work/more.err")" ;;
+esac
+case "$run_more" in
+    *"line 199"*) check "run: every page comes back" "all" "all" ;;
+    *)            check "run: every page comes back" "all" \
+                        "$(printf '%s' "$run_more" | tail -2)" ;;
+esac
+
+# Network gear's own pager, which is a different prompt from a Unix one: it
+# prints `--More--` and waits for a single byte. A shell can only do that with
+# the terminal in non-canonical mode, because otherwise a read waits for a whole
+# line - which is exactly why this is written out rather than approximated.
+#
+# It is a stand-in, not a router, but it is the real byte pattern on a real pty,
+# and `--More--` is the thing the plan calls the headline feature for network
+# gear. What a router does that this does not is send it in a different place
+# and with its own idea of how many lines fit.
+cat > "$work/fakegear.sh" <<'FAKEGEAR'
+i=0
+while [ "$i" -lt 60 ]; do
+    printf 'line %d\n' "$i"
+    i=$((i + 1))
+    if [ $((i % 20)) -eq 0 ] && [ "$i" -lt 60 ]; then
+        stty -icanon min 1
+        printf -- '--More--'
+        dd bs=1 count=1 2>/dev/null
+        stty icanon
+        printf '\r        \r'
+    fi
+done
+printf 'Router>'
+FAKEGEAR
+
+run_gear=$(HOME="$home" node "$bridge" run "$sid" "!sh $work/fakegear.sh" 2>"$work/gear.err") || true
+say "$(cat "$work/gear.err")"
+case "$(cat "$work/gear.err")" in
+    *"2 page(s) answered"*) check "run: a network-gear --More-- is answered" \
+                                   "answered" "answered" ;;
+    *)                      check "run: a network-gear --More-- is answered" \
+                                   "answered" "$(cat "$work/gear.err")" ;;
+esac
+case "$run_gear" in
+    *"line 59"*) check "run: and the whole command comes back through it" "all" "all" ;;
+    *)           check "run: and the whole command comes back through it" "all" \
+                        "$(printf '%s' "$run_gear" | tail -2)" ;;
+esac
+check "run: and finishes at the prompt after it" "prompt" "$(run_line "$work/gear.err")"
+
+# A prompt that wants input: the run stops and reports rather than guessing.
+# Answering it is the caller's decision, and a password is never the agent's.
+pw_out=$(HOME="$home" node "$bridge" run "$sid" \
+    '!printf "Password: "; read x; echo pw-was-$x' 2>"$work/pw.err") || true
+say "$(cat "$work/pw.err")"
+check "run: a password prompt stops the run" "needs_input" "$(run_line "$work/pw.err")"
+case "$(cat "$work/pw.err")" in
+    *"wants a password prompt"*) check "run: and says what it wants" "yes" "yes" ;;
+    *)                           check "run: and says what it wants" "yes" \
+                                       "$(cat "$work/pw.err")" ;;
+esac
+
+# ...and nothing was typed at it, so the session is still waiting. Answer it as
+# the human would, and the session must be usable again straight away.
+HOME="$home" node "$bridge" send "$sid" hunter2 >/dev/null 2>&1 || true
+HOME="$home" node "$bridge" key "$sid" enter >/dev/null 2>&1 || true
+sleep 1
+back=$(HOME="$home" node "$bridge" run "$sid" '!echo back-ok' 2>"$work/back.err") || true
+check "run: the session works again after answering a prompt" "back-ok" "$back"
+
+# A command that never finishes is reported as a timeout, not as an answer.
+hang=$(HOME="$home" node "$bridge" run "$sid" '!sleep 3' --timeout 600 \
+       2>"$work/hang.err") || true
+check "run: a command that hangs is reported as a timeout" "timeout" \
+      "$(run_line "$work/hang.err")"
 
 # ------------------------------------------------------------------
 

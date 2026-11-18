@@ -46,7 +46,7 @@ fixes, so `git log` alone shows only the later work.
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
-| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — and type into it, over a Unix socket, with a `putty-mcp` bridge and an agent-facing user manual. Off by default, per session, with reading and typing as separate opt-ins. Nothing waits for a command to finish yet. |
+| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
 | Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1` and `PUTTY_MCP_DEBUG=1` runtime traces. |
 
@@ -66,7 +66,7 @@ tool will give slightly different numbers for the same change.
 | `dialog.h` | +75 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
 | `dialog.c` | +7 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
 | `settings.c` | +133 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
-| `terminal/terminal.c` | +151 / -1 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server |
+| `terminal/terminal.c` | +179 / -2 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server; `term_set_input_tap()`, which reports what a human typed or pasted |
 | `putty.h` | +2 / -0 | Declares `term_get_screen_text()` |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
 | `unix/CMakeLists.txt` | +20 / -1 | Build `unix/config-location.c`, `unix/mcp.c` and `unix/mcp-buffer.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
@@ -83,7 +83,7 @@ tool will give slightly different numbers for the same change.
 | `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
 | `unix/storage.c` | +1107 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
-| `unix/window.c` | +846 / -14 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback) |
+| `unix/window.c` | +875 / -14 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap) |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
@@ -114,8 +114,11 @@ tool will give slightly different numbers for the same change.
 | `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
 | `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
 | `mcp/test/protocol.test.mjs` | 10 checks over the bridge's framing and its endpoint discovery, including following a `config-location` redirect. No PuTTY, no socket, no display |
-| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (18 checks) |
-| `docs/mcp.md` | **How the MCP works**, for whoever works on it next: the files, the wire protocol with a snippet for driving the socket by hand, the capture-buffer semantics, the socket and its permissions, the build, testing, debugging, and what is still missing |
+| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (33 checks) |
+| `mcp/src/detect.mjs` | What the last line of output means: the prompt family, the pager patterns (including the two macOS pagers put where nobody expects them), the waiting-for-input patterns, and the order between them. Pure functions, so it is tested from a table of strings |
+| `mcp/src/run.mjs` | The `run` poll loop: baseline, send, the fence, pager answers, `needs_input`, quiet/prompt completion, timeout, and the human-cancel rule |
+| `mcp/test/run.test.mjs` | 124 checks over the two above, with a fake session on a virtual clock |
+| `docs/mcp.md` | **How the MCP works**, for whoever works on it next: the files, the wire protocol with a snippet for driving the socket by hand, the capture-buffer semantics, `run` and why the waiting is in the bridge rather than the server, how human keystrokes are tagged (and why they are not written), the socket and its permissions, the build, testing, debugging, and what is still missing |
 | `docs/mcp-user-manual.md` | The agent's manual as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, kept in step by a check in `scripts/test-mcp.sh` |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
@@ -518,12 +521,11 @@ screen's plain system visual before the dialog is realized, which makes the
 window opaque again. That is one line of ordinary GTK API at each of the few
 real `GtkDialog` sites — no Objective-C and no AppKit internals.
 
-## 13. MCP: an AI agent can read a session
+## 13. MCP: an AI agent can read a session, and drive it
 
 An MCP client — OpenCode, in practice — can attach to a session **in the window
-the human is looking at**, read it, and type into it. Reading and typing are
-separate opt-ins; nothing yet *waits* for a command to finish (prompt detection,
-`run` and pager auto-answer are phase 4b of `PLAN.md` §7).
+the human is looking at**, read it, type into it, and **run a command and wait
+for the device to finish**. Reading and typing are separate opt-ins.
 
 **Off by default, and per session**, under *Session → Automation (MCP)*: turning
 the first setting on offers the session to anything that can reach the socket,
@@ -650,10 +652,99 @@ so a format change is reported rather than misread; the bridge warns on stderr i
 its own source files are newer than its process; and the CLI always runs the
 current code, because it starts a fresh process per invocation.
 
-**Test:** `scripts/test-mcp.sh` (18 checks) starts its own `pterm` against a
-throwaway configuration folder and verifies the whole path, including the
-escape stripping, the paging and the refusal of an unknown session id. It needs
-a display and touches nothing of yours.
+**Test:** `scripts/test-mcp.sh` (18 checks at the time) starts its own `pterm`
+against a throwaway configuration folder and verifies the whole path, including
+the escape stripping, the paging and the refusal of an unknown session id. It
+needs a display and touches nothing of yours.
+
+### 4b: waiting for a command
+
+`run` is the tool that makes the feature useful rather than merely possible: it
+sends one command, waits for the device to finish, and returns **just that
+command's output** — not the echo, not the prompt that was interrupted, not the
+prompt that came back. It answers a `--More--` pager by itself, which is what
+makes it usable on network gear, and it *stops* rather than guessing at a
+`[confirm]` or a password prompt, reporting `needs_input` instead.
+
+**The waiting is in the bridge, not the server, and that is the main design
+decision of this phase.** The socket protocol is unchanged — `run` is built from
+`read` and `send`, which already existed — so no C code had to learn about
+prompts. The alternative, a deferred-reply state machine in `unix/mcp.c` driven
+by `schedule_timer()`, would have doubled the change, made the prompt heuristics
+testable only against a real `pterm`, and grown the C side an opinion about what
+a prompt looks like, which is exactly what the dumb-socket split exists to
+prevent. `mcp/src/detect.mjs` and `mcp/src/run.mjs` are pure and unit-testable: a
+fake session on a virtual clock tests a thirty-second timeout in microseconds.
+
+`completed_by` is the honesty mechanism, and the reason the output can be
+trusted: `prompt` (quiet *and* the last line looks like a prompt), `quiet`
+(quiet, nothing prompt-shaped — probably finished), `timeout` (still talking, so
+the output is partial), `needs_input`, `cancelled`, `pager_limit`.
+
+**Human keystrokes are tagged `h`.** The hook is a tap on
+`term_keyinput_internal()` — the single funnel for typing *and* pasting, which
+the terminal's own generated replies bypass — so an agent can tell "the device
+did this" from "the person did this". A human keystroke during a `run` cancels
+it, so the two do not drive the same stream at once.
+
+**The keystrokes are deliberately not written into the buffer.** The device's own
+echo is the record of what was typed. Writing them *and* keeping the echo records
+`ls` as `llss` (the echo of each character lands inside the line just written);
+writing them and trying to *drop* the echo puts **a password in the transcript**,
+because a device does not echo a password and nothing would suppress it. So a
+password the human types never appears at all.
+
+### What building 4b found
+
+Six more bugs, five of them found only by testing — and three of those only by
+running against a real pty, which is the argument for doing it:
+
+1. **A slow command completed early, with no output.** `sleep 1; echo done` is
+   silent for a second, and a bare quiet period called that finished. Quiet alone
+   is not enough now: there must be something to judge — a prompt, or at least an
+   unfinished line.
+2. **`{ ...DEFAULTS, ...options }` clobbered every default.** A caller forwarding
+   its optional arguments — `{ timeoutMs: opts.timeoutMs }` — passes `undefined`
+   for everything the user did not mention, and the spread copied it over the
+   default. The result was not an error but a silence: `quiet >= undefined` is
+   never true, so the loop never decided anything, and `elapsed >= undefined`
+   disabled the timeout that would have rescued it. The run hung until something
+   outside killed it. The unit tests missed it because they called the loop
+   directly; only a real caller exposed it. Options are now merged
+   undefined-skipping, and the numeric ones checked as positive numbers, because
+   `Number("abc")` is `NaN` and every comparison against `NaN` is false.
+3. **macOS `more` and `less` do not print `--More--` at the first page break.**
+   Given a *file argument* they put the **file name** there, in reverse video —
+   which the capture buffer strips, leaving a bare path as the last line — and
+   `:` from the second page on. Both were measured with a pty probe rather than
+   assumed. Missing them is worse than a hang: the run gives up, the pager keeps
+   waiting, and the **next command is eaten by it**, because `more` reads a
+   leading `!` as "run a shell command". That is what the first live run did.
+4. **The first version of that pattern matched `[y/n]` and `(yes/no)`** — it
+   allowed any token containing a slash, and those are the two prompts that must
+   *never* be answered on the caller's behalf. The unit tests caught it within
+   seconds. Fixed by narrowing the character class to path characters, and by
+   moving waiting-for-input ahead of pagers in the precedence order: when in
+   doubt, do not type.
+5. **The first echo design would have put a password in the transcript**, as
+   above. Found by reasoning about the test rather than by the test failing.
+6. **A `cur_author` reset in the wrong place** would have re-tagged a client's
+   own text as the device's when it contained a Return.
+
+**Test:** `scripts/test-mcp.sh` (33 checks) starts its own `pterm` against a
+throwaway configuration folder and verifies the whole path end to end, including
+`run` against a real pty: a slow command waited for rather than cut off, a real
+`more` paged through, a stand-in for network gear's own `--More--`, and a
+`Password:` prompt stopping the run. It needs a display and touches nothing of
+yours. `mcp/test/run.test.mjs` (124 checks) and `mcp/test/protocol.test.mjs` (12)
+need neither PuTTY nor a display; `test/test_mcp_buffer.c` (110) and
+`test/test_terminal.c` cover the buffer and the input tap.
+
+**Not verified against real network gear.** The `--More--` pattern is covered by
+the unit tests, by a real `more`, and by a shell stand-in that emits the real
+bytes over a real pty — but not by a router or a switch. Nor has the
+human-keystroke path been driven by an actual person at a keyboard: it is
+unit-tested at both layers (the buffer and the tap) and not end-to-end.
 
 ## Worth reporting upstream
 

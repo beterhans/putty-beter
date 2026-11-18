@@ -6,9 +6,11 @@ The *user-facing* documentation is [`mcp/USER-MANUAL.md`](../mcp/USER-MANUAL.md)
 including §7.11 for what was actually built. This file is the *how*: the files,
 the protocol, the semantics, the socket, and the build.
 
-Status: **phase 4a, plus `send`/`key`.** An agent can list sessions, read their output
-and read the visible screen. It cannot type into a session yet (4b), cannot
-open one (4e), and there is no audit log or policy layer (4d).
+Status: **phase 4b.** An agent can list sessions, read their output, read the
+visible screen, type into a session, and **run a command and wait for it to
+finish** (`run`), including pager auto-answer and stopping at a prompt that
+wants input. Human keystrokes are tagged `h`. Still missing: opening a session
+(4e), prompt learning, and any audit log or policy layer (4d).
 
 ---
 
@@ -59,7 +61,7 @@ Three rules keep it maintainable:
 | `mcp/test/protocol.test.mjs` | 10 checks over the framing and the endpoint discovery. No PuTTY, no socket, no display |
 | `mcp/USER-MANUAL.md` | the manual, served to the agent. **Canonical** |
 | `docs/mcp-user-manual.md` | a byte-identical copy of it, for reading |
-| `scripts/test-mcp.sh` | the end-to-end smoke test (18 checks) |
+| `scripts/test-mcp.sh` | the end-to-end smoke test (33 checks) |
 
 ## 4. The build
 
@@ -269,6 +271,111 @@ command as an `m` line, then the echo as a device line, then the output. The
 screen still shows it as one line — `screen()` is for what it literally looks
 like, `read` is the transcript.
 
+## 6b. `run`: waiting for a command
+
+`run` is the tool that makes the feature useful rather than merely possible, and
+it is **not in the C server at all**. The socket protocol has no `run`: the
+bridge sends the command and polls `read`, and everything that is a *decision*
+lives in `mcp/src/detect.mjs` and `mcp/src/run.mjs`, where it can be tested from
+a table of strings with no PuTTY, no display and no network.
+
+That is a deliberate reading of §7 of the plan. The alternative — a deferred-reply
+state machine in `unix/mcp.c` driven by `schedule_timer()` — was rejected as much
+bigger for no gain: the heuristics would have become untestable, and the C side
+would have grown an opinion about what a prompt looks like.
+
+The loop, in `run.mjs`:
+
+1. **Read once to learn where the transcript is.** `total_lines` is the id of
+   the last completed line, so it doubles as the cursor.
+2. **Send the command and its Return in ONE request.** Two requests — the text,
+   then a keystroke — leave a gap in which the device's echo of the text arrives
+   and lands *inside* our own line, so the transcript reads `pwd pwd`. One
+   request closes the line before any echo can be seen.
+3. **Wait for our own line.** It is the fence: everything before it is the
+   prompt we interrupted, everything after it is this command's output.
+4. **Answer a pager, or stop at a prompt that wants input.**
+5. **Quiet plus a prompt means finished.** `completed_by` says which of the two
+   signals actually fired, so the caller knows how much to trust the answer.
+
+### Three things that had to be got right, and were not at first
+
+* **Quiet alone is not enough.** A slow command is silent in the middle:
+  `sleep 1; echo done` prints nothing for a second, and a bare quiet period
+  called it finished with no output at all. There must be something to judge — a
+  prompt, or at least an unfinished line — before quiet counts.
+* **An explicitly `undefined` option must not override its default.** A caller
+  forwarding its optional arguments — `{ timeoutMs: opts.timeoutMs }` — passes
+  `undefined` for everything the user did not mention, and a plain
+  `{ ...DEFAULTS, ...options }` copies that over the default. The result is not
+  an error but a silence: `quiet >= undefined` is never true, so the loop never
+  decides anything, and `elapsed >= undefined` disables the timeout that would
+  have rescued it. The run hangs until something outside kills it. The numeric
+  options are now checked as positive numbers too, because `Number("abc")` is
+  `NaN` and every comparison against `NaN` is false.
+* **macOS `more` and `less` do not print `--More--` at the first page break.**
+  Given a *file argument* they put the **file name** there, in reverse video —
+  which the capture buffer strips, so all that is left is a bare path as the
+  last line — and `:` from the second page onwards. Both were measured with a
+  pty probe rather than assumed, and both are patterns now. The cost of missing
+  them is not a hang: the run gives up, the pager keeps waiting, and the **next
+  command is eaten by it**, because `more` reads a leading `!` as "run a shell
+  command". That is exactly what happened in the first live test.
+
+The order of the patterns is a matter of what a wrong answer costs:
+
+1. **Waiting for input, first** — the judgement that stops us doing something,
+   so it wins every tie. `[y/n]` and `(yes/no)` are why it has to be first: the
+   first version of the pager's file-name pattern allowed any token containing a
+   slash, and matched both of them.
+2. **A pager**, because we act on it by sending a space.
+3. **A prompt**, last, because a pager marker can end in `%`.
+
+## 6c. Human keystrokes
+
+Text the human types is tagged `h`, so an agent can tell "the device did this"
+from "the person did this" — which matters most when the agent is driving, since
+those two call for opposite responses.
+
+The hook is a **tap on `term_keyinput_internal()`** in `terminal/terminal.c`
+(`term_set_input_tap()`, installed by `unix/window.c`). That function is the
+single funnel for everything a human puts in: `term_keyinput()`,
+`term_keyinputw()` and both paste paths all end there, while the terminal's own
+generated replies call `ldisc_send()` directly and are therefore *not* reported.
+Typing and pasting both count as the human; a device answering a query does not.
+
+**The keystrokes are deliberately not written into the buffer.** All
+`mcp_buffer_note_typed()` does is close a line the *device* was part-way through
+and say that the next line belongs to the human. The device's own echo is the
+record of what was typed, which gives one copy in the device's own words. The
+two obvious alternatives are both worse:
+
+* Writing the keystrokes *and* keeping the echo records `ls` as `llss`, because
+  the echo of each character lands inside the line just written.
+* Writing the keystrokes and trying to *drop* the echo puts **a password in the
+  transcript**: a device does not echo a password, so nothing would suppress it,
+  and the tap is the one thing that does see those keystrokes.
+
+So a password the human types is never in the transcript at all. What the
+transcript shows is the prompt, then an empty `h` line if the device echoed the
+Return. That is the honest record: someone typed something here, and the device
+did not repeat it.
+
+A line's attribution lasts exactly one line. `cur_author` goes back to the
+device when a line is finalised *by device bytes* — which is where the reset
+lives, rather than in `cur_finalise()`, so that a client's own text containing a
+Return keeps the client's tag on both sides of it.
+
+`run` cancels when a human line appears after its own command. The guard that
+matters: the human's *half-typed* line, which our own send closes, is finalised
+*before* our command and must not look like an interruption at the first poll.
+`test/run.test.mjs` pins both the cancel and the false positive.
+
+**Not yet covered:** a device that does not echo at all leaves no `h` line, so a
+human typing into such a device is invisible in the transcript (the cancel still
+works if the device echoes the Return). The plan's guarded prompt *learning* —
+`completed_by` gets better at a particular device over time — is also not done.
+
 ## 7. The tap
 
 `gtk_seat_output()` is where the **ZMODEM engine** is fed. MCP taps
@@ -385,18 +492,16 @@ during development; `scripts/test-mcp.sh` says why in a comment.
 
 | | Where it goes |
 |---|---|
-| `run`, `wait` — echo + quiet + prompt detection, and `needs_input` for `[confirm]`, `Password:`, `--More--` | 4b |
-| Pager auto-answer for `--More--` | 4b — the headline feature for network gear |
-| **Human keystrokes tagged `h`** | 4b. What *we* send is tagged `m` and the device is `d`, but text typed by the human is still reported as `d` |
-| A human keystroke cancelling an in-flight operation | 4b. With fire-and-forget `send` there is no in-flight operation to cancel; it becomes necessary with `run` |
+| Prompt **learning** — `completed_by` getting better at a particular device, from a guarded auto-learn at an idle that follows our own echoed command | 4b, deliberately left out: it needs per-session state, and a wrong learned prompt is worse than `completed_by: "quiet"` |
+| A per-session prompt pattern in PuTTY's configuration | 4b, deferred. `run`'s `expect` argument covers the same ground per call; the config panel (`Session → Automation (MCP)`) would put it in the saved session |
+| A device that does not echo at all leaves no `h` line, so human typing into one is invisible in the transcript | 4b/4e. The plan's echo probe (`send a bare \r`) is the way in |
 | Audit log, read-only/confirm modes, a GUI "AI is driving" badge | 4d |
 | `open_session`, fleet runs, ZMODEM tools, a shadow `Terminal` for correct cursor addressing | 4e |
+| A `wait({session, until})` tool, separate from `run` | 4e. `run` with a short `timeout_ms` plus polling `read` covers it for now |
 
 `send` and `key` were **pulled forward out of 4b** because they are what makes
 the feature useful at all, and they are small: the plan's §7.7 already listed
-them as separate tools from `run`. Everything that makes typing *safe* —
-waiting, prompt detection, `needs_input`, cancelling — is still 4b, and until
-then the caller does the waiting and the deciding by reading.
+them as separate tools from `run`.
 
 The plan's reasoning for each is in `PLAN.md` §7.5–§7.10.
 
@@ -405,7 +510,7 @@ The plan's reasoning for each is in `PLAN.md` §7.5–§7.10.
 ```sh
 ./build-arm64/test_mcp_buffer         # 95 checks, no display, no socket
 node mcp/test/protocol.test.mjs       # 10 checks on discovery and framing
-./scripts/test-mcp.sh                 # 18 checks end to end; needs a display
+./scripts/test-mcp.sh                 # 33 checks end to end; needs a display
 cd test && PUTTY_TESTCRYPT=../build-arm64/testcrypt python3 cryptsuite.py
 ```
 

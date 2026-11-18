@@ -13,9 +13,15 @@ human is looking at**. That is the point of it: the human watches, can take over
 at any moment, and answers the prompts an agent cannot (a password, a
 `[confirm]`).
 
-Driving means `send` (text) and `key` (one keystroke), and both only work if the
-human turned that on for the session — reading and writing are separate
-settings. `sessions` tells you which you have.
+Driving means `run` (one command, waited for), `send` (text) and `key` (one
+keystroke), and all three only work if the human turned that on for the
+session — reading and writing are separate settings. `sessions` tells you which
+you have.
+
+**Prefer `run`.** It types a command, waits for the device to finish, and gives
+you just that command's output. `send` and `key` are for when you want to type
+without waiting — answering a prompt the human asked you to answer, or driving
+something that is not a command line.
 
 It is **not** a replacement for an SSH exec tool. If you have something like
 `ssh-connect` available, prefer it for a Linux shell: it gives you real exit
@@ -139,6 +145,63 @@ Use `read` to follow output and `screen` to answer "what is on the screen at
 this moment". They are different questions: `read` is a transcript, `screen` is
 a photograph.
 
+### `run`
+
+| parameter | required | meaning |
+|---|---|---|
+| `session` | yes | session id |
+| `command` | yes | one line, **without** a newline — Return is added for you |
+| `expect` | no | a regular expression for the prompt, if the default family does not fit this device |
+| `timeout_ms` | no | give up after this long (default 30000) |
+| `quiet_ms` | no | how long the device must be silent before the command counts as finished (default 400) |
+| `answer_pager` | no | answer `--More--` and friends with a space (default `true`) |
+| `pager_patterns` | no | extra pager patterns, e.g. `["^:$"]` |
+| `keep_trailing_prompt` | no | keep a prompt the device ended with a newline (default `false`) |
+
+**This is the tool to use.** It sends `command` plus Return, waits for the
+device to finish, and returns:
+
+```
+{ command, output, cursor, total_lines, completed_by, echo,
+  paged_answers, cancelled_by_human, elapsed_ms, truncated,
+  needs_input?, gap? }
+```
+
+`output` is the command's output **and nothing else** — not the echo of the
+command, not the prompt you interrupted, not the prompt that came back. Feed
+`cursor` to `read` if you want to see the transcript around it.
+
+**Read `completed_by` before you trust the output.**
+
+| value | meaning |
+|---|---|
+| `prompt` | quiet, and the last line looks like a prompt. Trust it. |
+| `quiet` | the device stopped talking, but the last line is not prompt-shaped. Probably finished — check the output. |
+| `timeout` | still talking when the timeout expired. The output is partial and the command may still be running. |
+| `needs_input` | see below. **Do not send the next command.** |
+| `cancelled` | a human typed into the window. Stop and ask. |
+| `pager_limit` | too many pages. Raise `pager_patterns`/answer settings or use a command that does not page. |
+
+**A pager is answered for you.** `show running-config` stops at `--More--` and
+would hang you for ever; `run` sends the space and counts it in
+`paged_answers`. Set `answer_pager: false` if you would rather be told.
+
+**`needs_input` means stop.** The device is waiting for something specific —
+a password, `[confirm]`, `[y/n]`, `(yes/no)`, "press any key". `run` does *not*
+answer, deliberately: guessing at a `[confirm]` is how automation does something
+destructive. `needs_input` gives you `{reason, prompt}`.
+
+* A **password** is the human's to give. Ask them to type it in the window.
+* For anything else, decide deliberately, then `send` the answer yourself (or
+  ask the human).
+
+**A human typing cancels the run** and it returns `completed_by: "cancelled"`,
+so you do not send the next command on top of whatever they are doing.
+
+**A slow command is waited for.** `sleep 1; echo done` prints nothing for a
+second; `run` does not call that finished. If a command takes longer than
+`timeout_ms`, raise it — do not assume the output is complete.
+
 ### `send`
 
 | parameter | required | meaning |
@@ -150,10 +213,10 @@ Types `text` into the session exactly as if it had been typed at the keyboard.
 It goes through the line discipline, so local echo and line editing behave
 normally.
 
-It does **not wait** and returns only how many bytes were sent. To see what
-happened, `read` afterwards. There is no prompt detection yet (that is phase
-4b), so *you* decide when the command has finished: read, and look for the
-prompt.
+It does **not wait** and returns only how many bytes were sent. Use it when
+you want to type without waiting — answering a prompt you have decided to
+answer. For a command whose output you want, use `run` instead: it waits, and
+it gives you just the output.
 
 Only works when the human turned on *Also allow an MCP client to type into this
 session*. `sessions` reports `writable` per session, so check before trying —
@@ -197,29 +260,37 @@ r1 = read({session: 1})            # from the start of the buffer
 r2 = read({session: 1, since: r1.cursor})
 ```
 
-**Run a command.** Send the text, then Return as a separate keystroke, then
-read:
+**Run a command.** One call, and you get its output:
 
 ```
-send({session: 1, text: "show version"})
+run({session: 1, command: "show version"})
+→  { output: "Cisco IOS Software, ...\n...", completed_by: "prompt",
+     cursor: 42, echo: true, paged_answers: 0, elapsed_ms: 410 }
+```
+
+If `completed_by` is `timeout`, the output is partial and the command may still
+be running — raise `timeout_ms` and run it again, or read with `cursor` to
+follow it.
+
+**Follow a command that is still going.** `run` waits, but a long build or a
+`ping` that never ends is better watched: start it with `run` and a short
+`timeout_ms`, then poll `read({session, since: cursor})`. There is no separate
+blocking `wait` tool; the unfinished last line is re-sent by every read, so a
+prompt that appears between two reads is not missed.
+
+**Answer something you have decided to answer.** `run` stops at a prompt rather
+than guessing, so:
+
+```
+run({session: 1, command: "commit"})
+→  { completed_by: "needs_input",
+     needs_input: { reason: "a [confirm] prompt", prompt: "Proceed? [confirm]" } }
+send({session: 1, text: "yes"})
 key({session: 1, key: "enter"})
-# ... a moment later ...
-read({session: 1, since: cursor})
 ```
 
-`send` deliberately does not add a newline: sending the text and the Return
-separately means you can also send a bare `key` to a prompt that is waiting for
-one keypress.
-
-**Wait for output to arrive.** There is no blocking wait in this version, so
-poll: read with the cursor you already have, and if nothing new has come, wait
-a moment and read again. The unfinished last line is re-sent every time, so a
-prompt that appears mid-poll is not missed.
-
-**Tell whether a command finished.** In this version you must decide from the
-text: a prompt line at the end, with nothing after it, is the usual signal.
-Completion detection and a `run` tool that does the waiting for you are phase
-4b and are not here yet.
+Only do that when you know what it does. A `[confirm]` exists to make someone
+think.
 
 **A password, or any other prompt you cannot answer.** Ask the human to type it.
 Do not guess, and do not go looking for a password — you are not meant to have
@@ -247,19 +318,20 @@ for the bridge too and it prints the raw socket fields.
 
 ## 7. Limits, and what is coming
 
-* **No `run`.** `send` and `key` type and return immediately; nothing waits for
-  a command to finish, and nothing notices `[confirm]` or `--More--`. You do
-  the waiting and the deciding by reading.
+* **The prompt is guessed.** `run` decides a command has finished from a quiet
+  period plus the shape of the last line, and it reports how sure it is
+  (`completed_by`). An unusual device may need `expect`, or `quiet_ms` raised.
+  Nothing *learns* your device's prompt yet.
 * **No session opening.** Only sessions the human already has open.
 * **No ZMODEM.** Not exposed yet, and `send` is refused while a transfer is
   running.
 * **Human keystrokes are not yet tagged.** What *you* send is tagged `m`, and
   device output is `d`, but text typed by the human is still reported as `d`.
-  So a line you did not send and did not cause may be the human typing.
+  So a line you did not send and did not cause may be the human typing. (A
+  human typing *during a `run`* is noticed, and cancels it — that part works.)
 * **The human always wins.** They can type at any moment, and nothing stops
   them. If you are driving a session and the output stops making sense, stop and
-  ask — you may be racing the person at the keyboard, and in a later version
-  their keystroke will cancel what you are doing.
+  ask — you may be racing the person at the keyboard.
 
 ## 8. Safety
 

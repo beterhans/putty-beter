@@ -211,8 +211,11 @@ About box and message boxes were never affected.
 
 An AI agent can read a session **in the window you are looking at**, so you can
 watch what it is doing, take over at any moment, and answer the prompts it
-cannot, and can type into it (`send` text, `key` one keystroke). What is
-missing is anything that *waits* for a command to finish — that is phase 4b.
+cannot. It can read the output, type into the session, and **run a command and
+wait for the device to finish** — including answering a `--More--` pager by
+itself, which is what makes it usable on network gear. It stops rather than
+guessing at a `[confirm]` or a password prompt, and says so. Text **you** type
+is tagged in the transcript, so the agent can tell your doing from the device's.
 
 It is **off by default and per session** — *Session → Automation (MCP) → Offer
 this session to an MCP client* — because turning it on offers the session to
@@ -272,8 +275,30 @@ node mcp/bin/putty-mcp.mjs list              # sessions PuTTY is offering
 node mcp/bin/putty-mcp.mjs read 1            # the output, with line ids
 node mcp/bin/putty-mcp.mjs read 1 --since 12 # follow from a cursor
 node mcp/bin/putty-mcp.mjs screen 1          # the visible screen
+node mcp/bin/putty-mcp.mjs run 1 'show version'   # wait for it, print the output
 node mcp/bin/putty-mcp.mjs manual            # what the agent reads
 ```
+
+`run` is the one to reach for: it sends a command, waits for the device to
+finish, and prints **just that command's output** — not the echo, not the prompt
+you interrupted, not the prompt that came back. It answers a `--More--` pager by
+itself (the thing that hangs a naive client on network gear), and it *stops*
+rather than guessing at a `[confirm]` or a password prompt. Its summary line on
+stderr says why it decided the command had finished, so `--debug` shows the
+reasoning:
+
+```
+$ node mcp/bin/putty-mcp.mjs run 1 'show version'
+Cisco IOS Software, ...
+(prompt, echo seen, 410ms, cursor 42)
+```
+
+**What you type is tagged in the transcript.** A line the device printed is
+`d`, one an MCP client sent is `m`, and one **you** typed is `h` — so an agent
+can tell your doing from the device's, and a keystroke of yours during a `run`
+cancels it rather than letting the two of you drive the same stream. A password
+you type is never in the transcript at all, because the device does not echo
+one.
 
 The agent is given a **user manual** — the `user_manual` tool, the
 `putty://manual` resource, and a pointer in MCP's handshake instructions — so it
@@ -290,9 +315,13 @@ handshake and every request and reply; `putty-mcp list --debug` traces the
 bridge's side.
 
 **Test:** `scripts/test-mcp.sh` starts its own `pterm` against a throwaway
-configuration folder and checks the whole path end to end (18 checks). It needs
-a display, and touches nothing of yours. `mcp/test/protocol.test.mjs` covers the
-bridge's own framing and discovery with no PuTTY at all.
+configuration folder and checks the whole path end to end (30 checks), including
+`run` against a real pty: a slow command is waited for rather than cut off, a
+real `more` is paged through, and a `Password:` prompt stops the run. It needs
+a display, and touches nothing of yours. `mcp/test/protocol.test.mjs` and
+`mcp/test/run.test.mjs` cover the bridge's framing, discovery and the run loop
+with no PuTTY at all — the run loop against a fake session on a virtual clock,
+so a thirty-second timeout is tested in microseconds.
 
 **Working on the bridge?** An MCP client spawns `putty-mcp mcp` **once** and
 keeps that process for the whole life of its session, so an edit under `mcp/` is
