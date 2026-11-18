@@ -114,7 +114,7 @@ tool will give slightly different numbers for the same change.
 | `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
 | `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
 | `mcp/test/protocol.test.mjs` | 10 checks over the bridge's framing and its endpoint discovery, including following a `config-location` redirect. No PuTTY, no socket, no display |
-| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (35 checks) |
+| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (36 checks) |
 | `mcp/src/detect.mjs` | What the last line of output means: the prompt family, the pager patterns (including the two macOS pagers put where nobody expects them), the waiting-for-input patterns, and the order between them. Pure functions, so it is tested from a table of strings |
 | `mcp/src/run.mjs` | The `run` poll loop: baseline, send, the fence, pager answers, `needs_input`, quiet/prompt completion, timeout, and the human-cancel rule |
 | `mcp/test/run.test.mjs` | 124 checks over the two above, with a fake session on a virtual clock |
@@ -743,7 +743,22 @@ running against a real pty, which is the argument for doing it:
    commands were all short, so it had never come up. `run` now also accepts a
    long *suffix* of the command as its echo.
 
-**Test:** `scripts/test-mcp.sh` (35 checks) starts its own `pterm` against a
+8. **Two `run` calls at once corrupted each other, silently.** `run` is not
+   reentrant per session: the commands interleave in the one stream, and each
+   run's window — "everything after my own line" — catches the other's echo and
+   output. Nothing in the reply says so, and the contaminated answer looks
+   perfectly plausible. Found by firing two runs in a `Promise.all` at a real
+   Synology NAS, where run A came back with run B's command and output in it.
+   The bridge now serialises runs per session, so the second waits.
+9. **The output cap was a memory budget, not a context one.** `run` kept up to
+   256 KB — about 65k tokens — and `max_output_bytes` was not on the tool at
+   all, so a caller could not lower it; `max_bytes` bounds one *read*, not what
+   a run accumulates, which is the number that matters. The default is 32 KB
+   (about 8k tokens) now, the option is exposed on the tool and the CLI, and
+   truncation reports `omitted_lines` so it is actionable. The cap also counts
+   each line's newline, so it is a true bound on the string returned.
+
+**Test:** `scripts/test-mcp.sh` (36 checks) starts its own `pterm` against a
 throwaway configuration folder and verifies the whole path end to end, including
 `run` against a real pty: a slow command waited for rather than cut off, a real
 `more` paged through, a stand-in for network gear's own `--More--`, and a

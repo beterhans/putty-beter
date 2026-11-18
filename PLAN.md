@@ -1149,12 +1149,19 @@ the command.
     discards every row of the echo but the last. `run` therefore also accepts a
     long *suffix* of the command as its echo. Found on a real Synology NAS: the
     fragment was being handed back as the command's output.
-11. **No config panel.** The prompt pattern, quiet period and budgets are
+11. **Runs are serialised per session, and the output cap is a context budget.**
+    Two `run` calls at once interleave in the one stream and each answer picks
+    up the other's output, silently - the reply looks plausible. Found by doing
+    it against a real Synology NAS. The bridge queues per session. Separately,
+    the total-output cap was 256 KB (about 65k tokens) and was not settable from
+    the tool at all: it protected the process, not the model. It is 32 KB now,
+    exposed as `max_output_bytes`, and truncation reports `omitted_lines`.
+12. **No config panel.** The prompt pattern, quiet period and budgets are
     arguments to `run` rather than entries in `Session → Automation (MCP)`. The
     plan's §7.5 wanted them per saved session; doing it half-way would leave
     `config.c` and `dialog.c` carrying settings that only the bridge reads.
 
-**Verified 2026-11-18.** `scripts/test-mcp.sh` — **33 checks**, all passing,
+**Verified 2026-11-18.** `scripts/test-mcp.sh` — **36 checks**, all passing,
 against a real `pterm` on a real pty: `run` returns the command's output and
 nothing else, completes at a prompt, notices the echo, waits for a slow command
 rather than cutting it off, **answers 9 pages of a real `more` and a network-gear `--More--`**, stops at

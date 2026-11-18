@@ -154,6 +154,7 @@ a photograph.
 | `expect` | no | a regular expression for the prompt, if the default family does not fit this device |
 | `timeout_ms` | no | give up after this long (default 30000) |
 | `quiet_ms` | no | how long the device must be silent before the command counts as finished (default 400) |
+| `max_output_bytes` | no | cap on the total output kept, default 32768. **This is how much of your context one command can occupy** — see below |
 | `answer_pager` | no | answer `--More--` and friends with a space (default `true`) |
 | `pager_patterns` | no | extra pager patterns, e.g. `["^:$"]` |
 | `keep_trailing_prompt` | no | keep a prompt the device ended with a newline (default `false`) |
@@ -164,12 +165,31 @@ device to finish, and returns:
 ```
 { command, output, cursor, total_lines, completed_by, echo,
   paged_answers, cancelled_by_human, elapsed_ms, truncated,
-  needs_input?, gap? }
+  omitted_lines?, needs_input?, gap? }
 ```
 
 `output` is the command's output **and nothing else** — not the echo of the
 command, not the prompt you interrupted, not the prompt that came back. Feed
 `cursor` to `read` if you want to see the transcript around it.
+
+**One run at a time per session.** Two commands in the same stream interleave
+and each answer picks up the other's output — and the reply looks completely
+plausible, so you would not know. The bridge therefore queues them: a second
+`run` on the same session waits for the first. You still should not fire off
+runs in parallel on purpose; queueing makes the mistake safe, not sensible.
+
+**A big listing is capped, and tells you.** `output` is at most
+`max_output_bytes` (default 32768, about 8k tokens — roughly 300 lines of
+typical output). If the command printed more, `truncated` is `true` and
+`omitted_lines` says how many lines were dropped. Two ways to get the rest:
+
+* raise `max_output_bytes` — deliberately, it is your context you are spending;
+* or `read({session, since: cursor})`, which walks the transcript, where
+  everything still is. The cursor has already moved past the dropped lines.
+
+**Better still, count on the device.** `wc -l`, `find … | wc -l`, `head`, `grep`
+cost you a line of output instead of a megabyte. A media library is 55,000
+tracks; you want to know *that*, not read them.
 
 **Read `completed_by` before you trust the output.**
 

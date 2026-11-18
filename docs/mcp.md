@@ -61,7 +61,7 @@ Three rules keep it maintainable:
 | `mcp/test/protocol.test.mjs` | 10 checks over the framing and the endpoint discovery. No PuTTY, no socket, no display |
 | `mcp/USER-MANUAL.md` | the manual, served to the agent. **Canonical** |
 | `docs/mcp-user-manual.md` | a byte-identical copy of it, for reading |
-| `scripts/test-mcp.sh` | the end-to-end smoke test (33 checks) |
+| `scripts/test-mcp.sh` | the end-to-end smoke test (36 checks) |
 
 ## 4. The build
 
@@ -298,6 +298,29 @@ The loop, in `run.mjs`:
 5. **Quiet plus a prompt means finished.** `completed_by` says which of the two
    signals actually fired, so the caller knows how much to trust the answer.
 
+### Two hazards that only showed up on real gear
+
+**Two runs at once, in one stream.** `run` is not reentrant per session: two
+commands interleave, and each run's window — "everything after my own line" —
+catches the other's echo and output. The reply says nothing about it, so the
+contaminated answer *looks* right. Found by firing two runs in a `Promise.all`
+at a real Synology NAS: run A came back with run B's command and output
+appended, and run B came back with A's. PLAN §7.9 already names this hazard for
+a human and an agent; this is the same hazard for two agents. The bridge now
+serialises runs per session (`serialise()` in `protocol.mjs`, keyed by the
+session id), so the second waits. It is per process, so two different MCP
+clients can still race — that is what the human-cancel rule is for.
+
+**The output cap is a context budget, not a memory one.** It was 256 KB, about
+65k tokens, which protects this process and the socket rather than the model —
+and `max_output_bytes` was not on the tool at all, so a caller could not lower
+it. `max_bytes` is exposed, but it bounds one *read*, not what `run` accumulates
+across its polls, which is the number that matters. The default is now 32 KB
+(about 8k tokens), the option is exposed on both the tool and the CLI, and
+truncation is quantified: `truncated` plus `omitted_lines`, with the cursor
+already past the dropped lines so `read` can fetch them. The cap also counts the
+newline each line costs, so it is a true bound on the string the caller gets.
+
 ### Three things that had to be got right, and were not at first
 
 * **Quiet alone is not enough.** A slow command is silent in the middle:
@@ -524,7 +547,7 @@ The plan's reasoning for each is in `PLAN.md` §7.5–§7.10.
 ```sh
 ./build-arm64/test_mcp_buffer         # 95 checks, no display, no socket
 node mcp/test/protocol.test.mjs       # 10 checks on discovery and framing
-./scripts/test-mcp.sh                 # 33 checks end to end; needs a display
+./scripts/test-mcp.sh                 # 36 checks end to end; needs a display
 cd test && PUTTY_TESTCRYPT=../build-arm64/testcrypt python3 cryptsuite.py
 ```
 

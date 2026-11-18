@@ -315,7 +315,7 @@ handshake and every request and reply; `putty-mcp list --debug` traces the
 bridge's side.
 
 **Test:** `scripts/test-mcp.sh` starts its own `pterm` against a throwaway
-configuration folder and checks the whole path end to end (35 checks), including
+configuration folder and checks the whole path end to end (36 checks), including
 `run` against a real pty: a slow command is waited for rather than cut off, a
 real `more` is paged through, and a `Password:` prompt stops the run. It needs
 a display, and touches nothing of yours. `mcp/test/protocol.test.mjs` and
