@@ -315,10 +315,12 @@ clients can still race — that is what the human-cancel rule is for.
 65k tokens, which protects this process and the socket rather than the model —
 and `max_output_bytes` was not on the tool at all, so a caller could not lower
 it. `max_bytes` is exposed, but it bounds one *read*, not what `run` accumulates
-across its polls, which is the number that matters. The default is now 32 KB
-(about 8k tokens), the option is exposed on both the tool and the CLI, and
+across its polls, which is the number that matters. The default is now 8 KB
+(about 2k tokens), the option is exposed on both the tool and the CLI, and
 truncation is quantified: `truncated` plus `omitted_lines`, with the cursor
-already past the dropped lines so `read` can fetch them. The cap also counts the
+already past the dropped lines so `read` can fetch them. The cap keeps the head
+and the tail (30% / 70%) and drops the middle, so a listing's start and its
+prompt both survive. The cap also counts the
 newline each line costs, so it is a true bound on the string the caller gets.
 
 ### Three things that had to be got right, and were not at first

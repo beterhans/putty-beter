@@ -140,11 +140,12 @@ export function buildServer(opts = {}) {
                 'Budget for one read while polling. Default 8192.'),
             max_output_bytes: z.number().int().optional().describe(
                 'Cap on the total output kept for this command, in bytes. ' +
-                'Default 32768, about 8k tokens - this is the number that ' +
+                'Default 8192, about 2k tokens - this is the number that ' +
                 'decides how much of your context one run can occupy, so ' +
                 'raise it deliberately for a big listing. When it is hit, ' +
                 '`truncated` is true and `omitted_lines` says how many lines ' +
-                'were dropped; the cursor has still advanced past them, so ' +
+                'were dropped; the head and the tail are kept and the middle ' +
+                'goes, and the cursor has still advanced past everything, so ' +
                 'read() can fetch the rest.'),
             answer_pager: z.boolean().optional().describe(
                 'Answer `--More--` with a space. Default true. Set false to be ' +

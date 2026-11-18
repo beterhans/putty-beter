@@ -60,6 +60,7 @@ add_sources_from_current_dir(utils
   seat_dialog_text.c
   seat_nonfatal.c
   sessprep.c
+  sesssearch.c
   sk_free_peer_info.c
   smemclr.c
   smemeq.c

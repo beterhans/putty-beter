@@ -231,6 +231,14 @@ struct dlgcontrol {
              * single-line one.
              */
             bool multiline;
+            /*
+             * PuTTY-beter: greyed-out hint text to show while the box is
+             * empty, so that a box with nothing in it still says what it is
+             * for (the saved-session box takes a name, a folder name, or a
+             * search introduced by '/'). Front ends without a placeholder
+             * simply ignore it. The string must outlive the dialog box.
+             */
+            const char *placeholder;
         } editbox;
         struct { /* for CTRL_RADIO */
             /*

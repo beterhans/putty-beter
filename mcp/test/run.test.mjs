@@ -13,7 +13,7 @@
  */
 
 import { classify, compileExpect, promptReason } from '../src/detect.mjs';
-import { runOnSession, DEFAULTS } from '../src/run.mjs';
+import { runOnSession, DEFAULTS, TRUNC_MARKER } from '../src/run.mjs';
 
 let passes = 0, failures = 0;
 
@@ -634,12 +634,14 @@ async function testWrappedEcho() {
 async function testDefaultOutputCap() {
     /*
      * The default cap is the number that decides how much of a *caller's
-     * context* one run can occupy, so it is pinned deliberately: 32 KB is about
-     * 8k tokens. It was 256 KB - about 65k tokens - which protected this
+     * context* one run can occupy, so it is pinned deliberately: 8 KB is about
+     * 2k tokens. It was 256 KB - about 65k tokens - which protected this
      * process's memory rather than the model, and was not settable from the MCP
-     * tool at all. Changing it should be a decision, not an accident.
+     * tool at all. 2k tokens keeps a small-context agent (a local LM-Studio
+     * model, for instance) from being flooded by one listing. Changing it
+     * should be a decision, not an accident.
      */
-    checkEqual(DEFAULTS.maxOutputBytes, 32 * 1024,
+    checkEqual(DEFAULTS.maxOutputBytes, 8 * 1024,
                'defaults: the output cap is a context budget, not a memory one');
 
     /* A big listing is bounded, and says so, rather than arriving whole. */
@@ -711,6 +713,40 @@ async function testGapAndPaging() {
                'run: truncation does not stop the run finishing');
 }
 
+async function testHeadAndTailTruncation() {
+    /*
+     * The cap keeps both ends. A listing is read for its start and its end -
+     * the start says what it is, the end has the prompt and the newest output
+     * - so dropping only the tail, as the cap used to, threw away the half
+     * that matters most. The middle goes, and the marker says it did.
+     */
+    const n = 300;
+    const label = (i) => `line ${String(i).padStart(4, '0')} `;
+    const steps = [];
+    for (let i = 0; i < n; i++)
+        steps.push({ afterMs: 50, text: label(i) + 'z'.repeat(60) });
+    steps.push({ afterMs: 200, open: true, text: 'Router>' });
+
+    const s = new FakeSession({ echo: false, steps });
+    const r = await run(s, 'ls -R', { maxOutputBytes: 4096 });
+
+    checkEqual(r.truncated, true, 'both ends: past the cap is truncated');
+    check(r.output.length <= 4096, 'both ends: the cap is respected',
+          `got ${r.output.length}`);
+    check(r.output.includes(label(0)), 'both ends: the head is kept');
+    check(r.output.includes(label(n - 1)), 'both ends: the tail is kept too');
+    check(r.output.includes(TRUNC_MARKER), 'both ends: the gap is marked');
+    check(!r.output.includes(label(Math.floor(n / 2))),
+          'both ends: and the middle is the part that went');
+    checkEqual(r.omitted_lines, n - r.lines.length,
+               'both ends: the dropped lines are still counted');
+    check(r.lines[0].text.startsWith(label(0)) &&
+          r.lines[r.lines.length - 1].text.startsWith(label(n - 1)),
+          'both ends: the kept lines really span head to tail');
+    checkEqual(r.completed_by, 'prompt',
+               'both ends: and the run still finishes');
+}
+
 /* ------------------------------------------------------------------ */
 
 console.log('putty-mcp run tests\n');
@@ -745,6 +781,8 @@ try {
     await testUndefinedOptions();
     console.log('  [test] paging and truncation');
     await testGapAndPaging();
+    console.log('  [test] the cap keeps both ends');
+    await testHeadAndTailTruncation();
 } finally {
     /* Nothing outside this process was touched. */
 }

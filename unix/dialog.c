@@ -2774,6 +2774,15 @@ GtkWidget *layout_ctrls(
                 w = gtk_entry_new();
                 if (ctrl->editbox.password)
                     gtk_entry_set_visibility(GTK_ENTRY(w), false);
+#if GTK_CHECK_VERSION(3,0,0)
+                /*
+                 * PuTTY-beter: a greyed-out hint in an empty box. GTK 2 has
+                 * no placeholder, so the hint is simply absent there.
+                 */
+                if (ctrl->editbox.placeholder)
+                    gtk_entry_set_placeholder_text(
+                        GTK_ENTRY(w), ctrl->editbox.placeholder);
+#endif
                 uc->entry = w;
                 signalobject = w;
             }

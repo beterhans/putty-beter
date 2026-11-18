@@ -101,7 +101,9 @@ placement to stderr. `PUTTY_CONFIG_DEBUG=1` traces the configuration folder
 resolution and relocation, and the remembered configuration-box size.
 `PUTTY_MCP_DEBUG=1` traces the MCP server (§13) — whether a session offered
 itself, where the socket went and with what permissions, and every request and
-reply. None of them has any effect when unset.
+reply. `PUTTY_SESS_SEARCH_DEBUG=1` traces the saved-session search (§9b) — the
+query, the match count, and when the session files are read again. None of them
+has any effect when unset.
 
 ### 7. Configuration box
 
@@ -145,6 +147,35 @@ text is UTF-8 and is stored with the session, so a note like
 It is written to the session file as `SessionComment=`, only when there is
 one. Newlines are escaped as `\n` on disk, since the settings file format is
 one `key=value` per line.
+
+### 9b. Searching saved sessions
+
+The **Saved Sessions** box is also the search box. If what you type into it
+starts with `/`, the rest of the line is a search rather than a name, and the
+list below shrinks to the sessions that match. `\` works as the same prefix.
+The box says so while it is empty: *Name/folder, or / to search*.
+
+A session matches when the text appears in its **name**, its **host name or IP
+address**, or its **comment** — case-insensitively. A query that names a folder
+finds everything inside it too, because a session is matched by its whole path
+(`/Work` finds `Work/beta`).
+
+| Typed | What you get |
+|---|---|
+| `/` | every session (search mode with nothing to look for yet) |
+| `/10.0.1` | the sessions whose host is in that range |
+| `/dana` | a session whose comment says "ask Dana before touching" |
+| `/Work` | the `Work` folder and the sessions in it |
+| `/zzz` | nothing at all — the list is empty and the box's label says so |
+
+While a search is on, the box's label reads **`Search (matched/total)`** and
+the whole list comes back as soon as you clear the prefix, or by deleting back
+to nothing. Load, Delete, drag and double-click all work on a filtered list,
+so searching for a session and then loading it is two steps, not three. **Save**
+and **New Folder** beep while a search is on: `/beta` is not a session name.
+
+`PUTTY_SESS_SEARCH_DEBUG=1` traces each search — the query, the match count and
+whether the session files had to be read again — to stderr.
 
 ### 10. Changed defaults
 

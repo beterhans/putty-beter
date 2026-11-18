@@ -220,6 +220,12 @@ add_executable(test_sessions
 # test supplies the few hooks that would otherwise come from them.
 target_link_libraries(test_sessions settings utils)
 
+# PuTTY-beter: the saved-session search. The helpers under test are pure, so
+# this needs nothing but the utils library either.
+add_executable(test_sesssearch
+  test/test_sesssearch.c)
+target_link_libraries(test_sesssearch utils)
+
 foreach(subdir ${platform} ${extra_dirs})
   add_subdirectory(${subdir})
 endforeach()

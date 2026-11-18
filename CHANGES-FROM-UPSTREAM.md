@@ -42,13 +42,14 @@ fixes, so `git log` alone shows only the later work.
 | Configuration box | Resizable, size remembered in the configuration folder, and the saved-session list grows with the window. |
 | Session folders | Sessions can be kept in folders, shown as a tree and moved by dragging. |
 | Session comments | A free-text note kept with each saved session, in a panel below Logging, with a multi-line UTF-8 box. |
+| Session search | Type `/` in the Saved Sessions box and the list below is filtered, live, by session name, host name/IP or comment; folders still show as a tree. |
 | ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
 | MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
-| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1` and `PUTTY_MCP_DEBUG=1` runtime traces. |
+| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1` and `PUTTY_SESS_SEARCH_DEBUG=1` runtime traces. |
 
 ---
 
@@ -62,9 +63,9 @@ tool will give slightly different numbers for the same change.
 | File | +/- | What changed |
 |---|---|---|
 | `conf.h` | +70 / -7 | Seven default values changed (see below); `session_comment`, `zmodem_dir`, `mcp_enabled` and `mcp_write` added |
-| `config.c` | +419 / -30 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added |
-| `dialog.h` | +75 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` flag on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
-| `dialog.c` | +7 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
+| `config.c` | +616 / -42 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added; the saved-session search in the Session panel (see below) |
+| `dialog.h` | +83 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` and `placeholder` on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
+| `dialog.c` | +9 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
 | `settings.c` | +133 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
 | `terminal/terminal.c` | +179 / -2 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server; `term_set_input_tap()`, which reports what a human typed or pasted |
 | `putty.h` | +2 / -0 | Declares `term_get_screen_text()` |
@@ -73,7 +74,7 @@ tool will give slightly different numbers for the same change.
 | `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
 | `unix/config-location.c` | new | See the new-files table |
-| `unix/dialog.c` | +969 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; every file selector routed through the shared chooser |
+| `unix/dialog.c` | +978 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; the edit box's placeholder text; every file selector routed through the shared chooser |
 | `unix/gtkcompat.h` | +26 / -0 | `gtk_dialog_fix_macos_titlebar()` — gives a `GtkDialog` an opaque title bar on macOS |
 | `unix/gtkmisc.h` | +10 / -0 | Declares `our_file_chooser_run()` |
 | `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
@@ -88,7 +89,8 @@ tool will give slightly different numbers for the same change.
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
 | `storage.h` | +26 / -0 | Declarations for the folder operations and the name checks |
-| `CMakeLists.txt` | +34 / -1 | `test_sessions`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
+| `utils/CMakeLists.txt` | +1 / -0 | Build `utils/sesssearch.c` into the `utils` library |
+| `CMakeLists.txt` | +40 / -1 | `test_sessions`, `test_sesssearch`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
 | `.gitignore` | +21 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
@@ -122,6 +124,9 @@ tool will give slightly different numbers for the same change.
 | `docs/mcp-user-manual.md` | The agent's manual as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, kept in step by a check in `scripts/test-mcp.sh` |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
+| `utils/sesssearch.c` | The saved-session search: what counts as a search, the text a session is searched by, and the case-insensitive match. Pure - no I/O, no GTK - so it is testable on its own |
+| `utils/sesssearch.h` | Its interface, and the `PUTTY_SESS_SEARCH_DEBUG` switch |
+| `test/test_sesssearch.c` | Tests for the above: the prefix rule, host and comment hits, case folding, folder-name queries, and no false matches |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 | `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
@@ -457,6 +462,48 @@ at the end of a line.
 
 **Not verified by the test suite:** the widget itself, which needs a human.
 
+## 10b. Searching saved sessions
+
+The **Saved Sessions** box in the Session panel doubles as a search box: if its
+contents start with `/` (or `\`), the rest of the line is a query, and the list
+below is filtered to the sessions that match it. A session matches when the
+query appears in its **name**, its **HostName** or its **SessionComment**,
+case-insensitively. `/Work` finds the sessions inside the `Work` folder,
+because a session is matched by its whole path.
+
+* A session name is a `/`-separated path and no valid path begins with `/`
+  (`session_name_is_valid()` rejects an empty component), so a leading `/` is a
+  character no saved session can ever use. `\` cannot appear in a session name
+  at all; it is accepted as an alias and not advertised.
+* `config.c` does the work: `sessionsaver_data` caches, per session, the
+  lower-cased `name\nhost\ncomment` read with `open_settings_r()` and
+  `read_setting_s()`, so a keystroke does not re-read the session files. The
+  cache is dropped wherever the session list is rebuilt (Save, Delete, New
+  Folder, drag).
+* `sessionsaver_fill_list()` replaces the inline list-population loop in the
+  `EVENT_REFRESH` path. It adds every row when there is no query, or only the
+  matching ones when there is; rows keep their original id, so Load, Delete,
+  drag and double-click keep working on a filtered list, and the rows for a
+  match's parent folders are made by the existing tree code.
+* While a search is on, the box's label is changed with the existing
+  `dlg_label_change()` (already implemented for `CTRL_EDITBOX` in
+  `unix/dialog.c`) to `Search (matched/total)`, and back to `Saved Sessions`
+  when it ends. **Save** and **New Folder** beep instead of trying to save
+  `/beta` as a name.
+* `dialog.h` gains a `placeholder` field on the edit box, and `unix/dialog.c`
+  passes it to `gtk_entry_set_placeholder_text()`, so the empty box says
+  *Name/folder, or / to search*. GTK 2 has no placeholder and simply shows
+  nothing; the Windows front end ignores the field, as it does `multiline`.
+* The matching itself is in `utils/sesssearch.c` - a new file - so that it can
+  be tested without a front end. `PUTTY_SESS_SEARCH_DEBUG=1` traces each search.
+
+**Verified:** `test/test_sesssearch.c` (33 checks: the prefix rule, host and
+comment hits, case folding, a folder-name query, no false matches), and by hand
+in the built app: `/10.0.1` matched one of four sessions by host, `/dana` one
+by comment, `/Work` the folder and its two children, `/zzz` nothing at all,
+clearing the prefix brought the whole list and the old clear-the-box behaviour
+back, and Save with a search in the box saved nothing.
+
 ## 11. ZMODEM file transfer
 
 `sz` and `rz` now work in both directions, over SSH and on a serial line.
@@ -753,8 +800,8 @@ running against a real pty, which is the argument for doing it:
 9. **The output cap was a memory budget, not a context one.** `run` kept up to
    256 KB — about 65k tokens — and `max_output_bytes` was not on the tool at
    all, so a caller could not lower it; `max_bytes` bounds one *read*, not what
-   a run accumulates, which is the number that matters. The default is 32 KB
-   (about 8k tokens) now, the option is exposed on the tool and the CLI, and
+   a run accumulates, which is the number that matters. The default is 8 KB
+   (about 2k tokens) now, the option is exposed on the tool and the CLI, and
    truncation reports `omitted_lines` so it is actionable. The cap also counts
    each line's newline, so it is a true bound on the string returned.
 

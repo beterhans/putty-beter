@@ -2,7 +2,8 @@
 
 Status: **in development.** Phases 0, 1a, most of 2 and all of 3 are done: a
 native arm64 `.app` builds and bundles, with session folders, per-session
-comments, a relocatable configuration folder, a reworked configuration box, and
+comments, a search box for the saved-session list, a relocatable configuration
+folder, a reworked configuration box, and
 ZMODEM `sz`/`rz` file transfer working in both directions. MCP is also working — an agent can list sessions, read their output and read the
 visible screen, see §7. The universal (Intel + ARM) signed `.app`, and the
 rest of MCP (driving a session, completion detection, human-in-the-loop), are
@@ -525,6 +526,183 @@ would focus it.
 
 ---
 
+## 4j. Saved-session search in the Session panel  *(done 2026-11-19)*
+
+**Goal:** find a saved session by name, hostname/IP or comment, from the box
+you are already typing in, without reading the whole list.
+
+**How it is triggered.** The **Saved Sessions** box in `Session` doubles as a
+search box: if its contents start with `/`, the rest of the line is a query and
+the saved-session list below shrinks to the sessions that match. `\` is
+accepted as an alias for the same prefix.
+
+**Why `/`.** A session name is a `/`-separated path, and no valid path begins
+with `/` (`session_name_is_valid()` rejects an empty component), so a leading
+`/` is a free character in that box — nothing you could legitimately save is
+taken away, and no stored session can ever be shadowed by it. It is also the
+vim / `less` gesture for "search", which is what the box does. `\` is accepted
+because it can never appear in a session name at all, but it is not advertised:
+one prefix in the docs, two accepted.
+
+### Behaviour
+
+| Typed in Saved Sessions | What happens |
+|---|---|
+| `foo` (no prefix) | unchanged: the list is not filtered, and typing jumps to the nearest name, exactly as today |
+| `/` | search mode with an empty query: every session is listed, including `Default Settings` |
+| `/beta` | only sessions whose **name**, **HostName** or **SessionComment** contains `beta`, case-insensitively |
+| `/10.0.1` | the sessions whose host is in `10.0.1.0/24`, plus any whose name or comment contains that text |
+| `/Work` | folder `Work` and everything under it: a session's full path is searched, and `Work/beta` contains `Work` |
+| `/zzz` | no matches: the list is empty and the label says so; no beep |
+| the text no longer starts with the prefix | the full list comes back and typing jumps to the nearest name again |
+
+* Rows keep their existing ids, so **Load**, **Delete**, **drag** and
+  **double-click-to-open** all keep working on a filtered list. Only sessions
+  are filtered *in*; the rows for their parent folders are made by the tree
+  builder as usual, and a parent row is not loadable — as today.
+* While a search is active, **Save** and **New Folder** beep and do nothing:
+  `/beta` is not a session name, and letting it through would only produce an
+  "Invalid session name" error from `save_settings()`.
+* A comment is searched in its stored (escaped) form, so a query containing
+  `\n` matches a literal backslash-n; ordinary word searches are unaffected.
+* Case folding is ASCII `tolower`, which is right for names and hosts, and
+  good enough for comments. No Unicode case mapping.
+
+### Feedback
+
+The **Saved Sessions** label is switched with `dlg_label_change()` — already
+implemented for `CTRL_EDITBOX` in `unix/dialog.c` — to `Search (matched/total)`
+while a search is on, and back to `Saved Sessions` when it ends. That is the
+whole of the new UI: no new widget, and nothing moves.
+
+An empty box also carries a hint, **Name/folder, or / to search**, as
+greyed-out placeholder text. It is deliberately short: the box is only as wide
+as the panel, and the front end clips what will not fit. This needed one small
+addition to the dialog framework — a `placeholder` field on the edit box
+(beside `multiline`), passed to `gtk_entry_set_placeholder_text()` in
+`unix/dialog.c`; GTK 2 has no placeholder and shows nothing, and the Windows
+front end ignores the field as it already ignores `multiline`.
+
+### Where the searchable text comes from
+
+Per session: the name from `sesslist`, plus `HostName` and `SessionComment`
+read with `open_settings_r()` / `read_setting_s()` — the same key names
+`settings.c` writes. The three are joined with `\n` and lowercased **once**,
+cached per session, so a keystroke does not re-read the files. The cache is
+dropped whenever the session list is rebuilt: Save, Delete, New Folder, drag.
+
+### Alternatives considered
+
+* **A second search box above the list.** More layout work, a new control in
+  every front end, and one more thing to tab through. The name box is already
+  where the hand is, and it is where the user types a name today.
+* **`\` as the only prefix.** It cannot occur in a session name, so it is
+  unambiguous — but it is not the shape of "search" anywhere else. Both are
+  accepted, `/` is documented.
+* **Filtering the tree rows too.** A folder whose own name matches but none of
+  whose sessions do would show up empty; confusing, and no use. A query that
+  names a folder already matches its sessions through the full path.
+
+### Files
+
+| File | Change |
+|---|---|
+| `utils/sesssearch.c`, `utils/sesssearch.h` (new) | pure helpers: prefix test, haystack build, case-insensitive match. No I/O and no GTK, so they are unit-testable |
+| `utils/CMakeLists.txt` | add `sesssearch.c` to the `utils` object library |
+| `config.c` | `sessionsaver_data`: the per-session match cache; `sessionsaver_fill_list()`; the `EVENT_VALCHANGE` branch; the Save / New Folder guards; drop the cache wherever `get_sesslist(..., false)` is called |
+| `test/test_sesssearch.c` (new), `CMakeLists.txt` | unit tests for the helpers, beside `test_sessions` |
+| `README.md`, `CHANGES-FROM-UPSTREAM.md` | the feature, and the file-by-file diff |
+| `PLAN.md` | this section, and the milestone |
+
+### Steps
+
+1. **`utils/sesssearch.{c,h}`** — `sesssearch_query(box)` returns `box+1` when
+   `box[0]` is `/` or `\`, else `NULL`; `sesssearch_haystack(name, host,
+   comment)` returns a lowercased `name\nhost\ncomment`; `sesssearch_match(hay,
+   q)` is `true` for an empty `q` and otherwise a substring search. All three
+   take `const char *` and allocate only where the header says they do.
+2. **`test/test_sesssearch.c`** — an empty query matches; case-insensitivity;
+   a host hit and a comment hit; `/x` and `\x` parse as queries while a plain
+   `Work/x` does not; a folder-name query hits `Folder/child`; no false match.
+3. **`config.c`** — `sessionsaver_data` gains `char **hay; int hay_n;`. Add
+   `sessionsaver_free_hay()` and `sessionsaver_build_hay()` (which reads the two
+   keys per session through `open_settings_r()`), and call the free from
+   `sessionsaver_data_free()` and from every site that reloads the list.
+4. **`config.c`** — `sessionsaver_fill_list(ssd, dlg)`: clear the list, add
+   every row when there is no query or only the matching ones when there is,
+   then select the first match and set the label. Call it from the
+   `EVENT_REFRESH` branch of `sessionsaver_handler` in place of the inline
+   loop, leaving the old loop commented out (no-deleting-lines rule).
+5. **`config.c`** — in `EVENT_VALCHANGE` for the editbox, take the query from
+   `ssd->savedsession`: searching refills and selects the first match; leaving
+   search mode refills the full list once and then runs the existing
+   binary-search-jump code unchanged.
+6. **`config.c`** — the Save and New Folder guards described above.
+7. **Debug switch** — `PUTTY_SESS_SEARCH_DEBUG=1` traces the query, the match
+   count and whether the cache was rebuilt, to stderr, in the same shape as
+   `PUTTY_CONFIG_DEBUG`. Silent when unset.
+8. **Docs** — a short "Searching saved sessions" paragraph (README §8 area or
+   its own numbered entry), and the file list in `CHANGES-FROM-UPSTREAM.md`.
+9. **Build and test** — `ninja -C build-arm64`, run `test_sesssearch`, then
+   the manual pass below.
+
+### Verification
+
+* **Automated:** `test_sesssearch` covers the helpers; `test_sessions` must
+  still pass, proving storage is untouched.
+* **Manual, in the built app**, with a few sessions including one commented
+  and one with an IP host: type `/` and see every row with the
+  `Search (n/n)` label; type `/10.0.1` and see just that session; type `/prod`
+  and hit the comment-only match; delete back to no matches and see an empty
+  list and no beep; clear the box and confirm the label and the full list come
+  back and typing jumps as before; double-click a match to confirm it still
+  opens; with a search active, press Save and confirm it beeps; drag a match
+  into a folder and confirm the list re-filters afterwards.
+* **Regression:** with no prefix, behaviour is byte-for-byte what it is now.
+
+### As built (2026-11-19)
+
+Implemented as described, with three small differences worth knowing:
+
+* The helpers ended up named `sesssearch_forget()` (drop the cache) and
+  `sesssearch_build()` (read the files), both static in `config.c`, beside
+  `sessionsaver_fill_list()`; the file-reading is `open_settings_r()` +
+  `read_setting_s(..., "HostName")` / `read_setting_s(..., "SessionComment")`.
+* The placeholder was added as a field on the edit box and applied by the GTK
+  front end, as described above — no new dialog API.
+* **Verified live** with a throwaway configuration folder and synthetic
+  keystrokes: `/10.0.1` → 1 of 4 by host, `/dana` → 1 of 4 by comment,
+  `/Work` → 3 of 8 (the folder and its two children, still a tree), `/zzz` → 0,
+  clearing the prefix → 4 of 4 and the ordinary jump-to-nearest restored, Save
+  with a search in the box → beep and no file written. `test_sesssearch` 33
+  checks pass, `test_sessions` still passes.
+
+**One thing that is *not* ours.** Pressing **Load** prints
+`Gtk-CRITICAL: gtk_tree_selection_get_selected: assertion 'priv->type !=
+GTK_SELECTION_MULTIPLE' failed` to stderr. It is pre-existing — the same line
+appears with no search active — because `dlg_listbox_selected_id()` in
+`unix/dialog.c` calls `gtk_tree_selection_get_selected()` on a list box that is
+multi-select, and has a cursor-row fallback for exactly that case. It is
+harmless noise to a terminal, but the obvious one-line guard (skip the call
+when the selection mode is `MULTIPLE`) is left for a separate change rather
+than smuggled into this one.
+
+### Risks / not in scope
+
+* Refilling the list on every keystroke is a GTK list rebuild. That is the cost
+  `dlg_refresh()` already pays on Save, and it stays fine at a few hundred
+  sessions; `PUTTY_SESS_SEARCH_DEBUG` is there to measure it if it ever
+  matters. The cache means the search itself is string compares, not I/O.
+* **Out of scope:** highlighting the matched substring, matching the port
+  number, regex or glob queries, searching the host-CA list, and remembering
+  the last query between dialog boxes.
+* The Windows front end reports `EVENT_VALCHANGE` on focus-out rather than per
+  keystroke, so on Windows the search would take effect when the box is left.
+  This is a macOS-first fork; the plan does not add per-keystroke notification
+  to the Windows front end.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.
@@ -875,8 +1053,10 @@ this as reliably because it is not looking at a screen.
   tokens ≈ ~100 lines of typical CLI output.
 - **Paging, not truncation.** Always return `total_lines`, `omitted` and the cursor so the caller
   can ask for more. Truncation is the fallback for a single oversized read.
-- When truncating: head ~25% / tail ~75%, always keep the first line (the command echo) and the
-  last (the prompt), cut on line boundaries, and measure the budget **after** stripping escapes.
+- When truncating: head 30% / tail 70%, cut on line boundaries, keeping the first line if it fits
+  (and the tail, so the prompt and the newest output survive), and measure the budget **after**
+  stripping escapes. The whole-output cap in `run` does the same, and this is what it replaced
+  (it used to keep the head and drop the tail, 2026-11-18).
 - The caller can pass its own budget. The server never guesses the model's context window: that is
   OpenCode's model metadata (queryable — `opencode-session-context` prints `max_context` for the
   current session), it differs between the local 256k model and a cloud 1M one, and MCP has no
@@ -1154,8 +1334,10 @@ the command.
     up the other's output, silently - the reply looks plausible. Found by doing
     it against a real Synology NAS. The bridge queues per session. Separately,
     the total-output cap was 256 KB (about 65k tokens) and was not settable from
-    the tool at all: it protected the process, not the model. It is 32 KB now,
-    exposed as `max_output_bytes`, and truncation reports `omitted_lines`.
+    the tool at all: it protected the process, not the model. It is 8 KB
+    (about 2k tokens) now, exposed as `max_output_bytes`, and truncation reports
+    `omitted_lines`. The cap keeps the head and the tail (30% / 70%) rather than
+    dropping the tail.
 12. **No config panel.** The prompt pattern, quiet period and budgets are
     arguments to `run` rather than entries in `Session → Automation (MCP)`. The
     plan's §7.5 wanted them per saved session; doing it half-way would leave
@@ -1237,6 +1419,7 @@ crates*, not a port of PuTTY:
 - [x] **M0** — native arm64 build passes (Phase 0)
 - [ ] **M1** — universal signed `.app` runs on Intel + ARM (Phase 1, T1) — 1a done, 1b/1c not started
 - [x] **M2** — session folders + comments (Phase 2, O1 part 1)
+      - [x] **M2b** — search the saved-session list by name / host / comment (§4j)
 - [ ] **M3** — session password via Keychain (Phase 2, O1 part 2)
 - [x] **M4** — ZMODEM download works over SSH (Phase 3, T2)
 - [x] **M5** — ZMODEM upload + cancel (Phase 3, T2) — both directions verified against real

@@ -44,9 +44,10 @@ Options:
   --since <id>        (read) return lines with an id greater than this
   --max-bytes <n>     (read, run) budget for one read, default 8192
   --max-output-bytes <n>
-                      (run) cap on the total output kept, default 32768. This
-                      is how much of a context one run can occupy, so raise it
-                      deliberately for a big listing.
+                      (run) cap on the total output kept, default 8192 (about
+                      2k tokens). This is how much of a context one run can
+                      occupy, so raise it deliberately for a big listing. The
+                      head and the tail are kept and the middle is dropped.
   --expect <regex>    (run) the prompt pattern, if the default family does
                       not fit this device. Replaces the default.
   --timeout <ms>      (run) give up after this long, default 30000

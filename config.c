@@ -10,6 +10,7 @@
 #include "dialog.h"
 #include "storage.h"
 #include "tree234.h"
+#include "utils/sesssearch.h"
 
 #define PRINTER_DISABLED_STRING "None (printing disabled)"
 
@@ -786,6 +787,19 @@ struct sessionsaver_data {
     struct sesslist sesslist;
     bool midsession;
     char *savedsession;     /* the current contents of ssd->editbox */
+    /*
+     * PuTTY-beter: the saved-session search (PLAN.md section 4j). When the
+     * edit box starts with '/' or '\', what follows is a query rather than a
+     * name, and the list is filtered by it. `hay' is the cached text each
+     * session is searched by - its name, host name and comment - one entry
+     * per row of sesslist, built on the first search and thrown away whenever
+     * the session list is rebuilt. `searched' says whether the previous
+     * keystroke was a search, so that leaving search mode can put the whole
+     * list back.
+     */
+    char **hay;
+    int hay_n;
+    bool searched;
 };
 
 /* PuTTY-beter: is this list entry a folder rather than a session? */
@@ -823,6 +837,104 @@ static char *selected_session_name(struct sessionsaver_data *ssd,
 }
 
 /*
+ * PuTTY-beter: the saved-session search (PLAN.md section 4j).
+ *
+ * The "Saved Sessions" box doubles as a search box: a line starting with '/'
+ * (or '\') is a query rather than a name, and the list below is filtered down
+ * to the sessions whose name, host name or comment contains it. The matching
+ * itself is in utils/sesssearch.c; what lives here is reading the text out of
+ * the session files, caching it, and refilling the list.
+ */
+
+/* Throw away the cached search text; it is rebuilt on the next search. */
+static void sesssearch_forget(struct sessionsaver_data *ssd)
+{
+    for (int i = 0; i < ssd->hay_n; i++)
+        sfree(ssd->hay[i]);
+    sfree(ssd->hay);
+    ssd->hay = NULL;
+    ssd->hay_n = 0;
+}
+
+/*
+ * Read the text each session is searched by: its name, plus the HostName and
+ * the SessionComment from its own file - the keys settings.c writes. A
+ * session whose file cannot be opened (a folder, say) is still searchable by
+ * name.
+ */
+static void sesssearch_build(struct sessionsaver_data *ssd)
+{
+    sesssearch_forget(ssd);
+
+    ssd->hay_n = ssd->sesslist.nsessions;
+    ssd->hay = snewn(ssd->hay_n, char *);
+
+    for (int i = 0; i < ssd->hay_n; i++) {
+        const char *name = ssd->sesslist.sessions[i];
+        settings_r *sr = open_settings_r(name);
+        char *host = sr ? read_setting_s(sr, "HostName") : NULL;
+        char *comment = sr ? read_setting_s(sr, "SessionComment") : NULL;
+
+        ssd->hay[i] = sesssearch_haystack(name, host, comment);
+
+        sfree(comment);
+        sfree(host);
+        if (sr)
+            close_settings_r(sr);
+    }
+
+    if (sesssearch_debug_enabled())
+        fprintf(stderr, "sesssearch: read search text for %d session%s\n",
+                ssd->hay_n, ssd->hay_n == 1 ? "" : "s");
+}
+
+/*
+ * Fill the session list, honouring the search if one is switched on. A row's
+ * id is its index in ssd->sesslist, so rows can be found again after the list
+ * is rebuilt - which is what the drag handler and selected_session_name()
+ * rely on. While a search is on, the box's label says what it found and the
+ * cursor sits on the first match.
+ */
+static void sessionsaver_fill_list(struct sessionsaver_data *ssd,
+                                   dlgparam *dlg)
+{
+    const char *query = sesssearch_query(ssd->savedsession);
+    int nmatches = 0, first = -1;
+
+    if (query && !ssd->hay)
+        sesssearch_build(ssd);
+
+    dlg_update_start(ssd->listbox, dlg);
+    dlg_listbox_clear(ssd->listbox, dlg);
+    for (int i = 0; i < ssd->sesslist.nsessions; i++) {
+        if (query && !sesssearch_match(ssd->hay[i], query))
+            continue;
+        dlg_listbox_addwithid(ssd->listbox, dlg, ssd->sesslist.sessions[i], i);
+        if (first < 0)
+            first = i;
+        nmatches++;
+    }
+    dlg_update_done(ssd->listbox, dlg);
+
+    if (query) {
+        char *label = dupprintf("Search (%d/%d)", nmatches,
+                                ssd->sesslist.nsessions);
+
+        dlg_label_change(ssd->editbox, dlg, label);
+        sfree(label);
+        if (first >= 0)
+            dlg_listbox_select_id(ssd->listbox, dlg, first);
+    } else {
+        /* Not searching: the box's label is just its name again. */
+        dlg_label_change(ssd->editbox, dlg, "Saved Sessions");
+    }
+
+    if (sesssearch_debug_enabled())
+        fprintf(stderr, "sesssearch: query \"%s\": %d of %d list entries\n",
+                query ? query : "(none)", nmatches, ssd->sesslist.nsessions);
+}
+
+/*
  * PuTTY-beter: delete a set of sessions and folders. A folder is removed
  * only when it is empty unless `force` is set, which is what the user agrees
  * to when asked.
@@ -849,6 +961,7 @@ static void delete_names(struct sessionsaver_data *ssd, dlgparam *dlg,
 
     get_sesslist(&ssd->sesslist, false);
     get_sesslist(&ssd->sesslist, true);
+    sesssearch_forget(ssd);     /* the cached search text is now stale */
     dlg_refresh(ssd->listbox, dlg);
 }
 
@@ -947,12 +1060,14 @@ static void sessionsaver_drag(dlgcontrol *ctrl, dlgparam *dlg, int dst_id)
      */
     get_sesslist(&ssd->sesslist, false);
     get_sesslist(&ssd->sesslist, true);
+    sesssearch_forget(ssd);     /* sessions have moved: the text is stale */
     dlg_refresh(ssd->listbox, dlg);
 }
 
 static void sessionsaver_data_free(void *ssdv)
 {
     struct sessionsaver_data *ssd = (struct sessionsaver_data *)ssdv;
+    sesssearch_forget(ssd);
     get_sesslist(&ssd->sesslist, false);
     sfree(ssd->savedsession);
     sfree(ssd);
@@ -1002,39 +1117,66 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
         if (ctrl == ssd->editbox) {
             dlg_editbox_set(ctrl, dlg, ssd->savedsession);
         } else if (ctrl == ssd->listbox) {
-            int i;
-            dlg_update_start(ctrl, dlg);
-            dlg_listbox_clear(ctrl, dlg);
             /*
              * PuTTY-beter: the id of each row is its index in the session
              * list, so that the row can be found again after the list is
              * rebuilt. The front end turns names containing '/' into a tree
              * and shows only the last component of each.
+             *
+             * A search, if one is switched on, filters the rows down here;
+             * with no search this adds every session, which is what used to
+             * be done inline.
              */
+            /*
+            int i;
+            dlg_update_start(ctrl, dlg);
+            dlg_listbox_clear(ctrl, dlg);
             for (i = 0; i < ssd->sesslist.nsessions; i++)
                 dlg_listbox_addwithid(ctrl, dlg, ssd->sesslist.sessions[i], i);
             dlg_update_done(ctrl, dlg);
+            */
+            sessionsaver_fill_list(ssd, dlg);
         }
     } else if (event == EVENT_VALCHANGE) {
         int top, bottom, halfway, i;
         if (ctrl == ssd->editbox) {
+            bool was_search = ssd->searched;
+
             sfree(ssd->savedsession);
             ssd->savedsession = dlg_editbox_get(ctrl, dlg);
-            top = ssd->sesslist.nsessions;
-            bottom = -1;
-            while (top-bottom > 1) {
-                halfway = (top+bottom)/2;
-                i = strcmp(ssd->savedsession, ssd->sesslist.sessions[halfway]);
-                if (i <= 0 ) {
-                    top = halfway;
-                } else {
-                    bottom = halfway;
+            ssd->searched = (sesssearch_query(ssd->savedsession) != NULL);
+
+            if (ssd->searched) {
+                /*
+                 * PuTTY-beter: a search. Rebuild the list from what matches,
+                 * rather than jumping to the nearest name.
+                 */
+                sessionsaver_fill_list(ssd, dlg);
+            } else {
+                if (was_search) {
+                    /*
+                     * PuTTY-beter: the search has been cleared or edited away,
+                     * so put the whole list back before resuming the ordinary
+                     * jump-to-nearest-name behaviour below.
+                     */
+                    sessionsaver_fill_list(ssd, dlg);
                 }
+                top = ssd->sesslist.nsessions;
+                bottom = -1;
+                while (top-bottom > 1) {
+                    halfway = (top+bottom)/2;
+                    i = strcmp(ssd->savedsession, ssd->sesslist.sessions[halfway]);
+                    if (i <= 0 ) {
+                        top = halfway;
+                    } else {
+                        bottom = halfway;
+                    }
+                }
+                if (top == ssd->sesslist.nsessions) {
+                    top -= 1;
+                }
+                dlg_listbox_select_id(ssd->listbox, dlg, top);
             }
-            if (top == ssd->sesslist.nsessions) {
-                top -= 1;
-            }
-            dlg_listbox_select_id(ssd->listbox, dlg, top);
         }
     } else if (event == EVENT_ACTION) {
         bool mbl = false;
@@ -1054,6 +1196,15 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             }
         } else if (ctrl == ssd->savebutton) {
             bool isdef = !strcmp(ssd->savedsession, "Default Settings");
+            /*
+             * PuTTY-beter: a search is not a name. Saving it would only draw
+             * an "Invalid session name" from save_settings(), so refuse it
+             * here, where the reason is obvious from the box's contents.
+             */
+            if (sesssearch_query(ssd->savedsession)) {
+                dlg_beep(dlg);
+                return;
+            }
             if (!ssd->savedsession[0]) {
                 char *name = selected_session_name(ssd, dlg, NULL);
                 if (!name) {
@@ -1074,6 +1225,7 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
             }
             get_sesslist(&ssd->sesslist, false);
             get_sesslist(&ssd->sesslist, true);
+            sesssearch_forget(ssd);   /* the session list has changed */
             dlg_refresh(ssd->editbox, dlg);
             dlg_refresh(ssd->listbox, dlg);
         } else if (!ssd->midsession &&
@@ -1156,6 +1308,13 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
              */
             char *errmsg;
 
+            /*
+             * PuTTY-beter: as for Save, a search is not a folder name.
+             */
+            if (sesssearch_query(ssd->savedsession)) {
+                dlg_beep(dlg);
+                return;
+            }
             if (!ssd->savedsession[0]) {
                 dlg_beep(dlg);
                 return;
@@ -1173,6 +1332,7 @@ static void sessionsaver_handler(dlgcontrol *ctrl, dlgparam *dlg,
 
             get_sesslist(&ssd->sesslist, false);
             get_sesslist(&ssd->sesslist, true);
+            sesssearch_forget(ssd);   /* a folder may have appeared */
             dlg_refresh(ssd->listbox, dlg);
         } else if (ctrl == ssd->okbutton) {
             if (ssd->midsession) {
@@ -2194,6 +2354,15 @@ void setup_config_box(struct controlbox *b, bool midsession,
                                 HELPCTX(session_saved),
                                 sessionsaver_handler, P(ssd), P(NULL));
     ssd->editbox->column = 0;
+    /*
+     * PuTTY-beter: say what the box is for while it is empty. It takes a
+     * session name, the name of a folder to make, or - with a leading '/',
+     * or '\' - a search of the list below. The GTK front end shows this as
+     * a placeholder; see PLAN.md section 4j. It is kept short because the
+     * box is only as wide as the panel, and the front end clips what will
+     * not fit.
+     */
+    ssd->editbox->editbox.placeholder = "Name/folder, or / to search";
     /* Reset columns so that the buttons are alongside the list, rather
      * than alongside that edit box. */
     ctrl_columns(s, 1, 100);

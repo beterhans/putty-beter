@@ -986,9 +986,16 @@ static void mcp_start(GtkFrontend *inst)
      * The tap is installed after the session, so that the input that starts a
      * session (none of it - the window is not even up yet) cannot arrive
      * before the session exists to be told about it.
+     *
+     * PuTTY-beter (fix 2026-11-18): this call could never fire. mcp_start()
+     * runs from new_session_window() *before* inst->term = term_init(), so
+     * inst->term was still NULL here and the tap was never installed - which
+     * is why a line the human typed came back as the device's ("d") instead of
+     * "h". The install now happens in new_session_window() right after
+     * term_init(). Kept, commented, so the original intent is still visible.
      */
-    if (inst->term)
-        term_set_input_tap(inst->term, mcp_input_tap, inst);
+    /* if (inst->term)
+           term_set_input_tap(inst->term, mcp_input_tap, inst); */
 }
 
 /*
@@ -6614,6 +6621,16 @@ void new_session_window(Conf *conf, const char *geometry_string)
     inst->eventlogstuff = eventlogstuff_new();
 
     inst->term = term_init(inst->conf, &inst->ucsdata, &inst->termwin);
+    /*
+     * PuTTY-beter: now that the Terminal exists, install the MCP human-input
+     * tap. mcp_start() ran near the top of this function, before term_init(),
+     * when inst->term was still NULL, so its guarded term_set_input_tap() call
+     * never fired and typing was never attributed to the human. The tap calls
+     * mcp_input_tap() -> mcp_session_note_typed(), which is what tags a typed
+     * line "h". Only installed when MCP is on, so a plain PuTTY pays nothing.
+     */
+    if (inst->mcp)
+        term_set_input_tap(inst->term, mcp_input_tap, inst);
     setup_clipboards(inst, inst->term, inst->conf);
     inst->logctx = log_init(&inst->logpolicy, inst->conf);
     term_provide_logctx(inst->term, inst->logctx);

@@ -545,7 +545,13 @@ static void rl_add_truncated(McpReadResult *r, size_t *alloc,
         return;
     }
 
-    head = (budget - marklen) / 4;
+    /*
+     * 30% head, 70% tail. The head is the start of the line (for a command
+     * echo, the beginning) and the tail is the end (usually the prompt).
+     * This was 25/75; changed to 30/70 (2026-11-18) so it matches the
+     * whole-output truncation `run` does in mcp/src/run.mjs.
+     */
+    head = (budget - marklen) * 3 / 10;
     tail = budget - marklen - head;
     if (head > len)
         head = len;

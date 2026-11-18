@@ -47,16 +47,19 @@ export const DEFAULTS = {
     /*
      * Total output to keep. This is what bounds the *whole* command, and it is
      * the number that decides how much of the caller's context one `run` can
-     * occupy - 32 KB is roughly 8k tokens.
+     * occupy - 8 KB is roughly 2k tokens.
      *
-     * It used to be 256 KB, which is about 65k tokens: the cap protected the
-     * socket and this process's memory, not the model, and it was not settable
-     * from the MCP tool at all. A `find` over a media library would have handed
-     * back 65k tokens with nothing in the reply to say so. `truncated` and
+     * It used to be 256 KB (about 65k tokens), then 32 KB (about 8k): the cap
+     * was protecting the socket and this process's memory, not the model, and
+     * it was not settable from the MCP tool at all. It is ~2k tokens now, and
+     * on purpose: the cap is the caller's *context* budget, and a
+     * small-context agent - a local LM-Studio model, say - must not be flooded
+     * by one listing. A `find` over a media library used to come back with 65k
+     * tokens and nothing in the reply to say so; `truncated` and
      * `omitted_lines` now say so, and the caller can raise this or read the
      * rest from the transcript with the returned cursor.
      */
-    maxOutputBytes: 32 * 1024,
+    maxOutputBytes: 8 * 1024,
     /* Answer `--More--` and friends with a space. */
     answerPager: true,
     maxPagerAnswers: 500,
@@ -66,11 +69,73 @@ export const DEFAULTS = {
     keepTrailingPrompt: false,
 };
 
-function byteLength(lines) {
+/*
+ * The output cap counts the string the caller receives, which is the lines
+ * joined with '\n' - so each line costs its text plus one for the separator.
+ */
+function outputBytes(lines) {
     let n = 0;
     for (const l of lines)
-        n += l.text.length;
+        n += l.text.length + 1;
     return n;
+}
+
+/*
+ * When a `run` prints more than max_output_bytes, keep the head and the tail
+ * and drop the middle, rather than dropping the tail. For a listing the top is
+ * where it starts and the bottom is where the prompt and the newest output
+ * are, and both are usually what the caller wanted; the marker line stands
+ * where the dropped lines were, so a reader can see the output is not
+ * contiguous.
+ *
+ * The split is 30% head / 70% tail by bytes, the same rule the C buffer uses
+ * for a single over-long line (unix/mcp-buffer.c, rl_add_truncated()).
+ *
+ * Returns { head, tail, omitted }, or null when everything fits.
+ */
+export const TRUNC_HEAD_FRAC = 0.30;
+export const TRUNC_MARKER = '... [output truncated] ...';
+
+function truncate(body, maxOutputBytes) {
+    if (outputBytes(body) <= maxOutputBytes)
+        return null;
+
+    const inner = Math.max(0, maxOutputBytes - (TRUNC_MARKER.length + 1));
+    const headBudget = Math.floor(inner * TRUNC_HEAD_FRAC);
+
+    let hb = 0, i = 0;
+    for (; i < body.length; i++) {
+        const c = body[i].text.length + 1;
+        if (hb + c > headBudget)
+            break;
+        hb += c;
+    }
+    /*
+     * If not even one whole line fits the head's share, show the first line
+     * anyway when it fits the budget at all: the first line of a listing is
+     * usually the one that says what the listing is.
+     */
+    if (i === 0 && body.length) {
+        const c = body[0].text.length + 1;
+        if (c <= inner) {
+            hb = c;
+            i = 1;
+        }
+    }
+    const head = body.slice(0, i);
+
+    const tailBudget = Math.max(0, inner - hb);
+    const tail = [];
+    let tb = 0;
+    for (let j = body.length - 1; j >= i; j--) {
+        const c = body[j].text.length + 1;
+        if (tb + c > tailBudget)
+            break;
+        tb += c;
+        tail.unshift(body[j]);
+    }
+
+    return { head, tail, omitted: body.length - head.length - tail.length };
 }
 
 /*
@@ -183,7 +248,6 @@ export async function runOnSession(session, command, options = {}) {
 
     const lines = [];
     const seen = new Set();
-    let bytes = 0;
     let tail = null;
     let ownLineId = null;
     let lastActivity = now();
@@ -215,22 +279,12 @@ export async function runOnSession(session, command, options = {}) {
                 continue;
             seen.add(l.id);
             /*
-             * The line *and its newline*: the cap is on the string the caller
-             * receives, which is the lines joined with '\n', so counting only
-             * the text would let the output run over by one byte per line.
+             * Keep every completed line. The output cap is applied once, at
+             * the end, where the head and the tail can both be kept
+             * (truncate(), above) instead of dropping the tail. This holds a
+             * copy of the transcript window, which the server bounds to about
+             * 4 MB anyway, and the lines come from there in the first place.
              */
-            const cost = l.text.length + 1;
-            if (bytes + cost > o.maxOutputBytes) {
-                /*
-                 * Seen, but not kept: the cursor still moves past it, so the
-                 * caller can read the rest from the transcript. Counting them
-                 * is what makes `truncated` actionable rather than a shrug.
-                 */
-                truncated = true;
-                omittedLines++;
-                continue;
-            }
-            bytes += cost;
             lines.push(l);
             grew = true;
         }
@@ -401,10 +455,32 @@ export async function runOnSession(session, command, options = {}) {
         }
     }
 
+    /*
+     * The cap. Keep the head and the tail and drop the middle. It used to be
+     * applied line by line as the output arrived, which kept the head and
+     * threw the tail away - the wrong end for a listing, where the prompt and
+     * the newest output are at the bottom.
+     */
+    const cut = truncate(body, o.maxOutputBytes);
+    if (cut) {
+        truncated = true;
+        omittedLines = cut.omitted;
+    }
+    const shown = cut ? cut.head.concat(cut.tail) : body;
+
+    let outLines;
+    if (cut) {
+        outLines = cut.head.map((l) => l.text);
+        outLines.push(TRUNC_MARKER);
+        outLines.push(...cut.tail.map((l) => l.text));
+    } else {
+        outLines = body.map((l) => l.text);
+    }
+
     const result = {
         command,
-        output: body.map((l) => l.text).join('\n'),
-        lines: body.map((l) => ({ id: l.id, author: l.author, text: l.text })),
+        output: outLines.join('\n'),
+        lines: shown.map((l) => ({ id: l.id, author: l.author, text: l.text })),
         cursor,
         total_lines: totalLines,
         completed_by: completedBy,

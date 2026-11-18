@@ -154,7 +154,7 @@ a photograph.
 | `expect` | no | a regular expression for the prompt, if the default family does not fit this device |
 | `timeout_ms` | no | give up after this long (default 30000) |
 | `quiet_ms` | no | how long the device must be silent before the command counts as finished (default 400) |
-| `max_output_bytes` | no | cap on the total output kept, default 32768. **This is how much of your context one command can occupy** — see below |
+| `max_output_bytes` | no | cap on the total output kept, default 8192 (about 2k tokens). **This is how much of your context one command can occupy** — see below |
 | `answer_pager` | no | answer `--More--` and friends with a space (default `true`) |
 | `pager_patterns` | no | extra pager patterns, e.g. `["^:$"]` |
 | `keep_trailing_prompt` | no | keep a prompt the device ended with a newline (default `false`) |
@@ -179,9 +179,13 @@ plausible, so you would not know. The bridge therefore queues them: a second
 runs in parallel on purpose; queueing makes the mistake safe, not sensible.
 
 **A big listing is capped, and tells you.** `output` is at most
-`max_output_bytes` (default 32768, about 8k tokens — roughly 300 lines of
+`max_output_bytes` (default 8192, about 2k tokens — roughly 75 lines of
 typical output). If the command printed more, `truncated` is `true` and
-`omitted_lines` says how many lines were dropped. Two ways to get the rest:
+`omitted_lines` says how many lines were dropped. The cap keeps the **head**
+and the **tail** and drops the middle — 30% from the top, 70% from the bottom,
+so the start of the listing and the prompt at the end both survive — with a
+`... [output truncated] ...` marker where the missing lines were. Two ways to
+get the rest:
 
 * raise `max_output_bytes` — deliberately, it is your context you are spending;
 * or `read({session, since: cursor})`, which walks the transcript, where

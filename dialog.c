@@ -261,6 +261,7 @@ dlgcontrol *ctrl_editbox(struct controlset *s, const char *label,
     c->editbox.password = false;
     c->editbox.has_list = false;
     c->editbox.multiline = false;
+    c->editbox.placeholder = NULL;
     c->context2 = context2;
     return c;
 }
@@ -277,6 +278,7 @@ dlgcontrol *ctrl_combobox(struct controlset *s, const char *label,
     c->editbox.password = false;
     c->editbox.has_list = true;
     c->editbox.multiline = false;
+    c->editbox.placeholder = NULL;
     c->context2 = context2;
     return c;
 }
