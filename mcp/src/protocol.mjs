@@ -153,7 +153,17 @@ function warnIfStale() {
 /* ------------------------------------------------------------------ */
 
 /*
- * The first non-comment line of <base>/config-location, if it names a
+ * The redirect file's name. unix/storage.c has it as CONFIG_REDIRECT_FILENAME,
+ * and it carries the same `.conf` extension saved sessions do - it was
+ * `config-location` with no extension until that rename, and the C side stopped
+ * reading the old name then (PLAN.md section 4g, "Sessions are .conf files").
+ * If these two disagree, a relocated configuration folder is invisible to the
+ * bridge, and the bridge quietly falls back to the empty base folder.
+ */
+export const CONFIG_REDIRECT_FILE = 'config-location.conf';
+
+/*
+ * The first non-comment line of <base>/config-location.conf, if it names a
  * directory that is actually there. This mirrors config_redirect_read() in
  * unix/storage.c, including expanding a leading "~" and nothing else.
  *
@@ -165,7 +175,7 @@ function warnIfStale() {
 function readRedirect(base) {
     let text;
     try {
-        text = fs.readFileSync(path.join(base, 'config-location'), 'utf8');
+        text = fs.readFileSync(path.join(base, CONFIG_REDIRECT_FILE), 'utf8');
     } catch {
         return null;
     }
@@ -192,7 +202,7 @@ function readRedirect(base) {
 /*
  * The configuration folder, in the same order unix/storage.c uses: $PUTTYDIR,
  * then ~/.putty, then an XDG directory - and, after each of those, whatever
- * its `config-location` redirect file points at.
+ * its `config-location.conf` redirect file points at.
  *
  * The server writes `mcp-endpoint` here so that a bridge whose $TMPDIR differs
  * from PuTTY's - a GUI app and a shell can disagree - can still find it.

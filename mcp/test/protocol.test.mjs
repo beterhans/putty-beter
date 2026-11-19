@@ -12,8 +12,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { encode, decode, endpointCandidates, serialise } from '../src/protocol.mjs';
+import { encode, decode, endpointCandidates, serialise,
+         CONFIG_REDIRECT_FILE } from '../src/protocol.mjs';
+
+/* The repository root, for the check that the redirect file's name has not
+ * drifted from unix/storage.c. */
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+                              '..', '..');
 
 let passes = 0, failures = 0;
 
@@ -103,16 +110,16 @@ function testFraming() {
 function testRedirect() {
     /*
      * The shape a relocated installation has: $HOME/.putty holds a
-     * config-location file naming the folder actually in use, and the server
-     * writes its endpoint into *that* folder. A bridge that only looked at
-     * $HOME/.putty would never find it.
+     * config-location.conf file naming the folder actually in use, and the
+     * server writes its endpoint into *that* folder. A bridge that only looked
+     * at $HOME/.putty would never find it.
      */
     const home = path.join(work, 'home');
     const base = path.join(home, '.putty');
     const conf = path.join(work, 'config');
 
     fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, 'config-location'),
+    fs.writeFileSync(path.join(base, CONFIG_REDIRECT_FILE),
         `# a comment, then the real location\n\n${conf}\n`);
     endpointFile(path.join(conf, 'mcp-endpoint.4242'), conf, 4242);
 
@@ -122,8 +129,34 @@ function testRedirect() {
 
     const sources = endpointCandidates({}).map((c) => c.source);
     check(sources.includes(path.join(conf, 'mcp-endpoint.4242')),
-          'discovery: follows config-location to the effective folder',
+          'discovery: follows config-location.conf to the effective folder',
           `looked at ${JSON.stringify(sources)}`);
+}
+
+/*
+ * The redirect file's name has to agree with the C side, and it did not: the
+ * bridge kept looking for `config-location` after unix/storage.c had moved to
+ * `config-location.conf`, so a relocated configuration folder went unnoticed
+ * and the bridge fell back to the empty base folder. Both files are in this
+ * repository, so this can be checked rather than remembered.
+ */
+function testRedirectFileName() {
+    const storage = path.join(repoRoot, 'unix', 'storage.c');
+    let text;
+    try {
+        text = fs.readFileSync(storage, 'utf8');
+    } catch {
+        console.log('  skip  redirect file name: unix/storage.c is not next to '
+                    + 'the bridge (standalone checkout)');
+        return;
+    }
+
+    const m = text.match(/#define\s+CONFIG_REDIRECT_FILENAME\s+"([^"]+)"/);
+    check(m && m[1] === CONFIG_REDIRECT_FILE,
+          'discovery: the redirect file name matches unix/storage.c',
+          m ? `storage.c says "${m[1]}", the bridge looks for `
+              + `"${CONFIG_REDIRECT_FILE}"`
+            : 'CONFIG_REDIRECT_FILENAME not found in unix/storage.c');
 }
 
 function testRedirectWithTilde() {
@@ -132,7 +165,7 @@ function testRedirectWithTilde() {
     const base = path.join(home, '.putty');
     const conf = path.join(home, 'moved');
     fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, 'config-location'), '~/moved\n');
+    fs.writeFileSync(path.join(base, CONFIG_REDIRECT_FILE), '~/moved\n');
     endpointFile(path.join(conf, 'mcp-endpoint.7'), conf, 7);
 
     process.env.HOME = home;
@@ -140,7 +173,7 @@ function testRedirectWithTilde() {
 
     const sources = endpointCandidates({}).map((c) => c.source);
     check(sources.includes(path.join(conf, 'mcp-endpoint.7')),
-          'discovery: expands ~ in config-location',
+          'discovery: expands ~ in config-location.conf',
           `looked at ${JSON.stringify(sources)}`);
 }
 
@@ -149,7 +182,8 @@ function testBrokenRedirect() {
     const home = path.join(work, 'home3');
     const base = path.join(home, '.putty');
     fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, 'config-location'), '/no/such/directory\n');
+    fs.writeFileSync(path.join(base, CONFIG_REDIRECT_FILE),
+                     '/no/such/directory\n');
     process.env.HOME = home;
     process.env.TMPDIR = path.join(work, 'tmp3');
 
@@ -252,8 +286,10 @@ console.log('putty-mcp bridge tests\n');
 try {
     console.log('  [test] framing');
     testFraming();
-    console.log('  [test] config-location redirect');
+    console.log('  [test] config-location.conf redirect');
     testRedirect();
+    console.log('  [test] redirect file name');
+    testRedirectFileName();
     console.log('  [test] ~ in the redirect');
     testRedirectWithTilde();
     console.log('  [test] broken redirect');

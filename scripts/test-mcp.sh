@@ -35,10 +35,10 @@ bridge=$root/mcp/bin/putty-mcp.mjs
 work=/tmp/putty-mcp-smoke-$$
 
 # A throwaway HOME, so that the *relocated* configuration shape is what gets
-# tested: $HOME/.putty holds a config-location file naming the folder actually
-# in use, and the session lives in that one. That is how a real installation
-# looks after the configuration has been moved, and it is what the server has
-# to write its mcp-endpoint into and the bridge has to follow.
+# tested: $HOME/.putty holds a config-location.conf file naming the folder
+# actually in use, and the session lives in that one. That is how a real
+# installation looks after the configuration has been moved, and it is what the
+# server has to write its mcp-endpoint into and the bridge has to follow.
 #
 # HOME rather than PUTTYDIR, deliberately: PUTTYDIR is returned directly by
 # make_filename() and so bypasses the redirect altogether, which would test
@@ -47,13 +47,19 @@ home=$work/home
 base=$home/.putty
 conf=$work/config
 mkdir -p "$base" "$conf/sessions" || exit 2
-printf '%s\n' "$conf" > "$base/config-location"
+printf '%s\n' "$conf" > "$base/config-location.conf"
 
 # "hostname" is what the session is called in the list, and =1 not =yes: PuTTY
 # reads its booleans with atoi(). McpWrite is on so that send/key can be
 # tested; reading and writing are separate settings on purpose.
+#
+# Two `.conf` details, both of which this script got wrong for a while and
+# neither of which is cosmetic: a session file is "<name>.conf", so the default
+# settings have to be "Default%20Settings.conf" or pterm never reads this file
+# (no McpEnabled, no server, no socket), and the redirect file above has the
+# same extension.
 printf 'HostName=mcp-smoke\nMcpEnabled=1\nMcpWrite=1\n' \
-    > "$conf/sessions/Default%20Settings"
+    > "$conf/sessions/Default%20Settings.conf"
 
 pterm_pid=
 cleanup() {
@@ -91,12 +97,13 @@ check() {
     fi
 }
 
-/*
- * Progress and debug go to stderr, not stdout. `run` is called inside command
- * substitutions - `$(run list | python3 ...)` - so anything it writes to
- * stdout is fed to the JSON parser along with the JSON, and VERBOSE=1 breaks
- * the test it is meant to help with.
- */
+# Progress and debug go to stderr, not stdout. `run` is called inside command
+# substitutions - `$(run list | python3 ...)` - so anything it writes to
+# stdout is fed to the JSON parser along with the JSON, and VERBOSE=1 breaks
+# the test it is meant to help with.
+# (These were C-style /* */ comments for a while, which the shell executed as
+# commands: `*` globbed, so it printed "/Applications: is a directory" and
+# similar, and could have run something.)
 say() { [ "$VERBOSE" = 1 ] && echo "  ...   $*" >&2 || true; }
 
 run() {

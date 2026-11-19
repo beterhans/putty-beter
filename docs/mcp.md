@@ -498,10 +498,10 @@ there can be several servers:
 2. every `mcp-endpoint*` file in each configuration folder, where the
    configuration folder is `$PUTTYDIR`, `~/.putty`, `$XDG_CONFIG_HOME/putty`
    and `~/.config/putty` — **and, after each of those, whatever its
-   `config-location` redirect file points at**, mirroring `config_redirect_read()`
-   in `unix/storage.c`. Without that the endpoint file of a *relocated*
-   configuration would never be found, which is the shape most installations
-   actually have.
+   `config-location.conf` redirect file points at**, mirroring
+   `config_redirect_read()` in `unix/storage.c`. Without that the endpoint file
+   of a *relocated* configuration would never be found, which is the shape most
+   installations actually have.
 3. every `endpoint*` file in `$TMPDIR/putty-mcp-<uid>/`
 4. a guessed `$TMPDIR/putty-mcp-<uid>/sock`, with `--socket` / `--token-file`
    overriding
@@ -560,9 +560,10 @@ socket files, which its `SIGTERM` would otherwise leave behind. `KEEP=1` keeps
 the temporary folder; `VERBOSE=1` shows every command and its output.
 
 It uses `HOME` rather than `PUTTYDIR` on purpose: `PUTTYDIR` is returned
-directly by `make_filename()` and so bypasses the `config-location` redirect,
-which would mean testing nothing. With `HOME` set, `$HOME/.putty/config-location`
-is followed exactly as a real relocated installation is.
+directly by `make_filename()` and so bypasses the `config-location.conf`
+redirect, which would mean testing nothing. With `HOME` set,
+`$HOME/.putty/config-location.conf` is followed exactly as a real relocated
+installation is.
 
 It is also safe to run while a PuTTY of your own is offering sessions — that is
 what per-process sockets buy — and it looks its session up by name rather than

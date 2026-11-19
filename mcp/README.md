@@ -107,7 +107,7 @@ The bridge looks for endpoints here, newest file first:
 1. `--endpoint`, `$PUTTY_MCP_ENDPOINT`
 2. every `mcp-endpoint*` in each configuration folder — `$PUTTYDIR`, `~/.putty`,
    `$XDG_CONFIG_HOME/putty`, `~/.config/putty` — **and whatever each one's
-   `config-location` file redirects to**, which is how a relocated
+   `config-location.conf` file redirects to**, which is how a relocated
    configuration is found
 3. every `endpoint*` in `$TMPDIR/putty-mcp-<uid>/`
 4. a guessed `$TMPDIR/putty-mcp-<uid>/sock`, with `--socket`/`--token-file`

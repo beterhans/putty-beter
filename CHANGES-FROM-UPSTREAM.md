@@ -120,7 +120,7 @@ tool will give slightly different numbers for the same change.
 | `test/test_mcp_buffer.c` | 95 checks over the capture buffer: escapes split across reads, a bare CR as a progress bar, chunking, eviction and the explicit gap, paging, truncation, author tags, and a sent line staying its own line |
 | `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
 | `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
-| `mcp/test/protocol.test.mjs` | 10 checks over the bridge's framing and its endpoint discovery, including following a `config-location` redirect. No PuTTY, no socket, no display |
+| `mcp/test/protocol.test.mjs` | 19 checks over the bridge's framing and its endpoint discovery, including following a `config-location.conf` redirect and a check that the redirect file's name still matches `CONFIG_REDIRECT_FILENAME` in `unix/storage.c`. No PuTTY, no socket, no display |
 | `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (36 checks) |
 | `mcp/src/detect.mjs` | What the last line of output means: the prompt family, the pager patterns (including the two macOS pagers put where nobody expects them), the waiting-for-input patterns, and the order between them. Pure functions, so it is tested from a table of strings |
 | `mcp/src/run.mjs` | The `run` poll loop: baseline, send, the fence, pager answers, `needs_input`, quiet/prompt completion, timeout, and the human-cancel rule |
@@ -699,9 +699,28 @@ the first one's socket and bound the same path, so the first became silently
 unreachable, and the second's cleanup then unlinked the path again. The bridge
 now merges every server it finds, and a session id carries the pid
 (`72377001`) so ids stay unique across processes without any shared state. The
-bridge also follows a `config-location` redirect when looking for the endpoint
-file, so a *relocated* configuration is found — which is the shape most
-installations actually have.
+bridge also follows a `config-location.conf` redirect when looking for the
+endpoint file, so a *relocated* configuration is found — which is the shape
+most installations actually have.
+
+**The `.conf` rename left the bridge behind.** Two names in the MCP code kept
+their pre-`.conf` spelling after saved sessions and the redirect file gained the
+extension, and neither failure was loud:
+
+* the bridge looked for `<base>/config-location`, which `unix/storage.c` no
+  longer writes, so a *relocated* configuration was invisible to it and it fell
+  back to the empty base folder;
+* `scripts/test-mcp.sh` wrote its session as `Default%20Settings` and its
+  redirect as `config-location`, so `pterm` read neither — it started with no
+  `McpEnabled`, produced no server and no socket, and the smoke test failed at
+  the first step.
+
+`mcp/test/protocol.test.mjs` now checks the redirect file's name against
+`CONFIG_REDIRECT_FILENAME` in `unix/storage.c`, because the two files are in the
+same repository and this is exactly the kind of drift that is invisible until a
+user relocates their configuration. The smoke test is the end-to-end half: with
+both names right, `pterm` finds the session in the relocated folder, starts the
+server, and the bridge follows the redirect to it.
 
 **The agent is given a manual.** `mcp/USER-MANUAL.md` is served by the
 `user_manual` tool, by the `putty://manual` resource, and as a pointer in MCP's
