@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "putty.h"
 #include "storage.h"
+#include "utils/sesspass.h"     /* PuTTY-beter: the saved session password */
 #ifndef NO_GSSAPI
 #include "ssh/gssc.h"
 #include "ssh/gss.h"
@@ -682,6 +683,21 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
         }
     }
 
+    /*
+     * PuTTY-beter: the session's saved login password, written only when
+     * there is one. What goes into the file is the wrapped form, never the
+     * password itself; see utils/sesspass.c and conf.h.
+     */
+    {
+        const char *password = conf_get_str(conf, CONF_session_password);
+
+        if (*password) {
+            char *blob = sesspass_blob_new(password);
+            write_setting_s(sesskey, "SessionPassword", blob);
+            sfree(blob);
+        }
+    }
+
     write_setting_i(sesskey, "Present", 1);
     p = "raw";
     {
@@ -766,6 +782,16 @@ bool load_settings(const char *section, Conf *conf)
     bool exists = (sesskey != NULL);
     load_open_settings(sesskey, conf);
     close_settings_r(sesskey);
+
+    /*
+     * PuTTY-beter: remember which saved session this configuration came from,
+     * so that a successful login can offer to keep the password in that
+     * session's file (PLAN.md section 4k). Set after load_open_settings(),
+     * because NOT_SAVED options are reset to their defaults there. A NULL
+     * section means "Default Settings", which is not a session of its own.
+     */
+    conf_set_str(conf, CONF_session_name,
+                 (section && *section) ? section : "Default Settings");
 
     if (exists && conf_launchable(conf))
         add_session_to_jumplist(section);
@@ -870,6 +896,26 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
 
         sfree(comment);
         sfree(escaped);
+    }
+
+    /*
+     * PuTTY-beter: the session's saved login password. Absent from most
+     * session files, and LOAD_CUSTOM, so the automatic loop above skips it
+     * and the empty default has to be set here as well. A blob this build
+     * does not understand is left alone - it means the file was written by a
+     * different version - and shows as no saved password.
+     */
+    {
+        char *blob = read_setting_s(sesskey, "SessionPassword");
+        char *password = blob ? sesspass_blob_open(blob) : NULL;
+
+        conf_set_str(conf, CONF_session_password, password ? password : "");
+        if (blob && !password && *blob && sesspass_debug_enabled())
+            fprintf(stderr, "sesspass: ignoring a SessionPassword this build "
+                    "does not understand\n");
+
+        sfree(password);
+        sfree(blob);
     }
 
     prot = gpps_raw(sesskey, "Protocol", "default");

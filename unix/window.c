@@ -34,6 +34,7 @@
 #include "terminal.h"
 #include "zmodem.h"          /* PuTTY-beter: ZMODEM file transfer */
 #include "mcp.h"             /* PuTTY-beter: the MCP server */
+#include "utils/sesspass.h"  /* PuTTY-beter: the saved session password */
 #include "gtkcompat.h"
 #include "unifont.h"
 #include "gtkmisc.h"
@@ -202,6 +203,35 @@ struct GtkFrontend {
 
     Terminal *term;
     cmdline_get_passwd_input_state cmdline_get_passwd_state;
+    /*
+     * PuTTY-beter: whether this connection has already used its saved session
+     * password. Tried once, like the command-line password, so that a stored
+     * password the server rejects falls back to the dialog instead of looping
+     * (PLAN.md section 4k).
+     */
+    bool sesspass_tried;
+    /*
+     * PuTTY-beter: how transparent the terminal background is, 0 (solid) to
+     * 255 (fully see-through). Cached from CONF_bg_transparency, because the
+     * drawing code reads it once per cell.
+     */
+    int bg_transparency;
+    /*
+     * PuTTY-beter: whether this window was created with an RGBA visual and
+     * GTK's background painting turned off, which is what makes the
+     * transparency in bg_transparency actually show the desktop. Decided at
+     * window creation, because a visual cannot be changed afterwards.
+     */
+    bool window_is_rgba;
+    /*
+     * PuTTY-beter: the password this connection actually answered the login
+     * prompt with, so that a successful login can offer to keep it in the
+     * session's file (PLAN.md section 4k). NULL if no password has been
+     * supplied yet, or if it came from a proxy's forwarded prompt. Wiped when
+     * the window goes away.
+     */
+    char *sesspass_used;
+    bool sesspass_offered;             /* the "remember it?" dialog has run */
     LogContext *logctx;
     bool exited;
     struct unicode_data ucsdata;
@@ -259,6 +289,16 @@ static void cache_conf_values(GtkFrontend *inst)
     inst->bold_style = conf_get_int(inst->conf, CONF_bold_style);
     inst->window_border = conf_get_int(inst->conf, CONF_window_border);
     inst->cursor_type = conf_get_int(inst->conf, CONF_cursor_type);
+    /*
+     * PuTTY-beter: the background transparency, clamped here so that a value
+     * typed into the box (which is not range-checked) cannot do anything
+     * silly to the drawing code.
+     */
+    inst->bg_transparency = conf_get_int(inst->conf, CONF_bg_transparency);
+    if (inst->bg_transparency < 0)
+        inst->bg_transparency = 0;
+    if (inst->bg_transparency > 255)
+        inst->bg_transparency = 255;
 #ifdef OSX_META_KEY_CONFIG
     inst->meta_mod_mask = 0;
     if (conf_get_bool(inst->conf, CONF_osx_option_meta))
@@ -1076,14 +1116,188 @@ static bool gtk_seat_eof(Seat *seat)
     return true;   /* do respond to incoming EOF with outgoing */
 }
 
+/*
+ * PuTTY-beter: the shape test for "this prompt set is asking for a login
+ * password". The same one cmdline_get_passwd_input() uses. A private-key
+ * passphrase prompt is to_server = false and a username prompt echoes, so this
+ * keeps a login password away from both; from_proxy keeps it away from a
+ * prompt the SSH-to-SSH proxy forwarded (putty.h, from_proxy).
+ */
+static bool sesspass_is_login_prompt(prompts_t *p)
+{
+    return p->n_prompts == 1 && !p->prompts[0]->echo && p->to_server &&
+        !p->from_proxy;
+}
+
+static SeatPromptResult sesspass_try_prompt(GtkFrontend *inst, prompts_t *p)
+{
+    const char *password;
+
+    if (inst->sesspass_tried)
+        return SPR_INCOMPLETE;
+
+    if (!sesspass_is_login_prompt(p))
+        return SPR_INCOMPLETE;
+
+    password = conf_get_str(inst->conf, CONF_session_password);
+    if (!password || !*password)
+        return SPR_INCOMPLETE;
+
+    if (sesspass_debug_enabled())
+        fprintf(stderr, "sesspass: answering the password prompt for \"%s\" "
+                "from the session's saved password\n",
+                conf_get_str(inst->conf, CONF_host));
+
+    prompt_set_result(p->prompts[0], password);
+    inst->sesspass_tried = true;
+    return SPR_OK;
+}
+
+/*
+ * PuTTY-beter: remember the password this connection answered the login
+ * prompt with, so that a successful login can offer to keep it in the
+ * session's file (PLAN.md section 4k). Called from the seat after the prompt
+ * has been answered, and copied at once: the SSH layer frees the prompt set
+ * as soon as the seat returns.
+ */
+static void sesspass_remember_used(GtkFrontend *inst, prompts_t *p)
+{
+    const char *result;
+
+    if (!sesspass_is_login_prompt(p))
+        return;
+    result = prompt_get_result_ref(p->prompts[0]);
+    if (!result || !*result)
+        return;
+
+    if (inst->sesspass_used) {
+        smemclr(inst->sesspass_used, strlen(inst->sesspass_used));
+        sfree(inst->sesspass_used);
+    }
+    inst->sesspass_used = dupstr(result);
+}
+
 static SeatPromptResult gtk_seat_get_userpass_input(Seat *seat, prompts_t *p)
 {
     GtkFrontend *inst = container_of(seat, GtkFrontend, seat);
     SeatPromptResult spr;
     spr = cmdline_get_passwd_input(p, &inst->cmdline_get_passwd_state, true);
     if (spr.kind == SPRK_INCOMPLETE)
+        spr = sesspass_try_prompt(inst, p);   /* PuTTY-beter: saved password */
+    if (spr.kind == SPRK_INCOMPLETE)
         spr = term_get_userpass_input(inst->term, p);
+    if (spr.kind == SPRK_OK)
+        sesspass_remember_used(inst, p);
     return spr;
+}
+
+/*
+ * PuTTY-beter: offer to keep the password that has just been accepted, when
+ * the session has none saved (PLAN.md section 4k).
+ *
+ * The offer is made from a toplevel callback rather than straight from
+ * notify_session_started, because that runs in the middle of the backend's
+ * packet processing: putting up a modal dialog there would re-enter the event
+ * loop in the middle of a protocol handler.
+ */
+static void sesspass_offer_result(void *vctx, int result);
+
+static void sesspass_offer_callback(void *vctx)
+{
+    GtkFrontend *inst = (GtkFrontend *)vctx;
+    const char *name;
+    char *title, *msg;
+    GtkWidget *dialog;
+
+    if (inst->exited || !inst->window)
+        return;
+    if (!inst->sesspass_used || !*inst->sesspass_used)
+        return;
+
+    name = conf_get_str(inst->conf, CONF_session_name);
+    if (!name || !*name || !strcmp(name, "Default Settings"))
+        return;            /* not a saved session: nowhere to save it */
+
+    title = dupcat(appname, " Remember Password");
+    msg = dupprintf("Login succeeded. Remember this password for the session"
+                    " \"%s\", so that connecting to it does not have to ask"
+                    " for it again?", name);
+    dialog = create_message_box(
+        inst->window, title, msg,
+        string_width("Remember this password for the session"), false,
+        &buttons_yn, sesspass_offer_result, inst);
+    register_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD, dialog);
+    sfree(title);
+    sfree(msg);
+}
+
+static void sesspass_offer_error_cb(void *vctx, int result)
+{
+    GtkFrontend *inst = (GtkFrontend *)vctx;
+    unregister_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD);
+}
+
+static void sesspass_offer_result(void *vctx, int result)
+{
+    GtkFrontend *inst = (GtkFrontend *)vctx;
+    const char *name;
+    Conf *conf;
+    char *errmsg;
+
+    unregister_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD);
+
+    if (result != 1 || !inst->sesspass_used || !*inst->sesspass_used)
+        return;
+
+    name = conf_get_str(inst->conf, CONF_session_name);
+    if (!name || !*name || !strcmp(name, "Default Settings"))
+        return;
+
+    /*
+     * Save the whole configuration, the way Save in the configuration dialog
+     * does, with the password added. Keep the in-memory copy in step too, so
+     * that Restart Session logs in without asking.
+     */
+    conf = conf_copy(inst->conf);
+    conf_set_str(conf, CONF_session_password, inst->sesspass_used);
+    errmsg = save_settings(name, conf);
+    conf_free(conf);
+
+    if (errmsg) {
+        char *title = dupcat(appname, " Remember Password");
+        GtkWidget *dialog = create_message_box(
+            inst->window, title, errmsg,
+            string_width("Remember this password for the session"), false,
+            &buttons_ok, sesspass_offer_error_cb, inst);
+        register_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD, dialog);
+        sfree(title);
+        sfree(errmsg);
+        return;
+    }
+
+    conf_set_str(inst->conf, CONF_session_password, inst->sesspass_used);
+
+    if (sesspass_debug_enabled())
+        fprintf(stderr, "sesspass: saved the password for session \"%s\"\n",
+                name);
+}
+
+static void gtk_seat_notify_session_started(Seat *seat)
+{
+    GtkFrontend *inst = container_of(seat, GtkFrontend, seat);
+    const char *saved;
+
+    if (inst->sesspass_offered)
+        return;
+    if (!inst->sesspass_used || !*inst->sesspass_used)
+        return;
+
+    saved = conf_get_str(inst->conf, CONF_session_password);
+    if (saved && *saved)
+        return;                    /* already saved: nothing to offer */
+
+    inst->sesspass_offered = true;
+    queue_toplevel_callback(sesspass_offer_callback, inst);
 }
 
 static bool gtk_seat_is_utf8(Seat *seat)
@@ -1137,7 +1351,7 @@ static const SeatVtable gtk_seat_vt = {
     .sent = nullseat_sent,
     .banner = nullseat_banner_to_stderr,
     .get_userpass_input = gtk_seat_get_userpass_input,
-    .notify_session_started = nullseat_notify_session_started,
+    .notify_session_started = gtk_seat_notify_session_started,
     .notify_remote_exit = gtk_seat_notify_remote_exit,
     .notify_remote_disconnect = nullseat_notify_remote_disconnect,
     .connection_fatal = gtk_seat_connection_fatal,
@@ -1531,14 +1745,20 @@ static void drawing_area_setup(GtkFrontend *inst, int width, int height)
     }
 
 #if GTK_CHECK_VERSION(2,22,0)
+    /*
+     * PuTTY-beter: this surface is the whole window, so it needs an alpha
+     * channel whenever the terminal's background is allowed to be
+     * translucent (CONF_bg_transparency); an opaque surface would simply hide
+     * the desktop. When the background is solid the alpha is unused.
+     */
     inst->surface = gdk_window_create_similar_surface(
         gtk_widget_get_window(inst->area),
-        CAIRO_CONTENT_COLOR, inst->backing_w, inst->backing_h);
+        CAIRO_CONTENT_COLOR_ALPHA, inst->backing_w, inst->backing_h);
 #else
     cairo_t *tmp_cr = gdk_cairo_create(gtk_widget_get_window(inst->area));
     inst->surface = cairo_surface_create_similar(
         cairo_get_target(tmp_cr),
-        CAIRO_CONTENT_COLOR, inst->backing_w, inst->backing_h);
+        CAIRO_CONTENT_COLOR_ALPHA, inst->backing_w, inst->backing_h);
     cairo_destroy(tmp_cr);
 #endif
 #endif
@@ -3310,6 +3530,12 @@ static void delete_inst(GtkFrontend *inst)
         conf_free(inst->conf);
         inst->conf = NULL;
     }
+    if (inst->sesspass_used) {
+        /* PuTTY-beter: the password this connection logged in with. */
+        smemclr(inst->sesspass_used, strlen(inst->sesspass_used));
+        sfree(inst->sesspass_used);
+        inst->sesspass_used = NULL;
+    }
     if (inst->logctx) {
         log_free(inst->logctx);
         inst->logctx = NULL;
@@ -3571,22 +3797,28 @@ static void gtkwin_request_resize(TermWin *tw, int w, int h)
 }
 
 #if GTK_CHECK_VERSION(3,0,0)
-char *colour_to_css(const GdkColor *col)
+char *colour_to_css(const GdkColor *col, double alpha)
 {
     GdkRGBA rgba;
     rgba.red = col->red / 65535.0;
     rgba.green = col->green / 65535.0;
     rgba.blue = col->blue / 65535.0;
-    rgba.alpha = 1.0;
+    /*
+     * PuTTY-beter: the alpha is normally 1 (opaque); it is less than that when
+     * the terminal background is made translucent (CONF_bg_transparency), so
+     * that the widget's own background matches what the terminal paints.
+     */
+    rgba.alpha = alpha;
     return gdk_rgba_to_string(&rgba);
 }
 #endif
 
-void set_gtk_widget_background(GtkWidget *widget, const GdkColor *col)
+void set_gtk_widget_background(GtkWidget *widget, const GdkColor *col,
+                               double alpha)
 {
 #if GTK_CHECK_VERSION(3,0,0)
     GtkCssProvider *provider = gtk_css_provider_new();
-    char *col_css = colour_to_css(col);
+    char *col_css = colour_to_css(col, alpha);
     char *data = dupprintf(
         "#drawing-area, #top-level { background-color: %s; }\n", col_css);
     gtk_css_provider_load_from_data(provider, data, -1, NULL);
@@ -3605,12 +3837,28 @@ void set_gtk_widget_background(GtkWidget *widget, const GdkColor *col)
 #endif
 }
 
+static double bg_alpha(GtkFrontend *inst);
+
 void set_window_background(GtkFrontend *inst)
 {
+    /*
+     * PuTTY-beter: the widget background follows the terminal's, including
+     * its transparency, so that the border between the text and the window
+     * edge does not stay opaque around a see-through terminal.
+     *
+     * Only when the window really is translucent, though: on a solid window
+     * the alpha would go nowhere useful - GTK composites it against the
+     * window's own background - while macOS would still colour the title bar
+     * from it, which is how a native bar goes see-through for no reason.
+     */
+    double alpha = inst->window_is_rgba ? bg_alpha(inst) : 1.0;
+
     if (inst->area)
-        set_gtk_widget_background(GTK_WIDGET(inst->area), &inst->cols[258]);
+        set_gtk_widget_background(GTK_WIDGET(inst->area), &inst->cols[258],
+                                  alpha);
     if (inst->window)
-        set_gtk_widget_background(GTK_WIDGET(inst->window), &inst->cols[258]);
+        set_gtk_widget_background(GTK_WIDGET(inst->window), &inst->cols[258],
+                                  alpha);
 }
 
 static void gtkwin_palette_set(TermWin *tw, unsigned start, unsigned ncolours,
@@ -4452,6 +4700,23 @@ static void draw_update(GtkFrontend *inst, int x, int y, int w, int h)
     gtk_widget_queue_draw_area(inst->area, x, y, w, h);
 }
 
+/*
+ * PuTTY-beter: how opaque the terminal's background colour is painted, from
+ * the "background transparency" setting. 0 - the default - is fully opaque;
+ * 255 is fully see-through, leaving only the text. Kept as a double because
+ * that is what cairo and the CSS both want.
+ */
+static double bg_alpha(GtkFrontend *inst)
+{
+    int t = inst->bg_transparency;
+
+    if (t <= 0)
+        return 1.0;
+    if (t >= 255)
+        return 0.0;
+    return (255 - t) / 255.0;
+}
+
 #ifdef DRAW_TEXT_CAIRO
 static void cairo_set_source_rgb_dim(cairo_t *cr, double r, double g, double b,
                                      bool dim)
@@ -4485,10 +4750,26 @@ static void draw_set_colour(GtkFrontend *inst, int col, bool dim)
 #endif
 #ifdef DRAW_TEXT_CAIRO
     if (inst->uctx.type == DRAWTYPE_CAIRO) {
-        cairo_set_source_rgb_dim(inst->uctx.u.cairo.cr,
-                                 inst->cols[col].red / 65535.0,
-                                 inst->cols[col].green / 65535.0,
-                                 inst->cols[col].blue / 65535.0, dim);
+        double r = inst->cols[col].red / 65535.0;
+        double g = inst->cols[col].green / 65535.0;
+        double b = inst->cols[col].blue / 65535.0;
+
+        /*
+         * PuTTY-beter: the terminal's *default* background can be painted
+         * with an alpha, so that the desktop shows through it. Only that one
+         * colour is affected: a cell with a background of its own - a
+         * highlighted line, a coloured `ls' entry, the cursor - stays solid
+         * and readable.
+         */
+        if (col == OSC4_COLOUR_bg) {
+            cairo_set_source_rgba(inst->uctx.u.cairo.cr,
+                                  dim ? r * 2 / 3 : r,
+                                  dim ? g * 2 / 3 : g,
+                                  dim ? b * 2 / 3 : b,
+                                  bg_alpha(inst));
+        } else {
+            cairo_set_source_rgb_dim(inst->uctx.u.cairo.cr, r, g, b, dim);
+        }
     }
 #endif
 }
@@ -5714,6 +5995,30 @@ static void after_change_settings_dialog(void *vctx, int retval)
         need_size = false;
 
         /*
+         * PuTTY-beter: the background transparency may have changed. The
+         * drawing code reads it per paint, so what is needed is a repaint -
+         * the border is painted by draw_backing_rect(), the text by the
+         * terminal's own invalidate. (If the window was created solid there
+         * is no RGBA visual behind it and nothing can be seen through it; the
+         * value still applies as soon as the session is reopened, since the
+         * visual is chosen when the window is made.)
+         */
+        if (conf_get_int(oldconf, CONF_bg_transparency) !=
+            conf_get_int(newconf, CONF_bg_transparency)) {
+            if (inst->window_is_rgba) {
+                set_window_background(inst);
+                draw_backing_rect(inst);
+                if (inst->term)
+                    term_invalidate(inst->term);
+                gtk_widget_queue_draw(inst->area);
+            } else if (conf_get_int(newconf, CONF_bg_transparency) > 0) {
+                logevent(inst->logctx,
+                         "Background transparency will take effect when this"
+                         " session is reopened\n");
+            }
+        }
+
+        /*
          * If the scrollbar needs to be shown, hidden, or moved
          * from one end to the other of the window, do so now.
          */
@@ -6101,6 +6406,19 @@ static void start_backend(GtkFrontend *inst)
 
     inst->cmdline_get_passwd_state = cmdline_get_passwd_input_state_new;
 
+    /*
+     * PuTTY-beter: a fresh connection gets a fresh chance at the saved
+     * session password, and a fresh chance to remember one (PLAN.md
+     * section 4k).
+     */
+    inst->sesspass_tried = false;
+    inst->sesspass_offered = false;
+    if (inst->sesspass_used) {
+        smemclr(inst->sesspass_used, strlen(inst->sesspass_used));
+        sfree(inst->sesspass_used);
+        inst->sesspass_used = NULL;
+    }
+
     vt = select_backend(inst->conf);
 
     seat_set_trust_status(&inst->seat, true);
@@ -6375,6 +6693,74 @@ void new_session_window(Conf *conf, const char *geometry_string)
             gtk_window_set_resizable(GTK_WINDOW(inst->window), false);
     }
 #endif
+
+    /*
+     * PuTTY-beter: make the window able to be translucent, when the session
+     * asks for a transparent background (CONF_bg_transparency). A compositor
+     * will not blend against a window that insists on being opaque, so both
+     * widgets need an RGBA visual, and GTK must stop painting their
+     * backgrounds: the drawing area covers its own, and the alpha in the
+     * backing surface decides how much desktop shows through.
+     *
+     * The visual can only be chosen before a widget is realised, which is why
+     * this is here, and why the setting is read once, when the window is
+     * created. The alpha itself is applied per paint, so changing the amount
+     * with the session running is still visible.
+     */
+    if (conf_get_int(inst->conf, CONF_bg_transparency) > 0) {
+        GdkScreen *screen = gtk_widget_get_screen(GTK_WIDGET(inst->window));
+        GdkVisual *visual = screen ? gdk_screen_get_rgba_visual(screen) : NULL;
+
+        if (visual) {
+            /*
+             * A non-opaque window loses its native title bar: macOS paints
+             * that bar over the window's own background, and GDK makes that
+             * background fully transparent as soon as the window is
+             * non-opaque (measured: titlebarTransparent=0, opaque=0,
+             * backgroundColor alpha=0, versus opaque=1/alpha=1 when the
+             * window is solid). The two cannot be separated, so the bar is
+             * drawn by GTK instead - client-side decoration - which stays
+             * opaque because GTK paints it from the theme. It is a
+             * different-looking bar from the native one: that is the price of
+             * putting a hole in the window.
+             *
+             * gtk_window_set_titlebar() does NOT show the bar - it only shows
+             * it if the window is already visible - and this window is shown
+             * with gtk_widget_show(), which is not recursive, so without the
+             * explicit show the bar never appears at all.
+             */
+            GtkWidget *hb = gtk_header_bar_new();
+            gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(hb), true);
+            /* No title of its own: GtkHeaderBar shows the window's title. */
+            gtk_window_set_titlebar(GTK_WINDOW(inst->window), hb);
+            /* Put the buttons where a Mac user looks for them. */
+            gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(hb),
+                                                 "close,minimize,maximize:");
+            gtk_widget_show(hb);
+
+            gtk_widget_set_visual(GTK_WIDGET(inst->window), visual);
+            gtk_widget_set_visual(GTK_WIDGET(inst->area), visual);
+            /*
+             * The window paints nothing itself; the drawing area carries the
+             * alpha, so what shows through is the desktop and not the window
+             * colour as well.
+             */
+            gtk_widget_set_app_paintable(GTK_WIDGET(inst->window), true);
+            gtk_widget_set_app_paintable(GTK_WIDGET(inst->area), true);
+            inst->window_is_rgba = true;
+            DIAG("background transparency %d: using an RGBA visual",
+                 conf_get_int(inst->conf, CONF_bg_transparency));
+        } else {
+            /*
+             * No compositor, or one that offers no RGBA visual (an X11
+             * session without a compositing manager, say). Better to leave
+             * the window solid than to paint a translucent background with
+             * nothing behind it.
+             */
+            fprintf(stderr, "%s: no RGBA visual, so the background cannot be "
+                    "made transparent\n", appname);
+        }
+    }
 
     inst->width = conf_get_int(inst->conf, CONF_width);
     inst->height = conf_get_int(inst->conf, CONF_height);

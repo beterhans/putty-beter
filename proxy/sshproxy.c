@@ -370,7 +370,13 @@ static SeatPromptResult sshproxy_get_userpass_input(Seat *seat, prompts_t *p)
         /*
          * If we have access to the outer Seat, pass this prompt
          * request on to it.
+         *
+         * PuTTY-beter: mark it as the proxy's own first. The client seat is
+         * where a saved session's password is injected, and this prompt -
+         * the proxy's SSH password - would otherwise look exactly like the
+         * session's own, and be answered with the wrong secret.
          */
+        p->from_proxy = true;
         return seat_get_userpass_input(wrap(sp->clientseat), p);
     }
 

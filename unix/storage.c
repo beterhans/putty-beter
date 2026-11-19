@@ -28,10 +28,24 @@
 
 enum {
     INDEX_DIR, INDEX_HOSTKEYS, INDEX_HOSTKEYS_TMP, INDEX_RANDSEED,
-    INDEX_SESSIONDIR, INDEX_SESSION, INDEX_HOSTCADIR, INDEX_HOSTCA
+    INDEX_SESSIONDIR, INDEX_SESSION, INDEX_SESSIONFILE,
+    INDEX_HOSTCADIR, INDEX_HOSTCA
 };
 
 static const char hex[16] = "0123456789ABCDEF";
+
+/*
+ * PuTTY-beter: a saved session is a .conf file.
+ *
+ * The extension is what marks a file in the sessions directory as a session,
+ * so that anything else that ends up there by accident - Finder's .DS_Store,
+ * a stray copy, an editor's backup - is simply not listed. Folder names have
+ * no extension: they are directories.
+ *
+ * It is applied in make_filename(), so reading, writing, deleting and moving a
+ * session all agree, and stripped again when the directory is listed.
+ */
+#define SESSION_FILE_SUFFIX ".conf"
 
 /*
  * PuTTY-beter: session folders.
@@ -54,18 +68,34 @@ static const char hex[16] = "0123456789ABCDEF";
 /*
  * Is a single path component usable as a folder or session name? Empty, "."
  * and ".." are not, because they would let a name walk out of the sessions
- * directory.
+ * directory. A name beginning with '.' is not either: the listing hides
+ * dotfiles (see session_entry_visible below), so anything we allowed to be
+ * called ".foo" would be saved and then be invisible.
  */
 static bool session_component_ok(ptrlen c)
 {
     if (c.len == 0)
         return false;
-    if (c.len == 1 && ((const char *)c.ptr)[0] == '.')
-        return false;
-    if (c.len == 2 && ((const char *)c.ptr)[0] == '.' &&
-        ((const char *)c.ptr)[1] == '.')
+    if (((const char *)c.ptr)[0] == '.')
         return false;
     return true;
+}
+
+/*
+ * Should a directory entry be shown as a session or folder?
+ *
+ * PuTTY-beter: no if its name begins with '.', which is the Unix convention
+ * for a hidden file. That is what keeps Finder's .DS_Store (and ._applefile,
+ * .localized and friends) out of the session list, without having to change
+ * the names of session files - the sessions directory is meant to be
+ * browsable in the Finder, and the Finder puts its own files in it.
+ *
+ * Nothing saveable can be hidden by this, because a session or folder name
+ * that begins with '.' is refused (session_component_ok above).
+ */
+static bool session_entry_visible(const char *d_name)
+{
+    return d_name[0] != '.';
 }
 
 /* Is a whole session name (a '/'-separated path) usable? */
@@ -286,7 +316,7 @@ static char *make_filename(int index, const char *subname)
         sfree(tmp);
         return ret;
     }
-    if (index == INDEX_SESSION) {
+    if (index == INDEX_SESSION || index == INDEX_SESSIONFILE) {
         strbuf *sb = strbuf_new();
         tmp = make_filename(INDEX_SESSIONDIR, NULL);
         put_fmt(sb, "%s/", tmp);
@@ -300,6 +330,13 @@ static char *make_filename(int index, const char *subname)
              */
             make_session_filename(subname, sb);
         }
+        /*
+         * PuTTY-beter: INDEX_SESSIONFILE is the file of a saved session,
+         * which is marked by its extension; INDEX_SESSION is a folder, which
+         * is a plain directory and has no extension.
+         */
+        if (index == INDEX_SESSIONFILE)
+            put_dataz(sb, SESSION_FILE_SUFFIX);
         return strbuf_to_str(sb);
     }
     if (index == INDEX_HOSTKEYS) {
@@ -369,7 +406,7 @@ static char *make_filename(int index, const char *subname)
  * Set PUTTY_CONFIG_DEBUG=1 in the environment to trace what happens.
  */
 
-#define CONFIG_REDIRECT_FILENAME "config-location"
+#define CONFIG_REDIRECT_FILENAME "config-location.conf"
 #define CONFIG_DEFAULT_SUBDIR "Documents/putty-beter-config"
 
 /* The pieces of a configuration that move with it. */
@@ -995,7 +1032,7 @@ settings_w *open_settings_w(const char *sessionname, char **errmsg)
     }
     sfree(filename);
 
-    filename = make_filename(INDEX_SESSION, sessionname);
+    filename = make_filename(INDEX_SESSIONFILE, sessionname);
     fp = fopen(filename, "w");
     if (!fp) {
         *errmsg = dupprintf("Unable to save session: open(\"%s\") "
@@ -1116,7 +1153,7 @@ settings_r *open_settings_r(const char *sessionname)
     char *line;
     settings_r *toret;
 
-    filename = make_filename(INDEX_SESSION, sessionname);
+    filename = make_filename(INDEX_SESSIONFILE, sessionname);
     fp = fopen(filename, "r");
     sfree(filename);
     if (!fp)
@@ -1274,7 +1311,7 @@ void close_settings_r(settings_r *handle)
 void del_settings(const char *sessionname)
 {
     char *filename;
-    filename = make_filename(INDEX_SESSION, sessionname);
+    filename = make_filename(INDEX_SESSIONFILE, sessionname);
     unlink(filename);
     sfree(filename);
 }
@@ -1300,17 +1337,22 @@ static void enum_sessions_recurse(settings_e *e, const char *dir,
 {
     DIR *dp = opendir(dir);
     struct dirent *de;
+    size_t suffixlen = strlen(SESSION_FILE_SUFFIX);
 
     if (!dp)
         return;
 
     while ((de = readdir(dp)) != NULL) {
-        char *full, *name, *childprefix;
+        char *full, *name, *childprefix, *stem = NULL;
+        const char *leaf_name;
+        size_t leaflen;
         struct stat st;
         strbuf *leaf;
 
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
             continue;
+        if (!session_entry_visible(de->d_name))
+            continue;                  /* hidden: .DS_Store and friends */
 
         full = dupprintf("%s/%s", dir, de->d_name);
         if (lstat(full, &st) < 0) {
@@ -1318,10 +1360,33 @@ static void enum_sessions_recurse(settings_e *e, const char *dir,
             continue;                  /* dangling symlink, or similar */
         }
 
+        leaf_name = de->d_name;
+        leaflen = strlen(leaf_name);
+
+        if (S_ISREG(st.st_mode)) {
+            /*
+             * PuTTY-beter: only a .conf file is a session. Anything else
+             * that finds its way in here - a stray copy, an editor's backup -
+             * is left alone and not listed. The extension is stripped before
+             * the name is decoded; the encoding never turns '.' into
+             * anything else, so the suffix is unambiguous.
+             */
+            if (leaflen <= suffixlen ||
+                strcmp(leaf_name + leaflen - suffixlen,
+                       SESSION_FILE_SUFFIX)) {
+                sfree(full);
+                continue;
+            }
+            stem = dupstr(leaf_name);
+            stem[leaflen - suffixlen] = '\0';
+            leaf_name = stem;
+        }
+
         leaf = strbuf_new();
-        decode_session_filename(de->d_name, leaf);
+        decode_session_filename(leaf_name, leaf);
         name = dupprintf("%s%s", prefix, leaf->s);
         strbuf_free(leaf);
+        sfree(stem);
 
         if (S_ISDIR(st.st_mode) && depth < 16) {
             /* A folder: report it even when it is empty. */
@@ -1450,6 +1515,15 @@ char *session_mkdir(const char *name)
         sfree(stripped);
         return dupstr("Please specify a folder name.");
     }
+    if (!session_name_is_valid(stripped)) {
+        /*
+         * PuTTY-beter: the listing hides dotfiles, so a folder named ".x"
+         * would be created and then not shown. Refuse the name instead.
+         */
+        sfree(stripped);
+        return dupstr("That is not a usable folder name: a folder name "
+                      "cannot begin with '.'.");
+    }
 
     path = make_filename(INDEX_SESSION, stripped);
     if (mkdir(path, 0700) < 0) {
@@ -1510,8 +1584,12 @@ char *session_move(const char *oldname, const char *newname)
 
     /*
      * A folder name from get_sesslist() ends in '/'; that marks it as a
-     * folder but is not part of the path.
+     * folder but is not part of the path. It also says which kind of thing
+     * this is: a session is a .conf file, a folder is a plain directory.
      */
+    bool old_is_folder = (oldname[strlen(oldname)-1] == '/');
+    bool new_is_folder = (newname[strlen(newname)-1] == '/');
+
     olds = session_name_strip(oldname);
     news = session_name_strip(newname);
 
@@ -1527,8 +1605,10 @@ char *session_move(const char *oldname, const char *newname)
         return NULL;
     }
 
-    oldpath = make_filename(INDEX_SESSION, olds);
-    newpath = make_filename(INDEX_SESSION, news);
+    oldpath = make_filename(
+        old_is_folder ? INDEX_SESSION : INDEX_SESSIONFILE, olds);
+    newpath = make_filename(
+        new_is_folder ? INDEX_SESSION : INDEX_SESSIONFILE, news);
 
     if (lstat(oldpath, &st) < 0) {
         err = dupprintf("There is no session called \"%s\".", olds);
@@ -1593,8 +1673,11 @@ int session_folder_entries(const char *name)
     }
 
     while ((de = readdir(dp)) != NULL) {
-        if (strcmp(de->d_name, ".") && strcmp(de->d_name, ".."))
-            n++;
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        if (!session_entry_visible(de->d_name))
+            continue;                  /* .DS_Store and friends */
+        n++;
     }
     closedir(dp);
 
@@ -1668,19 +1751,29 @@ char *session_rmdir(const char *name)
         bool empty = true;
 
         while ((de = readdir(dp)) != NULL) {
-            if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..")) {
-                empty = false;
-                break;
-            }
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                continue;
+            if (!session_entry_visible(de->d_name))
+                continue;              /* .DS_Store does not count */
+            empty = false;
+            break;
         }
         closedir(dp);
 
-        if (!empty)
+        if (!empty) {
             err = dupprintf("The folder \"%s\" is not empty. Move or delete "
                             "the sessions in it first.", stripped);
-        else if (rmdir(path) < 0)
-            err = dupprintf("Unable to remove folder \"%s\": %s",
-                            stripped, strerror(errno));
+        } else {
+            /*
+             * PuTTY-beter: nothing visible is left, but a stray hidden file
+             * (Finder's .DS_Store) would still stop rmdir(), so clear out
+             * whatever remains before removing the folder itself.
+             */
+            err = config_remove_path(path);
+            if (err)
+                err = dupprintf("Unable to remove folder \"%s\": %s",
+                                stripped, err);
+        }
     }
 
     sfree(path);

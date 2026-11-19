@@ -19,6 +19,10 @@
 
 #include "putty.h"
 #include "storage.h"
+#include "utils/sesspass.h"     /* PuTTY-beter: the saved session password */
+
+/* PuTTY-beter: a saved session is a .conf file in the sessions directory. */
+#define SESSION_EXT ".conf"
 
 /* ---- the platform hooks this program does not otherwise need ---------- */
 
@@ -157,6 +161,36 @@ static bool exists(const char *rel)
     return ret;
 }
 
+/* Does the file for saved session `name` exist? */
+static bool exists_session(const char *name)
+{
+    char *rel = dupprintf("%s" SESSION_EXT, name);
+    bool ret = exists(rel);
+    sfree(rel);
+    return ret;
+}
+
+/* The whole text of a saved session's file, or NULL. Caller frees. */
+static char *read_session_file(const char *name)
+{
+    char *dir = getenv("PUTTYDIR");
+    char *path = dupprintf("%s/sessions/%s" SESSION_EXT, dir, name);
+    FILE *fp = fopen(path, "r");
+    strbuf *sb;
+    int c;
+
+    sfree(path);
+    if (!fp)
+        return NULL;
+
+    sb = strbuf_new();
+    while ((c = getc(fp)) != EOF)
+        put_byte(sb, c);
+    fclose(fp);
+
+    return strbuf_to_str(sb);
+}
+
 static void expect_err(const char *what, const char *err)
 {
     if (!err)
@@ -184,8 +218,8 @@ int main(void)
     /* A plain session, as before. */
     save("Alpha", "alpha.example.com");
     expect_listed("Alpha", true);
-    if (!exists("Alpha"))
-        fail("session file Alpha should exist");
+    if (!exists_session("Alpha"))
+        fail("session file Alpha" SESSION_EXT " should exist");
 
     /* A folder, empty at first. */
     {
@@ -199,7 +233,7 @@ int main(void)
     /* A session inside it: the folder must exist as a directory. */
     save("Work/beta", "beta.example.com");
     expect_listed("Work/beta", true);
-    if (!exists("Work/beta"))
+    if (!exists_session("Work/beta"))
         fail("session file Work/beta should exist");
 
     /* Nesting. */
@@ -225,7 +259,7 @@ int main(void)
     }
     expect_listed("Work/beta", false);
     expect_listed("beta", true);
-    if (!exists("beta") || exists("Work/beta"))
+    if (!exists_session("beta") || exists_session("Work/beta"))
         fail("Work/beta should have moved to beta");
 
     /* Moving onto an existing name must be refused, not clobber it. */
@@ -254,7 +288,7 @@ int main(void)
     expect_listed("Work/Sub/", false);
     expect_listed("Other/Sub/", true);
     expect_listed("Other/Sub/gamma", true);    /* contents moved with it */
-    if (!exists("Other/Sub/gamma") || exists("Work/Sub"))
+    if (!exists_session("Other/Sub/gamma") || exists("Work/Sub"))
         fail("Work/Sub should have moved into Other");
 
     /* A folder must not be moved inside itself. */
@@ -325,7 +359,7 @@ int main(void)
         }
         sfree(errmsg);
     }
-    if (exists("../evil") || exists("..%2Fevil"))
+    if (exists_session("../evil") || exists_session("..%2Fevil"))
         fail("saving \"../evil\" created a file anyway");
     expect_listed("../evil", false);
     if (session_name_is_valid("../evil"))
@@ -377,6 +411,92 @@ int main(void)
         expect_err("session_rmdir_force(Alpha)", session_rmdir_force("Alpha"));
         expect_err("session_rmdir_force(nothing)",
                    session_rmdir_force("Not There"));
+    }
+
+    /*
+     * PuTTY-beter: dotfiles are hidden from the session list. Finder drops a
+     * .DS_Store into the sessions directory, and it must not turn up as a
+     * session - nor must a folder with nothing but a .DS_Store in it count as
+     * occupied.
+     */
+    {
+        char *dir = getenv("PUTTYDIR");
+        char *path;
+        FILE *fp;
+
+        path = dupprintf("%s/sessions/.DS_Store", dir);
+        fp = fopen(path, "w");
+        if (fp) { fputs("junk", fp); fclose(fp); }
+        sfree(path);
+
+        expect_listed(".DS_Store", false);
+        expect_listed(".", false);
+
+        /* And it does not disturb the sessions that are there. */
+        save("Visible", "visible.example.com");
+        expect_listed("Visible", true);
+
+        /*
+         * A session is a .conf file, and only .conf files are sessions, so
+         * anything else dropped in the directory is ignored rather than
+         * listed as a session.
+         */
+        if (!exists_session("Visible"))
+            fail("a saved session should be a " SESSION_EXT " file");
+        path = dupprintf("%s/sessions/notes.txt", dir);
+        fp = fopen(path, "w");
+        if (fp) { fputs("not a session", fp); fclose(fp); }
+        sfree(path);
+        expect_listed("notes.txt", false);
+        expect_listed("notes", false);
+
+        /*
+         * A name beginning with '.' is not usable at all, so nothing can be
+         * saved or made that would then be invisible.
+         */
+        if (session_name_is_valid(".hidden"))
+            fail("\".hidden\" should be an invalid session name");
+        if (session_name_is_valid("Work/.hidden"))
+            fail("\"Work/.hidden\" should be an invalid session name");
+        {
+            char *errmsg = NULL;
+            settings_w *w = open_settings_w(".hidden", &errmsg);
+            if (w) {
+                fail("saving \".hidden\" should have been refused");
+                close_settings_w(w);
+            }
+            sfree(errmsg);
+        }
+        expect_err("session_mkdir(.hidden)", session_mkdir(".hidden"));
+        expect_listed(".hidden/", false);
+
+        /* A folder holding only a dotfile counts as empty, and can go. */
+        {
+            char *err = session_mkdir("Dotty");
+            if (err) { fail("session_mkdir(Dotty): %s", err); sfree(err); }
+
+            path = dupprintf("%s/sessions/Dotty/.DS_Store", dir);
+            fp = fopen(path, "w");
+            if (fp) { fputs("junk", fp); fclose(fp); }
+            sfree(path);
+
+            if (session_folder_entries("Dotty/") != 0)
+                fail("a dotfile should not count as a folder entry");
+
+            err = session_rmdir("Dotty");
+            if (err) { fail("session_rmdir(Dotty): %s", err); sfree(err); }
+            expect_listed("Dotty/", false);
+            if (exists("Dotty"))
+                fail("the Dotty folder should be gone from disk");
+        }
+
+        del_settings("Visible");
+        path = dupprintf("%s/sessions/.DS_Store", dir);
+        unlink(path);
+        sfree(path);
+        path = dupprintf("%s/sessions/notes.txt", dir);
+        unlink(path);
+        sfree(path);
     }
 
     /* Folders sort before sessions, at every level. */
@@ -449,6 +569,70 @@ int main(void)
         }
 
         del_settings("Commented");
+    }
+
+    /*
+     * The stored session password: it survives a save/load round trip, and
+     * what lands on disk is the wrapped form from utils/sesspass.c, never the
+     * password itself (PLAN.md section 4k).
+     */
+    {
+        Conf *out = conf_new(), *in = conf_new();
+        char *err, *text;
+
+        load_settings("Protected", in);        /* to fill in the defaults */
+        conf_set_str(in, CONF_host, "pass.example.com");
+        conf_set_str(in, CONF_session_password, "s3cr3t-pw");
+
+        err = save_settings("Protected", in);
+        if (err) { fail("save_settings: %s", err); sfree(err); }
+
+        text = read_session_file("Protected");
+        if (!text) {
+            fail("could not read back the Protected session file");
+        } else {
+            if (!strstr(text, "SessionPassword="))
+                fail("the session file has no SessionPassword key");
+            if (!strstr(text, "SessionPassword=" SESSPASS_PREFIX))
+                fail("the session file's SessionPassword is not a "
+                     SESSPASS_PREFIX " blob");
+            if (strstr(text, "s3cr3t-pw"))
+                fail("the session file contains the password in the clear");
+            sfree(text);
+        }
+
+        if (!load_settings("Protected", out))
+            fail("load_settings(Protected) failed");
+        {
+            const char *got = conf_get_str(out, CONF_session_password);
+            if (strcmp(got, "s3cr3t-pw"))
+                fail("the password did not survive a round trip: got \"%s\"",
+                     got);
+        }
+
+        conf_free(in);
+        conf_free(out);
+        del_settings("Protected");
+    }
+
+    /* A session with no saved password carries no key at all. */
+    {
+        Conf *c = conf_new();
+        char *err, *text;
+
+        load_settings("Unprotected", c);
+        conf_set_str(c, CONF_host, "plain.example.com");
+        err = save_settings("Unprotected", c);
+        if (err) { fail("save_settings: %s", err); sfree(err); }
+
+        text = read_session_file("Unprotected");
+        if (text && strstr(text, "SessionPassword"))
+            fail("a session with no saved password still has a "
+                 "SessionPassword key");
+        sfree(text);
+
+        conf_free(c);
+        del_settings("Unprotected");
     }
 
     /* The names a drag between rows would produce. */

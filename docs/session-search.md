@@ -148,8 +148,9 @@ keystrokes.
 TMPD=~/Downloads/temp/sesstest                     # never a real config folder
 mkdir -p "$TMPD/sessions/Work"
 printf 'HostName=10.0.1.7\nProtocol=ssh\nPresent=1\nSessionComment=prod box\n' \
-    > "$TMPD/sessions/Router_Prod"
-printf 'HostName=beta.internal\nProtocol=ssh\nPresent=1\n' > "$TMPD/sessions/Work/beta"
+    > "$TMPD/sessions/Router_Prod.conf"
+printf 'HostName=beta.internal\nProtocol=ssh\nPresent=1\n' \
+    > "$TMPD/sessions/Work/beta.conf"
 
 PUTTYDIR="$TMPD" PUTTY_SESS_SEARCH_DEBUG=1 ./build-arm64/putty &
 # from the Host Name box, the Saved Sessions entry is 5 forward tabs

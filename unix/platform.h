@@ -254,6 +254,7 @@ enum DialogSlot {
     DIALOG_SLOT_LOGFILE_PROMPT,
     DIALOG_SLOT_WARN_ON_CLOSE,
     DIALOG_SLOT_CONNECTION_FATAL,
+    DIALOG_SLOT_REMEMBER_PASSWORD,
     DIALOG_SLOT_LIMIT /* must remain last */
 };
 GtkWidget *gtk_seat_get_window(Seat *seat);

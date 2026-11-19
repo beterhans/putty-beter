@@ -226,6 +226,14 @@ add_executable(test_sesssearch
   test/test_sesssearch.c)
 target_link_libraries(test_sesssearch utils)
 
+# PuTTY-beter: the stored form of a saved session's password. Also pure - the
+# v0 encoding is a base64 wrapper, which lives in utils - so that it too needs
+# nothing but the utils library. (When the encrypted v1 lands it will need
+# crypto as well.)
+add_executable(test_sesspass
+  test/test_sesspass.c)
+target_link_libraries(test_sesspass utils)
+
 foreach(subdir ${platform} ${extra_dirs})
   add_subdirectory(${subdir})
 endforeach()

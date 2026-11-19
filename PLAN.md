@@ -310,10 +310,15 @@ upstream, in priority order:
 
 | Piece | Where |
 |---|---|
-| Redirect file | `<base>/config-location` — comments allowed, first other line is the absolute path |
+| Redirect file | `<base>/config-location.conf` — comments allowed, first other line is the absolute path |
 | Reads it | `unix/storage.c`, so `putty`, `plink`, `pscp`, `psftp`, `puttygen` all follow it; a missing or invalid target is ignored with a debug trace |
 | Writes it | `char *config_location_set(const char *dir)` — normalises `~`/relative paths, creates the target, **moves** `sessions/`, `sshhostkeys`, `sshhostkeys.tmp`, `sshhostcas/`, `randomseed`, then writes the file at the base |
 | Dialog | `unix/config-location.c`, GTK only, called from `main-gtk-simple.c` and `main-gtk-application.c` |
+
+(The file is `config-location.conf`; it used to have no extension. An old
+`config-location` at the base location is no longer read, and the file has to
+be renamed by hand — there is only one such file per installation, at the
+*base* location, not in the configuration directory itself.)
 
 **When the dialog appears:** the configuration is missing (no `sessions`
 subdirectory), **or** Option/Alt is held at launch (`CGEventSourceFlagsState`,
@@ -474,6 +479,32 @@ sessions can be dragged into a folder in one go and Delete removes everything
 selected (asking once if the selection includes sessions inside a folder); and
 `sessioncmp()` now sorts folders before sessions at every level, so folders
 always sit at the top of their level rather than needing a manual order.
+
+**Sessions are `.conf` files; dotfiles are hidden (2026-11-19).** The sessions
+directory is a real directory in `~/Documents`, so Finder leaves `.DS_Store`
+in it, and it turned up in the session list as if it were a session. Two rules
+now decide what the list shows:
+
+* **A saved session is a file ending in `.conf`** (`SESSION_FILE_SUFFIX`).
+  Nothing else in the directory is read as a session, so a stray copy or an
+  editor's backup is ignored rather than listed. The extension is applied
+  inside `make_filename()`'s `INDEX_SESSIONFILE` case, so reading, writing,
+  deleting and moving all agree, and it is stripped when the directory is
+  listed. **Folders have no extension** — they are plain directories — so
+  `INDEX_SESSION` (a folder's path) and `INDEX_SESSIONFILE` (a session's) are
+  separate, and `session_move()` picks between them from the trailing `/` that
+  `get_sesslist()` puts on a folder name.
+* **A name beginning with `.` is hidden** (`session_entry_visible()`), which
+  covers hidden *folders* and anything else Finder leaves behind. The same
+  rule is applied wherever the directory's *contents* are counted, so a folder
+  holding only a `.DS_Store` counts as empty and can be deleted (its
+  leftovers are cleared out first, because `rmdir()` would otherwise refuse).
+
+Nothing saveable can be hidden by either rule: a session or folder name may no
+longer begin with `.` (`session_component_ok()`, and `session_mkdir()` now
+validates its name), because anything allowed to be called `.foo` would be
+saved and then be invisible. Existing session files have to be renamed by hand
+to gain the extension; nothing in the code reads the old, extensionless names.
 
 **Not done yet (rest of M2/M3):** renaming a folder, remembering which folders
 are expanded, and saved passwords via the Keychain. (Per-session comments are
@@ -706,7 +737,7 @@ than smuggled into this one.
 
 ---
 
-## 4k. Saved-session passwords: encrypted at rest, injected into auth  *(design 2026-11-19, not built)*
+## 4k. Saved-session passwords: encrypted at rest, injected into auth  *(design 2026-11-19; v0 built 2026-11-19 — see "As built so far")*
 
 **Goal:** save a session's login password once, so connecting to it needs no
 typing — and have what is on disk be useless to anyone who copies it.
@@ -732,6 +763,61 @@ server, not echoing. That shape test is worth keeping — it is what stops a sav
 *login* password from being offered as a private-**key** passphrase
 (`to_server = false`, `ssh/userauth2-client.c:1191`) or as the username.
 
+### As built so far (v0, 2026-11-19)
+
+The save-and-inject half was built first, **without** the master password, so
+that it can be tested end to end before the cryptography is added. What is in
+the tree now:
+
+* **`utils/sesspass.{c,h}`** — `sesspass_blob_new()` / `sesspass_blob_open()`
+  and the version tag. **v0 is a base64 wrapper, not encryption**: the file
+  holds `SessionPassword=v0;<base64>`, which keeps the password out of sight
+  and keeps the settings-file format intact, but anyone who can read the file
+  can decode it. That is deliberate at this step, and it is exactly why the
+  version tag exists: the encrypted form will be `v1`, and
+  `sesspass_blob_open()` already reports a version it does not know as "not
+  mine" rather than guessing at it.
+* **`conf.h` / `settings.c`** — `CONF_session_password`, written and read by
+  hand beside `SessionComment`; the file never holds the plaintext.
+* **`config.c`** — the password box is on the **Connection/Data** panel, in its
+  "Login details" controlset, right under "Auto-login username": a username and
+  a password belong together, and that is where a user goes looking for login
+  credentials. (An earlier cut gave the password a panel of its own,
+  Session/Password; it was merged when the username was pointed out.) The box is
+  hidden like any password box and holds the password in the clear so it can be
+  corrected; empty means "no saved password". Offered only when the session is
+  SSH, since nothing else has a login password.
+* **`unix/window.c`** — the seat asks `cmdline_get_passwd_input()` first
+  (unchanged, so `-pw` still wins), then the session's saved password, then
+  the dialog. One attempt per connection, so a password the server rejects
+  falls back to the dialog instead of failing the connection.
+* **`unix/window.c` / `conf.h`** — **the offer to remember**. After a login
+  that *succeeded*, if a password was typed and the session has none saved,
+  the app asks whether to keep it. The seat notes the password it answered the
+  prompt with (`sesspass_used`, wiped at teardown and at the start of each
+  connection); `gtk_seat_notify_session_started()` — which the SSH backend
+  already calls when the main channel opens — queues a toplevel callback (a
+  modal dialog must not be raised in the middle of packet processing) and that
+  offers Yes/No. Yes saves the session's file the way Save does, with the
+  password added, and updates the in-memory configuration so Restart Session
+  logs straight in. The offer needs to know *which* session to save to, so
+  `CONF_session_name` (NOT_SAVED) records it: `load_settings()` sets it from
+  the section it loaded, and "Default Settings" (or an empty name, meaning a
+  hostname typed by hand) is skipped, because there is nowhere sensible to put
+  a password for it.
+* **`putty.h` / `proxy/sshproxy.c`** — the `from_proxy` mark, so a password
+  prompt the SSH-to-SSH proxy forwarded is not answered with the session's.
+* **Tests** — `test/test_sesspass.c` (the blob and its failure modes) and a
+  save/load round trip in `test/test_sessions.c` that also proves the password
+  is not in the file in the clear.
+
+Debug switch: `PUTTY_SESSPASS_DEBUG=1` traces a decode and an injection, in the
+same shape as `PUTTY_SESS_SEARCH_DEBUG`.
+
+Still to do, as designed below: the master password, the Argon2id + AES-CBC +
+HMAC **v1** blob (M3a as written), the "Forget" button and the passphrase
+dialog, and the Keychain cache.
+
 ### Behaviour
 
 | Situation | What happens |
@@ -739,6 +825,7 @@ server, not echoing. That shape test is worth keeping — it is what stops a sav
 | Session has a saved password, pubkey auth succeeds | nothing at all: the password is never decrypted and no prompt appears |
 | Session has a saved password, server asks for one | the saved password is sent, no dialog |
 | Session has a saved password, but the run is locked | the **master password** is asked for once (see below), then the login password is sent |
+| A login *succeeds* with a password the user just typed, and the session has none saved | the app offers to keep it, and saves it into that session's file if told yes |
 | The saved password is rejected | fall back to the ordinary password dialog, and offer to replace the stored one |
 | No saved password | unchanged, byte for byte |
 | "Forget saved password" | the blob is deleted from the session file; the next connect prompts normally |
@@ -1012,6 +1099,90 @@ blobs encrypted by the data key. Then changing the master password rewrites one
 small file instead of every session, and the vault version reuses the same code.
 The `v1` blob above is deliberately self-contained so it can be read by either
 future.
+
+---
+
+## 4l. Background transparency  *(done 2026-11-19)*
+
+**Goal:** a Window/Colours setting for how much of the desktop shows through
+the terminal's background, 0 (solid) to 255 (fully see-through).
+
+**Setting.** `CONF_bg_transparency` (`conf.h`), an integer, default 0, stored
+as `BackgroundTransparency`; clamped to 0..255 in `cache_conf_values()`, since
+the edit box does not range-check. The control is in the **Window/Colours**
+panel, in a controlset of its own above the per-colour list, because it changes
+what the window looks like rather than how one colour is rendered.
+
+**Only the default background is affected.** `draw_set_colour()` paints
+`OSC4_COLOUR_bg` with `cairo_set_source_rgba(..., bg_alpha())`, and leaves
+every other colour opaque, so a highlighted line, a coloured `ls` entry and the
+cursor stay solid and readable. `bg_alpha()` maps 0 to 1.0, 255 to 0.0, and
+anything between proportionally.
+
+**What makes it work at all.** A compositor will not blend against a window
+that insists on being opaque, so when the setting is on at window creation:
+
+* the window and the drawing area are given the screen's **RGBA visual** and
+  `gtk_widget_set_app_paintable(true)`, so GTK stops painting their
+  backgrounds and the alpha in the backing surface decides what shows through;
+* the backing surface is created as `CAIRO_CONTENT_COLOR_ALPHA` (it was
+  `CAIRO_CONTENT_COLOR`);
+* the widget background colour (`set_window_background()` → `colour_to_css()`)
+  carries the same alpha, so the border between the text and the window edge
+  does not stay opaque around a see-through terminal — but *only* when the
+  window really is translucent, because on a solid window the alpha goes
+  nowhere useful while macOS would still colour the title bar from it.
+
+**The title bar is the price.** This is measured, not guessed (a probe printing
+AppKit's own state while the app ran):
+
+| Background transparency | `[NSWindow isOpaque]` | `backgroundColor` alpha |
+|---|---|---|
+| 0 (solid) | 1 | 1 |
+| 64 | 0 | **0** |
+
+`titlebarAppearsTransparent` is 0 either way and `styleMask` stays
+`Titled|Closable|Miniaturizable|Resizable`, so it is not a flag GTK sets: macOS
+paints a *native* title bar over the **window's own background**, and GDK makes
+that background fully transparent as soon as the window is non-opaque. A solid
+title bar and a see-through terminal are therefore mutually exclusive through
+the native bar — there is no setting that separates them, and keeping the window
+background opaque would hide the desktop behind the terminal instead.
+
+So when the background is transparent the window is given a **GTK-drawn title
+bar** (`gtk_window_set_titlebar(gtk_header_bar_new())`, with the decoration
+layout set to `close,minimize,maximize:` so the buttons sit where a Mac user
+looks for them, i.e. client-side decoration). GTK paints that bar from the
+theme, so it stays solid. **It does look different from the native bar** — a
+theme-grey bar, the buttons drawn as symbols rather than traffic lights — which
+is the honest price of putting a hole in the window. At transparency 0 nothing
+of this applies and the native bar is untouched.
+
+*`gtk_window_set_titlebar()` does **not** show the bar* — it shows it only if
+the window is already visible, and this window is shown with `gtk_widget_show()`
+(rather than `show_all`), so without an explicit `gtk_widget_show(hb)` the bar
+never appears at all. That was the whole of the first, broken attempt, and it
+was established locally by rendering the widget tree offscreen with
+`gtk_widget_draw()` (no screen capture involved).
+
+A **visual cannot be chosen after a widget is realised**, so the setting is
+read once, when the window is made — hence "takes effect when the session is
+opened". The alpha itself is read per paint, so changing the *amount* with the
+session running does repaint immediately; `after_change_settings_dialog()`
+calls `set_window_background()`, `draw_backing_rect()` and `term_invalidate()`
+for that. If there is no RGBA visual at all (an X11 session with no compositing
+manager) the window is left solid and a line is written to stderr — better than
+a translucent background with nothing behind it.
+
+**Verified** by running the built `putty` with `PUTTY_DIAG=1`: with the setting
+on it reports `background transparency 170: using an RGBA visual` (so macOS
+does offer one) and starts with no GTK criticals; with the setting at 0 the
+RGBA path is not taken at all, so the default window is untouched. The visual
+result is for a human to judge.
+
+**Not done:** a slider (the dialog has no scale control, so it is an integer
+box); transparency of anything but the default background; and an on-screen
+blur.
 
 ---
 
@@ -1741,8 +1912,9 @@ crates*, not a port of PuTTY:
 - [x] **M2** — session folders + comments (Phase 2, O1 part 1)
       - [x] **M2b** — search the saved-session list by name / host / comment (§4j)
 - [ ] **M3** — session password: encrypted in the session file, injected into auth, unlocked once per run (Phase 2, O1 part 2) — see §4k
-      - [ ] **M3a** — `utils/sesspass.{c,h}` + `test/test_sesspass`: the blob (Argon2id + AES-CBC + HMAC), the `\user:pass` override, and the failure modes (§4k)
-      - [ ] **M3b** — the panel side: the `CONF_session_password` key, the tick and the Forget action, and proof that nothing plaintext is written (§4k)
+      - [x] **M3v0** — save + inject without the master password: the `v0` base64 blob, the Conf key, the password box beside "Auto-login username", the seat injection, the `from_proxy` guard, the offer to remember after a successful login (`CONF_session_name` + `notify_session_started`), and tests (§4k "As built so far")
+      - [ ] **M3a** — replace `v0` with the encrypted blob: `utils/sesspass.{c,h}` + `test/test_sesspass` gains Argon2id + AES-CBC + HMAC, the `\user:pass` override, and the failure modes (§4k)
+      - [ ] **M3b** — the panel side: a proper Forget action, and proof that nothing plaintext is written (§4k)
       - [ ] **M3c** — the runtime side: lazy unlock at the password prompt, injection into the seat, and the optional Keychain cache of the master password (§4k)
 - [x] **M4** — ZMODEM download works over SSH (Phase 3, T2)
 - [x] **M5** — ZMODEM upload + cancel (Phase 3, T2) — both directions verified against real

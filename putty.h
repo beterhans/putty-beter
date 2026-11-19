@@ -934,6 +934,16 @@ struct prompts_t {
      */
     bool from_server;
 
+    /*
+     * PuTTY-beter: set by the SSH-to-SSH proxy when it forwards one of its
+     * own prompts up to the client seat (proxy/sshproxy.c). The proxy's
+     * password prompt has the same shape as a session's - one prompt, not
+     * echoing, to the server - so without this mark the client seat could not
+     * tell them apart, and would answer the proxy's password with the
+     * session's saved password (PLAN.md section 4k).
+     */
+    bool from_proxy;
+
     char *name;         /* Short description, perhaps for dialog box title */
     bool name_reqd;     /* Display of `name' required or optional? */
     char *instruction;  /* Long description, maybe with embedded newlines */

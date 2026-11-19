@@ -901,6 +901,41 @@ CONF_OPTION(session_comment,
      * edit boxes deal in.
      */
 )
+CONF_OPTION(session_password,
+    VALUE_TYPE(STR),
+    DEFAULT_STR(""),
+    LOAD_CUSTOM, SAVE_CUSTOM,
+    /*
+     * PuTTY-beter: the saved session's login password, so that connecting
+     * does not have to ask for it (PLAN.md section 4k). What is held in Conf
+     * is the password itself, and only in memory: what settings.c writes to
+     * the session file is the wrapped form from utils/sesspass.c
+     * ("v0;" + base64), and what settings.c puts back here is the password
+     * again. Saving and loading are by hand for that reason - the file must
+     * never contain the password in the clear.
+     *
+     * Notionally SAVE_KEYWORD("SessionPassword"): the file's key is
+     * "SessionPassword" and its value is the blob. Written only when there is
+     * a password, so that ordinary session files are unchanged.
+     */
+)
+CONF_OPTION(session_name,
+    VALUE_TYPE(STR),
+    DEFAULT_STR(""),
+    NOT_SAVED,
+    /*
+     * PuTTY-beter: which saved session this configuration came from, so that
+     * a successful login can offer to keep the password in that session's
+     * file (PLAN.md section 4k). Set by load_settings() when a session is
+     * loaded, and never written to the file: it is knowledge about where the
+     * settings came from, not a setting.
+     *
+     * Empty means "not from a saved session" (a hostname typed into the
+     * configuration dialog), and "Default Settings" means the default
+     * settings, which are not a session of their own - in either case there
+     * is nowhere sensible to save a password to.
+     */
+)
 CONF_OPTION(zmodem_dir,
     VALUE_TYPE(FILENAME),
     SAVE_KEYWORD("ZmodemDirectory"),
@@ -968,6 +1003,20 @@ CONF_OPTION(window_border,
     VALUE_TYPE(INT), /* in pixels */
     DEFAULT_INT(1),
     SAVE_KEYWORD("WindowBorder"),
+)
+CONF_OPTION(bg_transparency,
+    VALUE_TYPE(INT),
+    DEFAULT_INT(0),
+    SAVE_KEYWORD("BackgroundTransparency"),
+    /*
+     * PuTTY-beter: how much of the desktop shows through the terminal's own
+     * background colour. 0 (the default) keeps the background solid, and 255
+     * lets it through completely; in between, the two are blended.
+     *
+     * Only the *default* background is affected, so text with a background
+     * colour of its own - a highlighted line, a coloured `ls' entry, the
+     * cursor - stays solid and readable.
+     */
 )
 CONF_OPTION(answerback,
     VALUE_TYPE(STR),

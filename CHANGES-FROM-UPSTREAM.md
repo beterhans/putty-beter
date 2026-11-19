@@ -330,17 +330,27 @@ Sessions can be kept in folders, shown as a collapsible tree in the
 configuration box, and moved between folders by dragging.
 
 * A session name may contain `/`, which separates folder names: `Work/beta`
-  is the file `<sessions>/Work/beta`, and `Work` is a **real directory**. So
-  folders can be empty, and the structure is visible in the Finder.
+  is the file `<sessions>/Work/beta.conf`, and `Work` is a **real directory**.
+  So folders can be empty, and the structure is visible in the Finder.
   (`make_session_filename()` already percent-encoded `/` as `%2F`, so names
   with a slash were representable but meant nothing; the encoder now treats
   `/` as a separator and encodes each component separately.)
+* A saved session's file ends in **`.conf`**, and only such files are read as
+  sessions: anything else that finds its way into the directory (Finder's
+  `.DS_Store`, a stray copy) is ignored rather than listed. Folders are plain
+  directories and have no extension, so `INDEX_SESSION` (a folder) and
+  `INDEX_SESSIONFILE` (a session) are separate cases of `make_filename()`, and
+  `session_move()` picks between them from the trailing `/`. A name beginning
+  with `.` is refused, and hidden entries are skipped when listing, so nothing
+  can be saved and then be invisible.
 * `get_sesslist()` reports a folder as a name with a trailing `/`, which is
   how the front end tells folders from sessions. Enumeration is recursive
   (depth-limited, and symlinks are not followed).
 * Names are validated: an empty, `.` or `..` component is refused, so a
-  session name cannot escape the sessions directory. `open_settings_w()`
-  rejects such a name outright rather than writing something odd.
+  session name cannot escape the sessions directory, and a component may not
+  begin with `.` at all, since such a file would be hidden from the listing.
+  `open_settings_w()` rejects such a name outright rather than writing
+  something odd.
 * `session_mkdir()`, `session_move()` (sessions *and* folders, refusing to
   move a folder inside itself) and `session_rmdir()` (empty folders only)
   live in `unix/storage.c`; `session_move_target_name()` works out the name a

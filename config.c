@@ -3011,6 +3011,23 @@ void setup_config_box(struct controlbox *b, bool midsession,
                       "The colour", I(BOLD_STYLE_COLOUR),
                       "Both", I(BOLD_STYLE_FONT | BOLD_STYLE_COLOUR));
 
+    /*
+     * PuTTY-beter: let the desktop show through the terminal's background.
+     * Its own controlset, at the top of the panel, because it changes what
+     * the window looks like rather than how a colour is rendered.
+     */
+    s = ctrl_getset(b, "Window/Colours", "transparency",
+                    "Background transparency");
+    ctrl_editbox(s, "Transparency (0 = solid, 255 = see-through):",
+                 NO_SHORTCUT, 40, HELPCTX(no_help),
+                 conf_editbox_handler, I(CONF_bg_transparency), ED_INT);
+    ctrl_text(s, "(How much of the desktop shows through the background"
+              " colour. Only the default background is affected, so text with"
+              " a colour of its own - highlighted lines, the cursor - stays"
+              " solid. A compositing window manager is needed; macOS and"
+              " modern Linux both provide one. Takes effect when the session"
+              " is opened.)", HELPCTX(no_help));
+
     str = dupprintf("Adjust the precise colours %s displays", appname);
     s = ctrl_getset(b, "Window/Colours", "adjust", str);
     sfree(str);
@@ -3120,6 +3137,33 @@ void setup_config_box(struct controlbox *b, bool midsession,
                                   "Prompt", I(false),
                                   userlabel, I(true));
                 sfree(userlabel);
+            }
+
+            /*
+             * PuTTY-beter: the session's login password, kept with the
+             * session so that connecting does not ask for it (PLAN.md
+             * section 4k). Beside the username, where a login password
+             * belongs, and only for SSH: a Telnet or serial session has no
+             * use for it.
+             *
+             * The box is hidden like any password box, and it holds the
+             * password in the clear so that the user can see and correct it.
+             * Empty means "no saved password": clear the box and Save to
+             * forget one. What reaches the session file is the wrapped form
+             * from utils/sesspass.c, not the password itself.
+             */
+            if (protocol == PROT_SSH) {
+                dlgcontrol *c =
+                    ctrl_editbox(s, "Auto-login password", NO_SHORTCUT, 50,
+                                 HELPCTX(no_help),
+                                 conf_editbox_handler,
+                                 I(CONF_session_password), ED_STR);
+                c->editbox.password = true;
+                ctrl_text(s, "(Leave the box empty for no saved password. The"
+                          " password is kept in this session's file, wrapped so"
+                          " that it is not readable at a glance - but not"
+                          " strongly: anyone who can read the file can recover"
+                          " it.)", HELPCTX(no_help));
             }
 
             s = ctrl_getset(b, "Connection/Data", "term",

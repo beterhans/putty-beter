@@ -59,6 +59,7 @@ add_sources_from_current_dir(utils
   seat_connection_fatal.c
   seat_dialog_text.c
   seat_nonfatal.c
+  sesspass.c
   sessprep.c
   sesssearch.c
   sk_free_peer_info.c
