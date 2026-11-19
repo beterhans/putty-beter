@@ -136,6 +136,12 @@ You can also just type a name with a slash: saving as `Work/beta` creates the
 folder as it goes. Names are checked, so a session name can never escape the
 sessions directory.
 
+Each session is a **`<name>.conf` file** inside the sessions folder, and only
+`.conf` files are read as sessions — so Finder's `.DS_Store`, or a stray copy
+you drop in there, is ignored rather than showing up in the list. Folders are
+plain directories and have no extension, so `Work/beta` is
+`<sessions>/Work/beta.conf`.
+
 ### 9. Session comments
 
 A saved session can carry a free-text note about itself, in
@@ -179,6 +185,26 @@ and **New Folder** beep while a search is on: `/beta` is not a session name.
 whether the session files had to be read again — to stderr. For the design, the
 cache and how to drive the dialog from a script, see
 [`docs/session-search.md`](docs/session-search.md).
+
+### 9c. Saving a session's password
+
+A saved session can remember its login password, so connecting to it does not
+ask. The box is in **Connection → Data**, directly under *Auto-login username*,
+and it is hidden the way a password box should be. Leave it empty for no saved
+password; clear it and press **Save** to forget one.
+
+* **Connecting** uses the saved password only if the server asks for one, and
+  only once: if the server rejects it (the password changed, say) you get the
+  ordinary prompt instead of a failed connection.
+* **A login that succeeds** with a password you typed, on a session that has
+  none saved, offers to keep it — **Remember Password** — and Yes writes it into
+  that session. Restart Session then logs straight in.
+* **What is on disk is wrapped, not encrypted**: the session file holds
+  `SessionPassword=v0;<base64>`. That keeps it off a plain `grep` and out of
+  sight, but anyone who can read the file can decode it. Encrypting it under a
+  master password is the next piece of work (`PLAN.md` §4k).
+* `PUTTY_SESSPASS_DEBUG=1` traces a decode and an injection to stderr — never
+  the password itself.
 
 ### 10. Changed defaults
 
@@ -238,6 +264,40 @@ GTK's dialog windows also had **see-through title bars** on macOS: GTK gives a
 it. Fixed with one line of ordinary GTK API per dialog (no Objective-C) — see
 `gtk_dialog_fix_macos_titlebar()` in `unix/gtkcompat.h`. The configuration box,
 About box and message boxes were never affected.
+
+### 12b. A see-through background
+
+**Window → Colours → Transparency** (0 = solid, 255 = see-through) lets the
+desktop show through the terminal's background colour. Only the *default*
+background is affected, so highlighted lines, coloured `ls` entries and the
+cursor stay solid and readable. It needs a compositing window manager, which
+macOS has; if there is none, the window stays solid and says so on stderr.
+
+The setting takes effect when a session is **opened**, because the window must be
+given an alpha channel before it is shown. Changing the *amount* with the session
+running does repaint at once (the Event Log says so if the window was opened
+solid).
+
+Two macOS realities, both found the hard way:
+
+* **The title bar becomes a GTK-drawn one.** A see-through terminal means a
+  non-opaque window, and macOS paints a *native* title bar from the window's own
+  background — which GDK makes fully transparent as soon as the window is
+  non-opaque (measured: `isOpaque` 0, `backgroundColor` alpha 0). So the native
+  bar goes see-through with it and the title is left written on the desktop. A
+  solid bar and a see-through terminal cannot both have the native bar, so while
+  transparency is on, the window is given a GTK-drawn title bar instead. It
+  looks different — that is the price — and at transparency 0 nothing changes at
+  all, so the native bar is untouched.
+* **The background is *put down*, not blended over.** A translucent fill laid
+  over what is already in the window lets the previous frame show through: every
+  character typed while the cursor sat on it kept a tint of the cursor colour,
+  which is exactly what "the text I typed is highlighted" turned out to be.
+  Fills of the default background now replace the pixels instead — which also
+  means the setting is as transparent as it says (the background was being
+  blended twice, so 64 came out 94% opaque rather than 75%).
+
+`CHANGES-FROM-UPSTREAM.md` §15 has the measurements and the mechanics.
 
 ---
 

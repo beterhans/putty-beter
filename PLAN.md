@@ -1225,9 +1225,10 @@ blur.
 - Session panel definition: `config.c` (~line 1904, "Session"/"savedsessions").
 - GTK UI implementation: `unix/dialog.c` (4424 lines).
 
-**Status:** folders and comments are done (sections 4g and 4i). Passwords are
-**designed and not built** — **section 4k** is the design of record, and it
-supersedes the sketch in task 3 below.
+**Status:** folders, comments and passwords are done — sections 4g, 4i and 4k
+(the last as **v0**: the password is wrapped in the session file and injected
+into the auth prompt, with the master password and the encrypted `v1` blob
+still to come). The sketch in task 3 below is superseded by section 4k.
 
 **Tasks**
 1. ~~**Comments** (cheapest): add a `SessionComment` key; store/read via existing storage calls; show in the session list tooltip. Low risk.~~ **Done** — section 4i. (It ended up in a panel of its own rather than a tooltip, because a note can be a paragraph.) Showing it as a tooltip on the session list is still an obvious small win.

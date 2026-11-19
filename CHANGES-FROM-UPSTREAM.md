@@ -43,13 +43,16 @@ fixes, so `git log` alone shows only the later work.
 | Session folders | Sessions can be kept in folders, shown as a tree and moved by dragging. |
 | Session comments | A free-text note kept with each saved session, in a panel below Logging, with a multi-line UTF-8 box. |
 | Session search | Type `/` in the Saved Sessions box and the list below is filtered, live, by session name, host name/IP or comment; folders still show as a tree. |
+| Session files | A saved session is a `<name>.conf` file, and only `.conf` files are read as sessions, so Finder's `.DS_Store` and stray copies no longer turn up in the list. Folders are directories and have no extension. |
+| Session passwords | A session can remember its login password — kept in the session file wrapped, injected into the password prompt so connecting does not ask, and offered for keeping after a login that succeeds with a password the user just typed. |
 | ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
+| Transparent background | Window → Colours → "Transparency (0 = solid, 255 = see-through)": how much of the desktop shows through the background colour. Applied to the *default* background only, so text with a colour of its own — highlighted lines, the cursor — stays solid. |
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
 | MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
-| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1` and `PUTTY_SESS_SEARCH_DEBUG=1` runtime traces. |
+| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1`, `PUTTY_SESS_SEARCH_DEBUG=1` and `PUTTY_SESSPASS_DEBUG=1` runtime traces. |
 
 ---
 
@@ -62,13 +65,13 @@ tool will give slightly different numbers for the same change.
 
 | File | +/- | What changed |
 |---|---|---|
-| `conf.h` | +70 / -7 | Seven default values changed (see below); `session_comment`, `zmodem_dir`, `mcp_enabled` and `mcp_write` added |
-| `config.c` | +616 / -42 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added; the saved-session search in the Session panel (see below) |
+| `conf.h` | +137 / -7 | Seven default values changed (see below); `session_comment`, `session_password`, `session_name`, `zmodem_dir`, `bg_transparency`, `mcp_enabled` and `mcp_write` added |
+| `config.c` | +660 / -42 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added; the saved-session search in the Session panel (see below); the password box moved next to "Auto-login username" in Connection → Data; the Window/Colours transparency controlset |
 | `dialog.h` | +83 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` and `placeholder` on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
 | `dialog.c` | +9 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
-| `settings.c` | +133 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment is saved and loaded by hand, with newlines escaped |
+| `settings.c` | +179 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment and the session password are saved and loaded by hand (the comment with newlines escaped, the password wrapped by `utils/sesspass.c`); `load_settings()` records which saved session the configuration came from |
 | `terminal/terminal.c` | +179 / -2 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server; `term_set_input_tap()`, which reports what a human typed or pasted |
-| `putty.h` | +2 / -0 | Declares `term_get_screen_text()` |
+| `putty.h` | +29 / -0 | Declares `term_get_screen_text()` and `term_set_input_tap()`; `from_proxy` on `struct prompts_t`, so the SSH-to-SSH proxy's forwarded password prompt is not answered with the session's saved password |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
 | `unix/CMakeLists.txt` | +20 / -1 | Build `unix/config-location.c`, `unix/mcp.c` and `unix/mcp-buffer.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
 | `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
@@ -80,17 +83,19 @@ tool will give slightly different numbers for the same change.
 | `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +10 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
-| `unix/platform.h` | +54 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
+| `unix/platform.h` | +55 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
 | `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
-| `unix/storage.c` | +1107 / -25 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store |
+| `unix/storage.c` | +1205 / -30 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store; session files are `.conf` (`INDEX_SESSIONFILE` beside `INDEX_SESSION`, which stays a folder), hidden entries are skipped, and a name beginning with `.` is refused; the redirect file is `config-location.conf` |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
-| `unix/window.c` | +875 / -14 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap) |
+| `unix/window.c` | +1376 / -27 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session password: the seat asks for it after `-pw` declines, one attempt per connection, and offers to keep a freshly typed one after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
 | `storage.h` | +26 / -0 | Declarations for the folder operations and the name checks |
-| `utils/CMakeLists.txt` | +1 / -0 | Build `utils/sesssearch.c` into the `utils` library |
-| `CMakeLists.txt` | +40 / -1 | `test_sessions`, `test_sesssearch`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
+| `utils/CMakeLists.txt` | +2 / -0 | Build `utils/sesssearch.c` and `utils/sesspass.c` into the `utils` library |
+| `CMakeLists.txt` | +48 / -1 | `test_sessions`, `test_sesssearch`, `test_sesspass`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
+| `proxy/sshproxy.c` | +6 / -0 | Marks a prompt it forwards to the client seat as the proxy's own (`p->from_proxy`), so the seat declines it rather than answering the *proxy's* password with the *session's* |
+| `utils/prompts.c` | +1 / -0 | Initialise `from_proxy` — `new_prompts()` does not zero the structure |
 | `.gitignore` | +21 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
@@ -127,6 +132,9 @@ tool will give slightly different numbers for the same change.
 | `utils/sesssearch.c` | The saved-session search: what counts as a search, the text a session is searched by, and the case-insensitive match. Pure - no I/O, no GTK - so it is testable on its own |
 | `utils/sesssearch.h` | Its interface, and the `PUTTY_SESS_SEARCH_DEBUG` switch |
 | `test/test_sesssearch.c` | Tests for the above: the prefix rule, host and comment hits, case folding, folder-name queries, and no false matches |
+| `utils/sesspass.c` | The stored form of a saved session's password: `sesspass_blob_new()` / `sesspass_blob_open()` and the `v0` version tag. Pure — no I/O, no GTK — so it is testable on its own, and the tag is the seam for the encrypted `v1` that comes next |
+| `utils/sesspass.h` | Its interface, and the `PUTTY_SESSPASS_DEBUG` switch |
+| `test/test_sesspass.c` | 38 checks: round trips (including base64 padding and UTF-8), an empty password, and the failure modes — an unknown version, invalid base64, and a blob that must not be decodable |
 | `docs/session-search.md` | **How the search works**: the prefix rule, what is matched, the per-session cache and its invalidation, how to drive the dialog from a script, and what is deliberately not done |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
@@ -318,6 +326,9 @@ These are runtime switches and cost nothing when unset.
   itself, where the socket was created and with what permissions, the handshake,
   and every request and reply. The bridge has its own `--debug` for the other
   end of the same conversation.
+* `PUTTY_SESS_SEARCH_DEBUG=1` — the saved-session search (see section 10b).
+* `PUTTY_SESSPASS_DEBUG=1` — the saved-session password: a blob being decoded,
+  and an injection into a password prompt (never the password itself).
 * `ZMODEM_INTEROP_TRACE=1`, `ZMODEM_INTEROP_DUMP=1` (raw streams to
   `/tmp/zm-in-*.bin` and `zm-out-*.bin`) and `ZMODEM_INTEROP_PRINTABLE=1` —
   only for `test/test_zmodem_interop`.
@@ -831,6 +842,117 @@ bytes over a real pty — but not by a router or a switch. Nor has the
 human-keystroke path been driven by an actual person at a keyboard: it is
 unit-tested at both layers (the buffer and the tap) and not end-to-end.
 
+## 14. Saved-session passwords
+
+A saved session can keep its login password, so that connecting to it does not
+ask for one (design and reasoning: `PLAN.md` §4k).
+
+* **What is stored is not the password.** The session's file gets
+  `SessionPassword=v0;<base64>`, written and read by hand beside
+  `SessionComment` (`utils/sesspass.c`). The `v0` tag is the seam: a later
+  version will encrypt the password under a master password, and a reader that
+  does not know a version says so rather than guessing at it. `v0` keeps the
+  password out of sight and off a plain `grep`, and that is all it does — anyone
+  who can read the file can decode it, which is why the encryption is the next
+  step rather than a detail.
+* **The box sits next to the username** (Connection → Data → "Login details"),
+  because that is where a user looks for login credentials. It is hidden like
+  any password box, holds the password in the clear so it can be corrected, and
+  is offered only for SSH.
+* **Where it is used.** The GTK seat already asked
+  `cmdline_get_passwd_input()` before showing a dialog, so a stored password is
+  tried next and only then the interactive prompt. The shape test is the one
+  `-pw` uses — one prompt, not echoing, destined for the server — which also
+  keeps the password away from a private-key passphrase prompt and from the
+  username prompt. It is tried **once per connection**, so a password the server
+  rejects falls back to the dialog instead of failing the connection the way
+  `-pw` does.
+* **A proxy's prompt is not the session's.** An SSH-to-SSH proxy with no
+  password of its own forwards its prompt to the client seat
+  (`proxy/sshproxy.c`), and it has exactly the same shape — so it is marked
+  (`p->from_proxy`) and declined, or the *proxy's* password would be answered
+  with the *session's*.
+* **The offer to remember** is made after a login that *succeeds* with a
+  password the user just typed, when the session has none saved: the seat notes
+  what it answered with, `gtk_seat_notify_session_started()` queues a toplevel
+  callback (a modal dialog must not go up in the middle of packet processing),
+  and Yes saves the session's file the way Save does, with the password added.
+  `CONF_session_name` records which saved session the configuration came from,
+  so there is somewhere to save it to; an empty name, or "Default Settings", is
+  skipped.
+
+## 15. Transparent background
+
+Window → Colours → **"Transparency (0 = solid, 255 = see-through)"**
+(`CONF_bg_transparency`; design and reasoning: `PLAN.md` §4l). It applies to the
+*default* background colour only, so a highlighted line, a coloured `ls` entry
+and the cursor stay solid and readable. `bg_alpha()` maps the setting to a cairo
+alpha, and the value is clamped in `cache_conf_values()` because the edit box
+does not range-check it.
+
+Two things went wrong on the way, and both are worth knowing about.
+
+### The title bar has to be drawn by GTK, or it goes see-through
+
+A compositor will not blend against a window that insists on being opaque, so a
+transparent background needs an **RGBA visual** on the window and on the drawing
+area, GTK's own background painting turned off, and a backing surface with an
+alpha channel.
+
+The catch is the title bar, and it was measured rather than assumed (a temporary
+probe read AppKit's own state while the app ran):
+
+| Transparency | `[NSWindow isOpaque]` | `backgroundColor` alpha |
+|---|---|---|
+| 0 (solid) | 1 | 1 |
+| 64 | 0 | **0** |
+
+`titlebarAppearsTransparent` is 0 either way and `styleMask` is unchanged, so it
+is not a flag GTK sets: macOS paints a *native* title bar over the window's own
+background, and GDK makes that background fully transparent as soon as the
+window is non-opaque. A solid title bar and a see-through terminal are therefore
+mutually exclusive *through the native bar* — the same coupling section 12
+describes for `GtkDialog`, where the fix is to ask for the system visual
+instead, which is not available here because the window has to keep its alpha.
+
+So while the background is transparent the window is given a **GTK-drawn title
+bar** (`gtk_window_set_titlebar()` — client-side decoration), which GTK paints
+from the theme and which therefore stays solid. It deliberately looks different
+from the native one — and at transparency 0 none of this applies at all, so the
+native bar is untouched.
+
+*`gtk_window_set_titlebar()` does **not** show the bar*: it shows it only if the
+window is already visible, and this window is shown with `gtk_widget_show()`
+rather than `show_all()`. Without an explicit `gtk_widget_show(bar)` the title
+bar never appears at all.
+
+### A translucent fill must *replace*, not blend
+
+The first cut painted the background with `cairo_set_source_rgba()` and the
+default `OVER` operator, which lays the new frame *over* the old one instead of
+replacing it. Two visible consequences, the first reported as "the text I typed
+is highlighted":
+
+* **A ghost of the cursor.** The cursor is drawn as a filled block in the cursor
+  colour, so every character typed while the cursor sat on it kept a 25% tint of
+  that colour — and the cell's own repaint is that same translucent fill, so
+  nothing ever cleared it. With the cursor colour `(0,255,0)` and transparency
+  64 (75% opaque), the ghost is exactly `(0,64,0)`: measured, not guessed.
+* **The background was blended twice** per frame (the full-surface erase, then
+  the per-cell fill), so a 64 setting came out 94% opaque rather than 75%.
+
+The fix is one flag: while the *translucent default background* colour is
+current, `draw_rectangle()` fills with `CAIRO_OPERATOR_SOURCE` — replacing the
+pixels, alpha included — and then returns to `OVER`. Everything else still
+blends as before, so glyphs, the cursor block, selections and coloured
+backgrounds are untouched, and the full-surface erase (`draw_backing_rect()`)
+is now a true erase, which is what guarantees a stale frame cannot survive.
+
+Both of these were found by **rendering the terminal's backing surface
+offscreen** — `cairo_surface_write_to_png()` from a temporary probe, composited
+over magenta to make the alpha visible — and looking at the image. No screen
+capture, and the same trick is what showed the title bar going missing.
+
 ## Worth reporting upstream
 
 1. **`OSX_GTK` is never defined by the CMake build**, so every macOS-specific
@@ -848,7 +970,8 @@ unit-tested at both layers (the buffer and the tap) and not end-to-end.
 
 * Still GTK 3, as upstream. Only AppKit would be "universal" without bundling
   every dependency, and that is a rewrite, not a fork.
-* No saved passwords, and no *writing* to a session from MCP yet — see
-  `PLAN.md`.
+* No *writing* to a session from MCP yet, and no master password on the saved
+  session passwords yet: `v0` wraps the password, it does not encrypt it — see
+  `PLAN.md` §4k.
 * Copy-on-select (`CLIPUI_DEFAULT_AUTOCOPY`) is still off, matching the macOS
   Human Interface Guidelines.
