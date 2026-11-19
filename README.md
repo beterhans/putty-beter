@@ -322,6 +322,29 @@ Two macOS realities, both found the hard way:
 
 ---
 
+### 12c. Which monitor a new window opens on
+
+A new session window opens on the monitor the **configuration box** (or the
+window you asked for a new session from) is on, instead of on whichever screen
+macOS picks.
+
+Left to itself, macOS puts a new window at the origin of the monitor whose frame
+starts at (0,0), and on a two-monitor Mac that is often *not* the primary one —
+so every session opened on the same "wrong" monitor while the configuration box
+sat on the other one. Measured here: the box on the primary at `1920,0`, and
+every session window at `0,30` on the second display.
+
+The monitor of the last PuTTY window you moved or resized is what counts, so
+dragging the configuration box to your other screen and pressing **Open** opens
+the session there, and a new session asked for from a window on the second
+screen opens on the second screen. With no window to inherit from — the very
+first window of the app's life, or `putty -load x` straight from a shell — it is
+the **primary** monitor. A position given explicitly still wins.
+
+`PUTTY_DIAG=1` reports the choice:
+`new session window: monitor 1920,0 1920x1080, window 1040x614, placing at
+2360,233`.
+
 ### 13. MCP: let an AI agent read a session
 
 An AI agent can read a session **in the window you are looking at**, so you can

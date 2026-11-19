@@ -197,7 +197,8 @@ bool config_location_is_configured(void);
 char *config_location_set(const char *dirtext); /* NULL on success */
 void config_location_invalidate(void);
 
-/* config-location.c: show the relocation dialog if the configuration is
+/*
+ * config-location.c: show the relocation dialog if the configuration is
  * missing, or if the user held Option/Alt at launch, or if the environment
  * variable PUTTY_CONFIG_RELOCATE is set. Safe to call more than once. */
 void config_location_init(void);
@@ -215,6 +216,16 @@ void session_window_closed(void);
 void window_setup_error(const char *errmsg);
 #ifdef MAY_REFER_TO_GTK_IN_HEADERS
 GtkWidget *make_gtk_toplevel_window(GtkFrontend *frontend);
+#endif
+
+/*
+ * PuTTY-beter: remember which monitor a window is on, so that the next session
+ * window opens there instead of on whichever screen macOS feels like; see
+ * gtk_remember_window_monitor() in unix/window.c. Called from the configuration
+ * box (unix/dialog.c) and from the session windows' own configure handler.
+ */
+#ifdef MAY_REFER_TO_GTK_IN_HEADERS
+void gtk_remember_window_monitor(GtkWidget *window);
 #endif
 
 const struct BackendVtable *select_backend(Conf *conf);

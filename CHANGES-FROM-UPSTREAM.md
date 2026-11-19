@@ -47,6 +47,7 @@ fixes, so `git log` alone shows only the later work.
 | Session passwords | A session can remember its login password — kept in the session file wrapped, injected into the password prompt so connecting does not ask, and offered for keeping after a login that succeeds. Named for both halves: the offer to remember covers the login name typed at the `login as:` prompt as well, so a session whose password is already saved stops asking for the username too. |
 | ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
 | Transparent background | Window → Colours → "Transparency (0 = solid, 255 = see-through)": how much of the desktop shows through the background colour. Applied to the *default* background only, so text with a colour of its own — highlighted lines, the cursor — stays solid. |
+| Window placement | A new session window opens on the monitor the configuration box (or the window a new session was asked for from) is on, instead of on whichever screen macOS picks; the primary one when there is nothing to inherit from. See section 16 — and note that `-geometry` is a no-op on macOS. |
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
@@ -77,17 +78,17 @@ tool will give slightly different numbers for the same change.
 | `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
 | `unix/config-location.c` | new | See the new-files table |
-| `unix/dialog.c` | +978 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; the edit box's placeholder text; every file selector routed through the shared chooser |
+| `unix/dialog.c` | +983 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; the edit box's placeholder text; every file selector routed through the shared chooser; the configuration box reports its monitor, so a session opened from it opens on the same screen (section 16) |
 | `unix/gtkcompat.h` | +26 / -0 | `gtk_dialog_fix_macos_titlebar()` — gives a `GtkDialog` an opaque title bar on macOS |
 | `unix/gtkmisc.h` | +10 / -0 | Declares `our_file_chooser_run()` |
 | `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +10 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
-| `unix/platform.h` | +55 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs |
+| `unix/platform.h` | +79 / -3 | `#ifdef OSX_GTK` → `#if defined(OSX_GTK) \|\| defined(__APPLE__)` in both blocks; macOS clipboard defaults; declarations for the configuration-folder and GUI-state APIs; the monitor a new session window should open on |
 | `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
 | `unix/storage.c` | +1205 / -30 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store; session files are `.conf` (`INDEX_SESSIONFILE` beside `INDEX_SESSION`, which stays a folder), hidden entries are skipped, and a name beginning with `.` is refused; the redirect file is `config-location.conf` |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
-| `unix/window.c` | +1500 / -27 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session login details: the seat asks for the password after `-pw` declines, one attempt per connection, and offers to keep a freshly typed password *and* the login name typed at the `login as:` prompt after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through |
+| `unix/window.c` | +1597 / -28 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session login details: the seat asks for the password after `-pw` declines, one attempt per connection, and offers to keep a freshly typed password *and* the login name typed at the `login as:` prompt after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through; which monitor a new session window opens on (section 16) |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
@@ -1011,6 +1012,40 @@ offscreen** — `cairo_surface_write_to_png()` from a temporary probe, composite
 over magenta to make the alpha visible — and looking at the image. No screen
 capture, and the same trick is what showed the title bar going missing.
 
+## 16. Which monitor a new session window opens on
+
+`new_session_window()`, plus one hook line in the configuration box
+(`unix/dialog.c`).
+
+macOS places a new window at the origin of the monitor whose frame starts at
+`(0,0)`, and that is not necessarily the primary one. On the two-monitor Mac
+this was written on, the primary display is at `1920,0`, so every session window
+opened at `0,30` on the *other* screen while the configuration box sat at
+`2518,194` on the primary — the same wrong screen every time, which is what the
+user reported.
+
+* `gtk_remember_window_monitor()` (`unix/window.c`, called from the session
+  windows' own configure handler and from `config_box_configure()` in
+  `unix/dialog.c`) records the geometry of the monitor of the last PuTTY window
+  that was moved or resized.
+* `new_session_window()` uses it when the session has no position of its own,
+  centring the window on that monitor — so a session opened from the box lands
+  on the box's screen, and one asked for from a window on the second screen
+  lands there too.
+* Nothing remembered — the first window of a process, or `putty -load` from a
+  shell — means the **primary** monitor.
+* A window bigger than the monitor is clamped to its top-left corner rather than
+  given a negative offset. `PUTTY_DIAG=1` prints the monitor, the window size
+  and the final position.
+
+Hoisted out of the way: on macOS `NOT_X_WINDOWS` is defined, so the
+`-geometry` handling above (which parses the string with `XParseGeometry`) is
+compiled *out* — `inst->gotpos` is never set on macOS and **`-geometry` has no
+effect at all there**, neither position nor size. That is upstream's, and this
+change deliberately leaves it alone: the new branch is the `else` of
+`if (inst->gotpos)`, so if `-geometry` is ever made to work, an explicit position
+still wins.
+
 ## Worth reporting upstream
 
 1. **`OSX_GTK` is never defined by the CMake build**, so every macOS-specific
@@ -1023,6 +1058,14 @@ capture, and the same trick is what showed the title bar going missing.
    matches `GDK_KEY_Insert` and macOS reports that key as `GDK_KEY_Help`.
 4. **Dialogs cannot be pasted into on macOS**: GTK's copy/paste bindings are
    Control-based and nothing handles Command.
+5. **`-geometry` does nothing on a `NOT_X_WINDOWS` build.** The size and
+   position are parsed inside `#ifndef NOT_X_WINDOWS` in `unix/window.c`, using
+   `XParseGeometry`, and `NOT_X_WINDOWS` is defined on macOS — so
+   `putty -geometry 80x24+100+100` is accepted and then silently ignored, size
+   included. A parser using `sscanf` would be a dozen lines, but the position
+   and gravity handling around it is X11-specific (`XValue`, `XNegative`, and
+   `get_monitor_geometry` at window-creation time), so it is a change worth
+   making deliberately rather than incidentally.
 
 ## Deliberately not changed
 

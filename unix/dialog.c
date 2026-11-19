@@ -3885,6 +3885,11 @@ static gboolean config_box_configure(GtkWidget *widget,
 {
     config_box_width = event->width;
     config_box_height = event->height;
+    /*
+     * PuTTY-beter: and remember which monitor the box is on, so that the
+     * session opened from it opens on the same one (unix/window.c).
+     */
+    gtk_remember_window_monitor(widget);
     if (getenv("PUTTY_CONFIG_DEBUG"))
         fprintf(stderr, "[config-dialog] size %dx%d\n",
                 config_box_width, config_box_height);

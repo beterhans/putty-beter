@@ -1963,6 +1963,13 @@ static gboolean window_configured(
     GtkWidget *widget, GdkEventConfigure *event, gpointer data)
 {
     GtkFrontend *inst = (GtkFrontend *)data;
+    /*
+     * PuTTY-beter: remember this window's monitor, so that a session window
+     * opened from here lands on the same screen - see
+     * gtk_remember_window_monitor() below. Two cheap GDK calls per configure
+     * event, which is at most once a frame.
+     */
+    gtk_remember_window_monitor(widget);
     if (inst->term) {
         term_notify_window_pos(inst->term, event->x, event->y);
         term_notify_window_size_pixels(
@@ -6657,6 +6664,77 @@ static void get_monitor_geometry(GtkWidget *widget, GdkRectangle *geometry)
     geometry->height = gdk_screen_height();
 #endif
 }
+
+/*
+ * PuTTY-beter: which monitor a new session window should open on.
+ *
+ * Left to itself, macOS puts a new window at the origin of the monitor whose
+ * frame starts at (0,0) - which is not necessarily the primary one, so with two
+ * displays side by side every session window came up on the *other* monitor
+ * from the configuration box. Measured on a two-monitor Mac (the primary at
+ * 1920,0): the box sat at 2518,194 on the primary, and each session window
+ * opened at 0,30 on the second monitor, every time.
+ *
+ * So the monitor of the last PuTTY window the user moved or resized is
+ * remembered here - the configuration box feeds this too, from unix/dialog.c -
+ * and a new window is centred on it. Nothing remembered (the first window of
+ * the app's life, or a `putty -load` straight from a shell) means the primary
+ * monitor, which is where the menu bar is and where a window with no parent
+ * belongs.
+ *
+ * An explicit position in a saved session or on the command line still wins:
+ * this is only used when there is no position to honour.
+ */
+static bool monitor_known = false;
+static GdkRectangle known_monitor;
+
+void gtk_remember_window_monitor(GtkWidget *window)
+{
+    if (!window || !gtk_widget_get_mapped(window))
+        return;
+    get_monitor_geometry(window, &known_monitor);
+    monitor_known = true;
+}
+
+static void get_target_monitor(GdkRectangle *geometry)
+{
+    GdkDisplay *display = gdk_display_get_default();
+
+    if (monitor_known) {
+        *geometry = known_monitor;
+        return;
+    }
+#if GTK_CHECK_VERSION(3,22,0)
+    {
+        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
+        if (!monitor)
+            monitor = gdk_display_get_monitor(display, 0);
+        gdk_monitor_get_geometry(monitor, geometry);
+    }
+#else
+    gdk_screen_get_monitor_geometry(gdk_display_get_default_screen(display),
+                                    0, geometry);
+#endif
+}
+
+static void place_window_on_monitor(GtkFrontend *inst, const GdkRectangle *mon)
+{
+    int wp, hp, x, y;
+
+    compute_whole_window_size(inst, inst->width, inst->height, &wp, &hp);
+
+    x = mon->x + (mon->width - wp) / 2;
+    y = mon->y + (mon->height - hp) / 2;
+    if (x < mon->x)
+        x = mon->x;                    /* bigger than the monitor: use its top */
+    if (y < mon->y)
+        y = mon->y;                    /* left corner and let it overflow */
+
+    DIAG("new session window: monitor %d,%d %dx%d, window %dx%d, placing at "
+         "%d,%d\n", mon->x, mon->y, mon->width, mon->height, wp, hp, x, y);
+
+    gtk_window_move(GTK_WINDOW(inst->window), x, y);
+}
 #endif
 
 static const TermWinVtable gtk_termwin_vt = {
@@ -7015,6 +7093,15 @@ void new_session_window(Conf *conf, const char *geometry_string)
         gtk_window_set_gravity(GTK_WINDOW(inst->window),
                                gravities[inst->gravity & 3]);
         gtk_window_move(GTK_WINDOW(inst->window), x, y);
+    } else {
+        /*
+         * PuTTY-beter: no position was asked for, so choose the monitor rather
+         * than leaving it to macOS, which picks the wrong one (see
+         * gtk_remember_window_monitor).
+         */
+        GdkRectangle target;
+        get_target_monitor(&target);
+        place_window_on_monitor(inst, &target);
     }
 #else
     if (inst->gotpos) {
