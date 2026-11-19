@@ -44,7 +44,7 @@ fixes, so `git log` alone shows only the later work.
 | Session comments | A free-text note kept with each saved session, in a panel below Logging, with a multi-line UTF-8 box. |
 | Session search | Type `/` in the Saved Sessions box and the list below is filtered, live, by session name, host name/IP or comment; folders still show as a tree. |
 | Session files | A saved session is a `<name>.conf` file, and only `.conf` files are read as sessions, so Finder's `.DS_Store` and stray copies no longer turn up in the list. Folders are directories and have no extension. |
-| Session passwords | A session can remember its login password — kept in the session file wrapped, injected into the password prompt so connecting does not ask, and offered for keeping after a login that succeeds with a password the user just typed. |
+| Session passwords | A session can remember its login password — kept in the session file wrapped, injected into the password prompt so connecting does not ask, and offered for keeping after a login that succeeds. Named for both halves: the offer to remember covers the login name typed at the `login as:` prompt as well, so a session whose password is already saved stops asking for the username too. |
 | ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
 | Transparent background | Window → Colours → "Transparency (0 = solid, 255 = see-through)": how much of the desktop shows through the background colour. Applied to the *default* background only, so text with a colour of its own — highlighted lines, the cursor — stays solid. |
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
@@ -87,7 +87,7 @@ tool will give slightly different numbers for the same change.
 | `unix/putty.bundle` | +21 / -0 | Bundle gdk-pixbuf loaders (so `loaders.cache` points inside the app); bundle `icons/PuTTY.icns`; the Adwaita theme block is commented out (GTK ≥ 3.20 has it built in) |
 | `unix/storage.c` | +1205 / -30 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store; session files are `.conf` (`INDEX_SESSIONFILE` beside `INDEX_SESSION`, which stays a folder), hidden entries are skipped, and a name beginning with `.` is refused; the redirect file is `config-location.conf` |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
-| `unix/window.c` | +1376 / -27 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session password: the seat asks for it after `-pw` declines, one attempt per connection, and offers to keep a freshly typed one after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through |
+| `unix/window.c` | +1500 / -27 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session login details: the seat asks for the password after `-pw` declines, one attempt per connection, and offers to keep a freshly typed password *and* the login name typed at the `login as:` prompt after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through |
 | `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
 | `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
 | `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
@@ -327,8 +327,9 @@ These are runtime switches and cost nothing when unset.
   and every request and reply. The bridge has its own `--debug` for the other
   end of the same conversation.
 * `PUTTY_SESS_SEARCH_DEBUG=1` — the saved-session search (see section 10b).
-* `PUTTY_SESSPASS_DEBUG=1` — the saved-session password: a blob being decoded,
-  and an injection into a password prompt (never the password itself).
+* `PUTTY_SESSPASS_DEBUG=1` — the saved-session password and the login name kept
+  beside it: a blob being decoded, an injection into a password prompt, and a
+  login name remembered from the `login as:` prompt (never the password itself).
 * `ZMODEM_INTEROP_TRACE=1`, `ZMODEM_INTEROP_DUMP=1` (raw streams to
   `/tmp/zm-in-*.bin` and `zm-out-*.bin`) and `ZMODEM_INTEROP_PRINTABLE=1` —
   only for `test/test_zmodem_interop`.
@@ -872,14 +873,27 @@ ask for one (design and reasoning: `PLAN.md` §4k).
   (`proxy/sshproxy.c`), and it has exactly the same shape — so it is marked
   (`p->from_proxy`) and declined, or the *proxy's* password would be answered
   with the *session's*.
-* **The offer to remember** is made after a login that *succeeds* with a
-  password the user just typed, when the session has none saved: the seat notes
-  what it answered with, `gtk_seat_notify_session_started()` queues a toplevel
-  callback (a modal dialog must not go up in the middle of packet processing),
-  and Yes saves the session's file the way Save does, with the password added.
-  `CONF_session_name` records which saved session the configuration came from,
-  so there is somewhere to save it to; an empty name, or "Default Settings", is
-  skipped.
+* **The offer to remember** is made after a login that *succeeds*, and it covers
+  the **login name as well as the password**: whichever of the two the session
+  does not already have is what the offer names and saves. The seat notes the
+  password it answered the password prompt with (`sesspass_used`) *and* the name
+  it answered the `login as:` prompt with (`ssh_username_used`);
+  `gtk_seat_notify_session_started()` queues a toplevel callback (a modal dialog
+  must not go up in the middle of packet processing), and Yes saves the
+  session's file the way Save does, with the new fields filled in. A login name
+  typed at the prompt replaces the session's Auto-login username; a password
+  that is already saved is left alone. `CONF_session_name` records which saved
+  session the configuration came from, so there is somewhere to save it to; an
+  empty name, or "Default Settings", is skipped.
+* **The username prompt's shape test** is the mirror image of the password's: a
+  single prompt, to the server, but *echoing* (a login name is not secret) and
+  from the local client rather than the server, so a single echoing
+  keyboard-interactive question cannot be mistaken for it. Both SSH-1 and SSH-2
+  name their prompt set `"SSH login name"`, which is the final check. It matters
+  that the offer fires on the *username* alone: once the password is saved, the
+  login name was the one thing still asked for on every connection. Note that
+  `CONF_username` is `CONF_TYPE_STR_AMBI`, so it is read with
+  `conf_get_str_ambi()` — `conf_get_str()` asserts on it.
 
 ## 15. Transparent background
 

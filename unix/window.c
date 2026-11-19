@@ -237,6 +237,15 @@ struct GtkFrontend {
      * the window goes away.
      */
     char *sesspass_used;
+    /*
+     * PuTTY-beter: the login name this connection answered the "login as:"
+     * prompt with - set only when the user was actually asked, i.e. when the
+     * session had no Auto-login username. Kept beside the password above so
+     * that a successful login can offer to remember both at once: with the
+     * password already saved, the login name was the one thing still asked for
+     * on every connection. See PLAN.md section 4k.
+     */
+    char *ssh_username_used;
     bool sesspass_offered;             /* the "remember it?" dialog has run */
     LogContext *logctx;
     bool exited;
@@ -1183,6 +1192,77 @@ static void sesspass_remember_used(GtkFrontend *inst, prompts_t *p)
     inst->sesspass_used = dupstr(result);
 }
 
+/*
+ * PuTTY-beter: the shape test for "this prompt set is asking for an SSH login
+ * name" - the mirror image of sesspass_is_login_prompt(). One prompt, to the
+ * server, but this one *echoes* (a login name is not secret), and it comes from
+ * the local client rather than the server, which keeps it away from a
+ * keyboard-interactive prompt that happens to be a single echoing question.
+ * Both SSH-1 and SSH-2 name their prompt set "SSH login name", which is the
+ * last confirmation.
+ */
+static bool sesslogin_is_username_prompt(prompts_t *p)
+{
+    return p->n_prompts == 1 && p->prompts[0]->echo && p->to_server &&
+        !p->from_server && !p->from_proxy && p->name &&
+        !strcmp(p->name, "SSH login name");
+}
+
+/*
+ * PuTTY-beter: remember the login name this connection answered the "login as:"
+ * prompt with, so that a successful login can offer to keep it in the session's
+ * file alongside the password (PLAN.md section 4k). Copied at once, like the
+ * password: the SSH layer frees the prompt set as soon as the seat returns. A
+ * login name is not secret, so it is freed rather than wiped.
+ */
+static void sesslogin_remember_username(GtkFrontend *inst, prompts_t *p)
+{
+    const char *result;
+
+    if (!sesslogin_is_username_prompt(p))
+        return;
+    result = prompt_get_result_ref(p->prompts[0]);
+    if (!result || !*result)
+        return;
+
+    sfree(inst->ssh_username_used);
+    inst->ssh_username_used = dupstr(result);
+
+    if (sesspass_debug_enabled())
+        fprintf(stderr, "sesspass: remembering the login name \"%s\"\n",
+                result);
+}
+
+/*
+ * PuTTY-beter: what a successful login has to offer to write into the session's
+ * file, if anything (PLAN.md section 4k). Two things count as new: a password
+ * that has just been accepted and is not saved yet, and a login name typed at
+ * the prompt that the session does not already have. Keeping the "login name
+ * typed at the prompt" condition makes the offer fire even when the password
+ * came from the session file - which is the case where the username was the
+ * only thing still being asked for.
+ */
+static bool sesslogin_wants_password(GtkFrontend *inst)
+{
+    const char *saved = conf_get_str(inst->conf, CONF_session_password);
+
+    return inst->sesspass_used && *inst->sesspass_used && (!saved || !*saved);
+}
+
+static bool sesslogin_wants_username(GtkFrontend *inst)
+{
+    const char *user;
+
+    if (!inst->ssh_username_used || !*inst->ssh_username_used)
+        return false;
+    /*
+     * CONF_username is CONF_TYPE_STR_AMBI, not CONF_TYPE_STR, so it has to be
+     * read with conf_get_str_ambi() - conf_get_str() asserts on it.
+     */
+    user = conf_get_str_ambi(inst->conf, CONF_username, NULL);
+    return !user || strcmp(user, inst->ssh_username_used);
+}
+
 static SeatPromptResult gtk_seat_get_userpass_input(Seat *seat, prompts_t *p)
 {
     GtkFrontend *inst = container_of(seat, GtkFrontend, seat);
@@ -1192,14 +1272,19 @@ static SeatPromptResult gtk_seat_get_userpass_input(Seat *seat, prompts_t *p)
         spr = sesspass_try_prompt(inst, p);   /* PuTTY-beter: saved password */
     if (spr.kind == SPRK_INCOMPLETE)
         spr = term_get_userpass_input(inst->term, p);
-    if (spr.kind == SPRK_OK)
+    if (spr.kind == SPRK_OK) {
         sesspass_remember_used(inst, p);
+        sesslogin_remember_username(inst, p); /* PuTTY-beter: login name */
+    }
     return spr;
 }
 
 /*
- * PuTTY-beter: offer to keep the password that has just been accepted, when
- * the session has none saved (PLAN.md section 4k).
+ * PuTTY-beter: offer to keep the login details that have just been accepted,
+ * when the session has not got them (PLAN.md section 4k). "Them" is the
+ * password, the login name typed at the "login as:" prompt, or both, whichever
+ * is new - the login name alone is enough, which is the case where the password
+ * was already saved and the username was still being asked for.
  *
  * The offer is made from a toplevel callback rather than straight from
  * notify_session_started, because that runs in the middle of the backend's
@@ -1214,24 +1299,37 @@ static void sesspass_offer_callback(void *vctx)
     const char *name;
     char *title, *msg;
     GtkWidget *dialog;
+    bool user, pass;
 
     if (inst->exited || !inst->window)
         return;
-    if (!inst->sesspass_used || !*inst->sesspass_used)
+
+    user = sesslogin_wants_username(inst);
+    pass = sesslogin_wants_password(inst);
+    if (!user && !pass)
         return;
 
     name = conf_get_str(inst->conf, CONF_session_name);
     if (!name || !*name || !strcmp(name, "Default Settings"))
         return;            /* not a saved session: nowhere to save it */
 
-    title = dupcat(appname, " Remember Password");
-    msg = dupprintf("Login succeeded. Remember this password for the session"
-                    " \"%s\", so that connecting to it does not have to ask"
-                    " for it again?", name);
+    title = dupcat(appname, " Remember Login");
+    if (user && pass)
+        msg = dupprintf("Login succeeded. Remember this username and password "
+                        "for the session \"%s\", so that connecting to it does "
+                        "not have to ask for them again?", name);
+    else if (user)
+        msg = dupprintf("Login succeeded. Remember this username for the "
+                        "session \"%s\", so that connecting to it does not have "
+                        "to ask for it again?", name);
+    else
+        msg = dupprintf("Login succeeded. Remember this password for the "
+                        "session \"%s\", so that connecting to it does not have "
+                        "to ask for it again?", name);
     dialog = create_message_box(
         inst->window, title, msg,
-        string_width("Remember this password for the session"), false,
-        &buttons_yn, sesspass_offer_result, inst);
+        string_width("Remember this username and password for the session"),
+        false, &buttons_yn, sesspass_offer_result, inst);
     register_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD, dialog);
     sfree(title);
     sfree(msg);
@@ -1249,10 +1347,16 @@ static void sesspass_offer_result(void *vctx, int result)
     const char *name;
     Conf *conf;
     char *errmsg;
+    bool user, pass;
 
     unregister_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD);
 
-    if (result != 1 || !inst->sesspass_used || !*inst->sesspass_used)
+    if (result != 1)
+        return;
+
+    user = sesslogin_wants_username(inst);
+    pass = sesslogin_wants_password(inst);
+    if (!user && !pass)
         return;
 
     name = conf_get_str(inst->conf, CONF_session_name);
@@ -1261,46 +1365,57 @@ static void sesspass_offer_result(void *vctx, int result)
 
     /*
      * Save the whole configuration, the way Save in the configuration dialog
-     * does, with the password added. Keep the in-memory copy in step too, so
-     * that Restart Session logs in without asking.
+     * does, with the login details filled in. Keep the in-memory copy in step
+     * too, so that Restart Session logs in without asking.
      */
     conf = conf_copy(inst->conf);
-    conf_set_str(conf, CONF_session_password, inst->sesspass_used);
+    if (pass)
+        conf_set_str(conf, CONF_session_password, inst->sesspass_used);
+    if (user) {
+        /*
+         * A username typed at the prompt replaces whatever the session had:
+         * this is the name that actually logged in. (An existing Auto-login
+         * username would not have been asked for, so the two only differ when
+         * the user typed a different name at a re-prompt.) Set as a native
+         * string, like every other place that sets CONF_username; settings.c
+         * converts to and from UTF-8 when it writes the file.
+         */
+        conf_set_str(conf, CONF_username, inst->ssh_username_used);
+    }
     errmsg = save_settings(name, conf);
     conf_free(conf);
 
     if (errmsg) {
-        char *title = dupcat(appname, " Remember Password");
+        char *title = dupcat(appname, " Remember Login");
         GtkWidget *dialog = create_message_box(
             inst->window, title, errmsg,
-            string_width("Remember this password for the session"), false,
-            &buttons_ok, sesspass_offer_error_cb, inst);
+            string_width("Remember this username and password for the session"),
+            false, &buttons_ok, sesspass_offer_error_cb, inst);
         register_dialog(&inst->seat, DIALOG_SLOT_REMEMBER_PASSWORD, dialog);
         sfree(title);
         sfree(errmsg);
         return;
     }
 
-    conf_set_str(inst->conf, CONF_session_password, inst->sesspass_used);
+    if (pass)
+        conf_set_str(inst->conf, CONF_session_password, inst->sesspass_used);
+    if (user)
+        conf_set_str(inst->conf, CONF_username, inst->ssh_username_used);
 
     if (sesspass_debug_enabled())
-        fprintf(stderr, "sesspass: saved the password for session \"%s\"\n",
-                name);
+        fprintf(stderr, "sesspass: saved the %s for session \"%s\"\n",
+                user && pass ? "username and password" :
+                user ? "username" : "password", name);
 }
 
 static void gtk_seat_notify_session_started(Seat *seat)
 {
     GtkFrontend *inst = container_of(seat, GtkFrontend, seat);
-    const char *saved;
 
     if (inst->sesspass_offered)
         return;
-    if (!inst->sesspass_used || !*inst->sesspass_used)
+    if (!sesslogin_wants_password(inst) && !sesslogin_wants_username(inst))
         return;
-
-    saved = conf_get_str(inst->conf, CONF_session_password);
-    if (saved && *saved)
-        return;                    /* already saved: nothing to offer */
 
     inst->sesspass_offered = true;
     queue_toplevel_callback(sesspass_offer_callback, inst);
@@ -3541,6 +3656,11 @@ static void delete_inst(GtkFrontend *inst)
         smemclr(inst->sesspass_used, strlen(inst->sesspass_used));
         sfree(inst->sesspass_used);
         inst->sesspass_used = NULL;
+    }
+    if (inst->ssh_username_used) {
+        /* PuTTY-beter: the login name typed at the "login as:" prompt. */
+        sfree(inst->ssh_username_used);
+        inst->ssh_username_used = NULL;
     }
     if (inst->logctx) {
         log_free(inst->logctx);
@@ -6451,8 +6571,8 @@ static void start_backend(GtkFrontend *inst)
 
     /*
      * PuTTY-beter: a fresh connection gets a fresh chance at the saved
-     * session password, and a fresh chance to remember one (PLAN.md
-     * section 4k).
+     * session password, and a fresh chance to remember the login details
+     * (PLAN.md section 4k).
      */
     inst->sesspass_tried = false;
     inst->sesspass_offered = false;
@@ -6460,6 +6580,10 @@ static void start_backend(GtkFrontend *inst)
         smemclr(inst->sesspass_used, strlen(inst->sesspass_used));
         sfree(inst->sesspass_used);
         inst->sesspass_used = NULL;
+    }
+    if (inst->ssh_username_used) {
+        sfree(inst->ssh_username_used);
+        inst->ssh_username_used = NULL;
     }
 
     vt = select_backend(inst->conf);

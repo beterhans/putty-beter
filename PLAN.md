@@ -792,27 +792,34 @@ the tree now:
   the dialog. One attempt per connection, so a password the server rejects
   falls back to the dialog instead of failing the connection.
 * **`unix/window.c` / `conf.h`** — **the offer to remember**. After a login
-  that *succeeded*, if a password was typed and the session has none saved,
-  the app asks whether to keep it. The seat notes the password it answered the
-  prompt with (`sesspass_used`, wiped at teardown and at the start of each
-  connection); `gtk_seat_notify_session_started()` — which the SSH backend
+  that *succeeded*, if there is something new to keep — a password that was
+  typed and is not saved, a login name typed at the `login as:` prompt that the
+  session does not have, or both — the app asks whether to keep it. The seat
+  notes the password it answered the password prompt with (`sesspass_used`) and
+  the login name it answered the `login as:` prompt with (`ssh_username_used`),
+  each recognised by a shape test; both are wiped at teardown and at the start of
+  each connection. `gtk_seat_notify_session_started()` — which the SSH backend
   already calls when the main channel opens — queues a toplevel callback (a
   modal dialog must not be raised in the middle of packet processing) and that
-  offers Yes/No. Yes saves the session's file the way Save does, with the
-  password added, and updates the in-memory configuration so Restart Session
-  logs straight in. The offer needs to know *which* session to save to, so
-  `CONF_session_name` (NOT_SAVED) records it: `load_settings()` sets it from
-  the section it loaded, and "Default Settings" (or an empty name, meaning a
-  hostname typed by hand) is skipped, because there is nowhere sensible to put
-  a password for it.
+  offers Yes/No. Yes saves the session's file the way Save does, with the new
+  fields filled in (`CONF_username`, whose prompt-typed value replaces any
+  Auto-login username, and the password), and updates the in-memory
+  configuration so Restart Session logs straight in. The offer needs to know
+  *which* session to save to, so `CONF_session_name` (NOT_SAVED) records it:
+  `load_settings()` sets it from the section it loaded, and "Default Settings"
+  (or an empty name, meaning a hostname typed by hand) is skipped, because there
+  is nowhere sensible to put a password for it.
+  * Offering the **login name alone** is what makes this complete: with the
+  password already saved, connecting still asked for a login name every time,
+  and the old password-only offer never fired, so there was no way to keep it.
 * **`putty.h` / `proxy/sshproxy.c`** — the `from_proxy` mark, so a password
   prompt the SSH-to-SSH proxy forwarded is not answered with the session's.
 * **Tests** — `test/test_sesspass.c` (the blob and its failure modes) and a
   save/load round trip in `test/test_sessions.c` that also proves the password
   is not in the file in the clear.
 
-Debug switch: `PUTTY_SESSPASS_DEBUG=1` traces a decode and an injection, in the
-same shape as `PUTTY_SESS_SEARCH_DEBUG`.
+Debug switch: `PUTTY_SESSPASS_DEBUG=1` traces a decode, an injection and a
+remembered login name, in the same shape as `PUTTY_SESS_SEARCH_DEBUG`.
 
 Still to do, as designed below: the master password, the Argon2id + AES-CBC +
 HMAC **v1** blob (M3a as written), the "Forget" button and the passphrase

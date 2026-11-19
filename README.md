@@ -186,7 +186,7 @@ whether the session files had to be read again — to stderr. For the design, th
 cache and how to drive the dialog from a script, see
 [`docs/session-search.md`](docs/session-search.md).
 
-### 9c. Saving a session's password
+### 9c. Saving a session's login details
 
 A saved session can remember its login password, so connecting to it does not
 ask. The box is in **Connection → Data**, directly under *Auto-login username*,
@@ -196,15 +196,22 @@ password; clear it and press **Save** to forget one.
 * **Connecting** uses the saved password only if the server asks for one, and
   only once: if the server rejects it (the password changed, say) you get the
   ordinary prompt instead of a failed connection.
-* **A login that succeeds** with a password you typed, on a session that has
-  none saved, offers to keep it — **Remember Password** — and Yes writes it into
-  that session. Restart Session then logs straight in.
+* **A login that succeeds** offers to keep what it took to get there —
+  **Remember Login** — after the password you typed, the login name you typed at
+  the `login as:` prompt, or both, whichever the session does not already have;
+  Yes writes them into that session, and Restart Session then logs straight in.
+  The login name is offered **on its own** as well, which is the case that
+  matters once the password is already saved: the name was still being asked for
+  on every connection.
+* A login name typed at the prompt **replaces** the session's *Auto-login
+  username* — it is the name that actually logged in. A password already saved
+  is left alone.
 * **What is on disk is wrapped, not encrypted**: the session file holds
   `SessionPassword=v0;<base64>`. That keeps it off a plain `grep` and out of
   sight, but anyone who can read the file can decode it. Encrypting it under a
   master password is the next piece of work (`PLAN.md` §4k).
-* `PUTTY_SESSPASS_DEBUG=1` traces a decode and an injection to stderr — never
-  the password itself.
+* `PUTTY_SESSPASS_DEBUG=1` traces a decode, an injection and a remembered login
+  name to stderr — never the password itself.
 
 ### 10. Changed defaults
 
