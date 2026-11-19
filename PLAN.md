@@ -706,19 +706,329 @@ than smuggled into this one.
 
 ---
 
+## 4k. Saved-session passwords: encrypted at rest, injected into auth  *(design 2026-11-19, not built)*
+
+**Goal:** save a session's login password once, so connecting to it needs no
+typing — and have what is on disk be useless to anyone who copies it.
+
+**What already exists, and what does not.** Auto-login itself is not the work.
+The GTK front end *already* consults a stored password before it ever shows a
+dialog: `gtk_seat_get_userpass_input()` (`unix/window.c:1079`) calls
+`cmdline_get_passwd_input()` first, and only falls back to the interactive
+password box if that declines. That function (`cmdline.c:84-131`) fills the
+prompt from `cmdline_password`, which `-pw` and `-pwfile` set
+(`cmdline.c:609`, `:639`), and the GUI accepts both options (`unix/putty.c:82`
+has no `TOOLTYPE_NONNETWORK`).
+
+So `putty -pw secret -load mysession` logs in unattended **today**. What is
+missing is only:
+
+1. somewhere safe to keep the secret, and
+2. a way for a saved session to hand it to that existing injector.
+
+The prompt the injector accepts is exactly the one the server-side password
+method produces (`ssh/userauth2-client.c:1795-1822`): a single prompt, to the
+server, not echoing. That shape test is worth keeping — it is what stops a saved
+*login* password from being offered as a private-**key** passphrase
+(`to_server = false`, `ssh/userauth2-client.c:1191`) or as the username.
+
+### Behaviour
+
+| Situation | What happens |
+|---|---|
+| Session has a saved password, pubkey auth succeeds | nothing at all: the password is never decrypted and no prompt appears |
+| Session has a saved password, server asks for one | the saved password is sent, no dialog |
+| Session has a saved password, but the run is locked | the **master password** is asked for once (see below), then the login password is sent |
+| The saved password is rejected | fall back to the ordinary password dialog, and offer to replace the stored one |
+| No saved password | unchanged, byte for byte |
+| "Forget saved password" | the blob is deleted from the session file; the next connect prompts normally |
+
+* Unlock is **lazy**: it happens at the moment the password prompt would
+  otherwise be shown, not when the session opens. A session that authenticates
+  by key never decrypts anything and never asks for the master password.
+* A rejected password must *not* abort the way `-pw` does
+  (`cmdline.c:104`: "Configured password was not accepted"). A stale stored
+  password is an ordinary event — the server's password changed — so the
+  friendly path is to fall back to the dialog, and offer to update.
+* `restartable` stays `true` for the GUI (`unix/window.c:1083`), so the login
+  password survives **Restart Session** exactly as `-pw` does
+  (`cmdline.c:119-128`). It is wiped with `smemclr` when the session ends.
+* Nothing about the password is ever logged, and it is never typed into the
+  terminal, so it cannot reach the MCP capture buffer or appear on screen.
+
+### The route, and the one that was rejected
+
+**Chosen: the core.** Extend the seat so the front end can answer the prompt
+from the session's stored password. It covers the plain `password` method and
+keyboard-interactive alike, because both arrive at
+`gtk_seat_get_userpass_input()`.
+
+**Rejected as the primary route: an authentication plugin.** Upstream 0.85
+ships a plugin protocol for almost exactly this use ("automate
+keyboard-interactive", and let the plugin ask the user its own questions —
+`doc/authplugin.but`), it is configured with the "Plugin command to run" box
+(`CONF_auth_plugin`), and it works in this build: it is started at
+`ssh/userauth2-client.c:665`, and `platform_start_subprocess()` is genuine on
+Unix (`unix/local-proxy.c:110`). But the plugin is only ever consulted for
+**keyboard-interactive** (`ssh/userauth2-client.c:1542`), never for the plain
+`password` method — so on a server that offers only `password` it would do
+nothing. It remains a good later addition for OTP-style flows; it is not the
+foundation.
+
+### The stored form
+
+One extra key in the session's own file, carried in `Conf` but written and read
+by hand, exactly like `SessionComment` (`conf.h:885` `LOAD_CUSTOM, SAVE_CUSTOM`;
+write at `settings.c:676`, read at `:865`). Carrying it in `Conf` is what makes
+an ordinary **Save** preserve it instead of silently dropping it, and
+hand-writing it is what keeps the plaintext out of the file: `save_settings()`
+never sees it.
+
+```
+SessionPassword=v1;argon2id;m=65536,t=3,p=4;aes256-cbc-hmac-sha256;<salt>;<iv>;<ct>;<mac>
+```
+
+Base64 in every field. No escaping is needed and none is done:
+`write_setting_s()` writes `key=value` verbatim (`unix/storage.c:1013`) and
+base64 contains no newline, no `\`, and no leading `=`. The KDF parameters ride
+in the string so they can be raised later without breaking old files, and a
+future `v2` can name a keystore key instead of carrying its own salt.
+
+**The construction is copied, not invented.** Argon2id → key‖IV‖MAC-key, then
+AES-256-CBC with HMAC-SHA-256 over the ciphertext, is what `.ppk` v3 already
+does in this tree (`sshpubk.c:605-650`), and every part is already built and
+linked:
+
+| Need | Already here |
+|---|---|
+| Argon2id, with auto-tuning of the pass count to a time budget | `crypto/argon2.c`; `argon2()` / `argon2_choose_passes()` (`ssh.h:1136-1146`) |
+| AES-256-CBC, HMAC-SHA-256 | `crypto/aes.h`, `crypto/hmac.c` |
+| Base64, constant-time compare, secure wipe | `utils/base64*.c`, `utils/smemeq.c`, `utils/smemclr.c` |
+
+**Parameters.** `.ppk` v3 deliberately picks the *modest* end — Argon2id,
+8192 Kb, auto-tuned to about 100 ms (`sshpubk.c:1418-1440`) — because a key
+passphrase is typed rarely and must work on a small machine. A password store
+deserves better: **64 Mb and about 250 ms** as a starting point, recorded in the
+blob. That is not a detail to be stingy about, because of the next point.
+
+**About the salt.** Two different things, doing two different jobs:
+
+* A **random per-blob salt, stored in the file**, so two sessions with the same
+  password do not produce the same ciphertext, and one cracking effort does not
+  serve for every file. This is the ordinary KDF salt.
+* The **user id** (hans), passed as Argon2's associated-data/context input, and
+  *not* trusted as a secret. The file already says who owns it, so it buys no
+  attacker work at all — what it buys is the property you asked for: the same
+  user id on a different machine derives the same key, and a different user id
+  does not.
+
+**The master password is the lock, and 6 characters is not enough.** Argon2id
+at 64 Mb costs a GPU in the low thousands of guesses per second, so six
+lowercase letters (26⁶ ≈ 3·10⁸) is hours to days offline; a four-word passphrase
+(≈ 10¹⁵) is out of reach. The UI should ask for a **passphrase**, not enforce a
+6-character minimum, and the docs should say plainly what the file does and does
+not protect against (below).
+
+**Integrity.** Encrypt-then-MAC, compared with `smemeq()`. Without it a
+truncated or edited file decrypts to garbage and the user is told they typed
+their master password wrong. With it, "wrong master password" and "this file has
+been damaged" can be distinguished.
+
+### The `\` override
+
+The same shape as §4j's search prefix, on the **master password** prompt:
+normally the user id is taken from the machine and never shown; a leading `\`
+means "I will give you both, by hand":
+
+| Typed | Meaning |
+|---|---|
+| `passphrase` | user id comes from the machine |
+| `\hans:passphrase` | user id and passphrase given explicitly, for a blob from another account |
+| `\:passphrase` | no user id at all: the blob opens under any account that has the passphrase |
+
+This lives on the master-password prompt and *not* on the Saved Sessions box,
+which already gives `/` a meaning (§4j) — two prefixes, two boxes, no overlap.
+
+### Lifetime, and the Keychain offer
+
+The master password is asked for **once per run** and held in memory for that
+run, then wiped. After a successful manual entry the app *offers* to keep it in
+the OS keychain (macOS: Security framework, or `security add-generic-password`;
+Linux: libsecret where available) so later runs do not prompt at all.
+
+The keychain caches the **master password only**. The encrypted blob in the
+session file stays the source of truth, so the configuration remains portable —
+copy the config folder to another machine with the same user id and everything
+still opens — while this machine rarely has to ask. If the keychain entry is
+missing, or the user declines, it falls back to the prompt.
+`PUTTY_SESS_PASS_NO_KEYCHAIN=1` disables the offer for anyone who does not want
+a copy in the keychain at all.
+
+### Why bother: what is on disk now
+
+```
+drwx------  ~/Documents/putty-beter-config/sessions/
+-rw-r--r--  ~/Documents/putty-beter-config/sessions/Test_con     <- 0644
+```
+
+Session files are world-readable: `open_settings_w()` is a plain
+`fopen(name, "w")` (`unix/storage.c:998`), inside a directory created 0700
+(`:990`). Locally that is private enough. But this fork's default configuration
+directory is **`~/Documents/putty-beter-config`** (`unix/storage.c:373`) — a
+place that gets backed up (Time Machine) and, on most machines, synced
+(iCloud Drive). A copied backup carries the 0700 protection with it only if the
+copying tool preserves it, and a synced copy does not need it at all. That, not
+a hostile local user, is what this feature is for.
+
+### Files
+
+| File | Change |
+|---|---|
+| `utils/sesspass.c`, `utils/sesspass.h` (new) | the whole rule, with no I/O and no GTK: parse/serialise the blob, derive the key, encrypt, decrypt. Testable on its own |
+| `test/test_sesspass.c` (new), `CMakeLists.txt` | round-trip, wrong passphrase, wrong user id, tampered ciphertext, `\user:pass` parsing, a `v1` blob with raised parameters. Links `utils` **and** `crypto`, which is why it is its own target |
+| `conf.h` | `CONF_session_password`, `VALUE_TYPE(STR)`, `LOAD_CUSTOM, SAVE_CUSTOM`, documented like `session_comment` |
+| `settings.c` | write the key only when non-empty, and read it back, beside the `SessionComment` code |
+| `config.c` | the Session panel: a "Save password (encrypted)" tick and a "Forget" button, and the master-password dialog that collects, confirms and offers the keychain |
+| `unix/window.c` | the seat: after `cmdline_get_passwd_input()` declines, consult the session's blob, unlocking if needed, before falling back to the interactive prompt |
+| `proxy/sshproxy.c` | mark a prompt it forwards to the client seat as the proxy's own, so the seat declines it rather than answering the *proxy's* password with the *session's* |
+| `unix/keychain.c` (new, small) | the keychain get/set/delete, or a stub that refuses, so the rest is front-end-agnostic |
+| `README.md`, `CHANGES-FROM-UPSTREAM.md`, `docs/` | the feature, the file-by-file diff, and a page beside `docs/session-search.md` |
+| `PLAN.md` | this section, §5, and the milestone |
+
+### Steps
+
+1. **`utils/sesspass.{c,h}`** — `sesspass_blob_new(master, userid, secret)`
+   returns the string above; `sesspass_blob_open(blob, master, userid, &secret)`
+   returns a status distinguishing *wrong credentials* from *damaged blob*;
+   `sesspass_override(text, &userid, &master)` splits `\user:pass`. No globals,
+   no disk.
+2. **`test/test_sesspass.c`** — the cases in the table above, including the two
+   that matter most: the right master with the **wrong** user id must fail, and
+   a single flipped ciphertext byte must be reported as damage.
+3. **`conf.h`, `settings.c`** — the new key, written and read by hand beside
+   `SessionComment`; never written when empty, so existing files do not change.
+   Extend `test_sessions.c` to round-trip it through a real file.
+4. **`config.c`** — the tick and the Forget button; collecting the passphrase
+   with a confirmation field; nothing is stored until the encrypt succeeds.
+5. **`unix/keychain.c`** — get/set/delete for the master password, with a
+   build-time and a run-time way to say no.
+6. **`unix/window.c`** — the seat change: try `cmdline_get_passwd_input()`, then
+   the session blob (unlocking lazily, once per run), then the interactive
+   prompt. A rejected stored password falls through rather than aborting, and a
+   prompt the proxy has marked as its own is declined (see the proxy note under
+   *Risks*), not answered with the session's password.
+7. **Debug switch** — `PUTTY_SESS_PASS_DEBUG=1` traces *that* a blob was
+   unlocked, *which* session it was for, and whether the keychain or the prompt
+   supplied the master password. Never the secrets, in the same shape as
+   `PUTTY_SESS_SEARCH_DEBUG`. `PUTTY_SESS_PASS_USERID=<name>` overrides the user
+   id taken from the machine — without it, the wrong-user-id path cannot be
+   exercised on one account.
+8. **Docs** — README entry, `CHANGES-FROM-UPSTREAM.md` file list, and a page
+   beside `docs/session-search.md` that states the threat model in the same
+   words as this section.
+9. **Build and test** — `ninja -C build-arm64`, `test_sesspass`, `test_sessions`,
+   then the manual pass below.
+
+### Verification
+
+* **Automated:** `test_sesspass` covers the format and the failure modes;
+  `test_sessions` must still pass, and a session saved from a build *without*
+  this feature must still load in one *with* it and vice versa.
+* **Manual, in the built app:** save a password for a session, confirm the file
+  contains `SessionPassword=…` and **not** the password; grep the whole config
+  directory for the password and get nothing; connect and log in with no prompt;
+  rerun with `PUTTY_SESS_PASS_USERID=someone-else` and confirm the unlock fails,
+  then confirm `\hans:passphrase` opens the same blob; connect with a
+  deliberately wrong saved password and confirm the dialog appears rather than
+  an abort; press Restart Session and confirm it reconnects without asking;
+  press Forget and confirm the key is gone from the file.
+* **Regression:** a session with no stored password behaves exactly as it does
+  now, including the private-key passphrase prompt, which must never be
+  answered from the store.
+
+### Alternatives considered
+
+* **Store the password in the session file in plaintext.** Where this started,
+  and it is what the front end already makes easy. Rejected: the file is 0644
+  inside a directory that this fork deliberately keeps in `~/Documents`.
+* **Keychain only, nothing in the file.** Strongest on this machine and least
+  code — it is what Terminal and FileZilla do — but it does not survive copying
+  the configuration to another Mac, which is the property asked for here. The
+  design keeps the file authoritative and the keychain as a *cache* of the
+  master password.
+* **Derive the key from the machine alone (no master password at all).** Zero
+  prompts. Rejected: it protects the file from nobody who has the file, since
+  the derivation inputs would all be in the file or readable from the machine.
+* **A per-run obfuscation with a fixed key.** Trivially reversible; it would
+  only pretend the file is protected.
+
+### Risks / not in scope
+
+* **What this does not protect against.** Another process running as the user
+  while the app is unlocked, a keylogger, a compromised app, and the master
+  password itself being weak. It protects a *copy* of the file — a backup, a
+  sync, a stolen disk without full-disk encryption. FileVault is the right
+  answer to the last one, and the docs should say so rather than oversell this.
+* **Not** covered: keyboard-interactive as a *second* factor (an OTP still has
+  to be typed — that is what the plugin route is for, later), and certificates.
+* **The proxy's prompt is a trap, and this plan must not walk into it.** A proxy
+  that is itself an SSH connection has a password prompt of its own. When it has
+  no password stored (`CONF_proxy_password`, `conf.h:146`) it forwards that
+  prompt up to the **client seat** (`proxy/sshproxy.c:369-374`) — which is the
+  very seat this change touches. The forwarded prompt has the same shape as the
+  session's own (one prompt, not echoing, to the server), so a shape test alone
+  would answer the *proxy's* password with the *session's* password. `-pw` has
+  this blind spot today for the same reason. The fix is small and local: have
+  the proxy mark the prompts it forwards as its own — it already wraps the
+  client seat for trust-status purposes, so a wrapper is in keeping with the
+  file — and let the stored password decline anything marked that way. Step 6
+  depends on this.
+* Changing the master password means decrypting and re-encrypting every session
+  that has one. Acceptable while the blobs are per session; the mapping to a
+  folder-wide store is next.
+
+### Later: locking the whole configuration folder
+
+The pieces of "the configuration folder" are already enumerated for the
+relocation feature (`unix/storage.c:376`): `sessions`, `sshhostkeys`,
+`sshhostkeys.tmp`, `sshhostcas`, `randomseed`. Only `sessions/` holds secrets —
+host keys and the random seed do not need to be hidden.
+
+So a folder lock cannot be "encrypt the directory": the sessionsaver must
+*enumerate* names to build the tree, and the same storage layer serves plink,
+pscp and psftp. Two honest options when that work is taken up:
+
+* **Encrypt file contents, leave the names** — the layer goes inside
+  `open_settings_r()` / `open_settings_w()`, the tree UI and the §4j search keep
+  working unchanged, and the folder is locked behind a master password asked for
+  before the session list can be drawn. Names leak; contents do not.
+* **One vault file** — hides everything, including which sessions exist, but
+  means reimplementing the `INDEX_*` / `index_list` layer and changing the
+  behaviour of the non-GUI tools.
+
+If that is the direction, the **envelope** should be introduced here rather than
+later: a random data key, wrapped by the master password, with the per-session
+blobs encrypted by the data key. Then changing the master password rewrites one
+small file instead of every session, and the vault version reuses the same code.
+The `v1` blob above is deliberately self-contained so it can be read by either
+future.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.
 
 **How sessions work today**
 - Interface: `storage.h` (flat key/value).
-- Unix impl: `unix/storage.c` — files in `~/.config/putty/sessions/`, name→filename with `%XX` encoding. Flat, no folders.
+- Unix impl: `unix/storage.c` — files in `~/.config/putty/sessions/`, name→filename with `%XX` encoding. Flat, no folders. (Written when the tree lived in `~/.putty`; the directory is now relocatable and defaults to `~/Documents/putty-beter-config`, section 4c, which is also why §4k cares that session files are 0644.)
 - Windows impl: `windows/storage.c` (registry) — needs separate handling; may be skipped for a macOS-first release.
 - Session panel definition: `config.c` (~line 1904, "Session"/"savedsessions").
 - GTK UI implementation: `unix/dialog.c` (4424 lines).
 
-**Status:** folders and comments are done (sections 4g and 4i); passwords are
-not started.
+**Status:** folders and comments are done (sections 4g and 4i). Passwords are
+**designed and not built** — **section 4k** is the design of record, and it
+supersedes the sketch in task 3 below.
 
 **Tasks**
 1. ~~**Comments** (cheapest): add a `SessionComment` key; store/read via existing storage calls; show in the session list tooltip. Low risk.~~ **Done** — section 4i. (It ended up in a panel of its own rather than a tooltip, because a note can be a paragraph.) Showing it as a tooltip on the session list is still an obvious small win.
@@ -728,6 +1038,13 @@ not started.
    - macOS: **Keychain** (via Security framework or `security` CLI), keyed by session name.
    - Linux: libsecret, else an encrypted file with a master passphrase.
    - Add a Conf flag ("use stored credential") + a "Forget" action.
+   - **Superseded by section 4k**, which keeps the encrypted blob in the session
+     file as the source of truth and demotes the Keychain to a cache of the
+     master password (so the configuration stays portable to another machine
+     with the same user id). It also settles the part this sketch left open:
+     *where* the password is used, namely the existing
+     `cmdline_get_passwd_input()` injector that the GUI already consults before
+     prompting.
 4. Handle rename/delete/duplicate across the folder tree.
 
 **Files:** `storage.h`, `unix/storage.c`, `windows/storage.c` (if in scope), `config.c`, `unix/dialog.c`, `settings.c`.
@@ -1423,7 +1740,10 @@ crates*, not a port of PuTTY:
 - [ ] **M1** — universal signed `.app` runs on Intel + ARM (Phase 1, T1) — 1a done, 1b/1c not started
 - [x] **M2** — session folders + comments (Phase 2, O1 part 1)
       - [x] **M2b** — search the saved-session list by name / host / comment (§4j)
-- [ ] **M3** — session password via Keychain (Phase 2, O1 part 2)
+- [ ] **M3** — session password: encrypted in the session file, injected into auth, unlocked once per run (Phase 2, O1 part 2) — see §4k
+      - [ ] **M3a** — `utils/sesspass.{c,h}` + `test/test_sesspass`: the blob (Argon2id + AES-CBC + HMAC), the `\user:pass` override, and the failure modes (§4k)
+      - [ ] **M3b** — the panel side: the `CONF_session_password` key, the tick and the Forget action, and proof that nothing plaintext is written (§4k)
+      - [ ] **M3c** — the runtime side: lazy unlock at the password prompt, injection into the seat, and the optional Keychain cache of the master password (§4k)
 - [x] **M4** — ZMODEM download works over SSH (Phase 3, T2)
 - [x] **M5** — ZMODEM upload + cancel (Phase 3, T2) — both directions verified against real
       `lrzsz`, 250000 bytes byte-for-byte; **serial untested**
