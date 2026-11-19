@@ -137,6 +137,7 @@ tool will give slightly different numbers for the same change.
 | `utils/sesspass.h` | Its interface, and the `PUTTY_SESSPASS_DEBUG` switch |
 | `test/test_sesspass.c` | 38 checks: round trips (including base64 padding and UTF-8), an empty password, and the failure modes — an unknown version, invalid base64, and a blob that must not be decodable |
 | `docs/session-search.md` | **How the search works**: the prefix rule, what is matched, the per-session cache and its invalidation, how to drive the dialog from a script, and what is deliberately not done |
+| `docs/macos-gtk-notes.md` | **What macOS and GTK do that you would not expect**, with the numbers: a new window lands on the monitor at (0,0) rather than the primary one and `GTK_WIN_POS_CENTER` does not help; `-geometry` is compiled out (so `inst->gotpos` is dead code here); a native title bar is painted from the window's own background; GTK windows and menus are invisible to AppleScript (but keystrokes and `ESC [ 3 ; x ; y t` work). Plus the recipes for measuring window and monitor state, and two small compile traps |
 | `PLAN.md` | Roadmap and the reasoning behind it |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 | `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
@@ -1045,6 +1046,10 @@ effect at all there**, neither position nor size. That is upstream's, and this
 change deliberately leaves it alone: the new branch is the `else` of
 `if (inst->gotpos)`, so if `-geometry` is ever made to work, an explicit position
 still wins.
+
+The measurements behind that, what does *not* change where a window lands, and
+the recipes for checking it are in
+[`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
 
 ## Worth reporting upstream
 

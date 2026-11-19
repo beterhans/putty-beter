@@ -22,6 +22,7 @@ Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICEN
 | [`mcp/README.md`](mcp/README.md) | the `putty-mcp` bridge: how to install it and point a client at it |
 | [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) | the canonical copy of the agent manual (what is actually served) |
 | [`docs/zmodem-protocol-notes.md`](docs/zmodem-protocol-notes.md) | byte-exact ZMODEM protocol reference, with the licence status of every source it draws on |
+| [`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md) | what macOS and GTK do that you would not expect — window placement, `-geometry`, title bars, why AppleScript cannot drive GTK windows — with the measurements and the recipes for checking them |
 | [`tools/README.md`](tools/README.md) | why `gtk-mac-bundler` is not vendored, and how to fetch it |
 
 ---
@@ -344,6 +345,10 @@ the **primary** monitor. A position given explicitly still wins.
 `PUTTY_DIAG=1` reports the choice:
 `new session window: monitor 1920,0 1920x1080, window 1040x614, placing at
 2360,233`.
+
+The platform behaviour behind all of this — why the wrong monitor is picked, what
+does *not* change it, and how to measure it — is written up with its numbers in
+[`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
 
 ### 13. MCP: let an AI agent read a session
 
