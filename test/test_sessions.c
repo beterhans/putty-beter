@@ -21,6 +21,14 @@
 #include "storage.h"
 #include "utils/sesspass.h"     /* PuTTY-beter: the saved session password */
 
+/*
+ * PuTTY-beter: from unix/storage.c, which this test links anyway for
+ * session_mkdir() and the rest of the storage layer. Declared here rather than
+ * including unix/platform.h, which wants GTK's widget types.
+ */
+char *config_location_set(const char *dirtext);
+void config_location_invalidate(void);
+
 /* PuTTY-beter: a saved session is a .conf file in the sessions directory. */
 #define SESSION_EXT ".conf"
 
@@ -656,6 +664,69 @@ int main(void)
                      got, cases[i].want);
             sfree(got);
         }
+    }
+
+    /*
+     * PuTTY-beter: choosing a configuration folder on a machine where PuTTY
+     * has never run.
+     *
+     * The first-run dialog's "Use This Folder" records the choice in a
+     * config-location.conf file inside the *base* folder - the one PuTTY has
+     * always used, which on a fresh machine does not exist yet. Writing that
+     * file failed with "No such file or directory" until config_location_set()
+     * started creating the folder first, so the dialog could not be completed
+     * at all. (Found by deleting ~/.putty and starting the app.)
+     *
+     * PUTTYDIR pins the base and is not redirected itself, so what is checked
+     * here is the marker the next run will read - which is what was missing.
+     */
+    {
+        char *saved_dir = dupstr(getenv("PUTTYDIR"));
+        char *base = dupprintf("%s/base", saved_dir);
+        char *target = dupprintf("%s/target", saved_dir);
+        char *marker = dupprintf("%s/config-location.conf", base);
+        struct stat st;
+        char *err, *text;
+        FILE *fp;
+
+        setenv("PUTTYDIR", base, 1);
+        config_location_invalidate();
+
+        if (stat(base, &st) == 0)
+            fail("the base folder should not exist yet");
+
+        err = config_location_set(target);
+        if (err) {
+            fail("config_location_set from a missing base folder: %s", err);
+            sfree(err);
+        }
+
+        if (stat(base, &st) != 0)
+            fail("the base folder was not created to hold the redirect");
+
+        fp = fopen(marker, "r");
+        if (!fp) {
+            fail("no redirect marker at %s", marker);
+        } else {
+            strbuf *sb = strbuf_new();
+            int c;
+            while ((c = getc(fp)) != EOF)
+                put_byte(sb, c);
+            fclose(fp);
+            text = strbuf_to_str(sb);
+            if (!strstr(text, target))
+                fail("the redirect marker does not name %s: \"%s\"",
+                     target, text);
+            sfree(text);
+        }
+
+        setenv("PUTTYDIR", saved_dir, 1);
+        config_location_invalidate();
+
+        sfree(marker);
+        sfree(target);
+        sfree(base);
+        sfree(saved_dir);
     }
 
     if (nfail) {

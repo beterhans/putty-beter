@@ -199,11 +199,20 @@ configuration somewhere else (`~/Documents/putty-beter-config` by default).
 * Base location resolution is unchanged: `$PUTTYDIR`, then an **existing**
   `$XDG_CONFIG_HOME/putty` or `~/.config/putty`, then `~/.putty`, then
   `pw_dir/.putty`, then `/.putty`.
-* A base location may contain `config-location`, a small text file whose first
-  non-comment line is the real configuration directory. `unix/storage.c` reads
-  it, so `putty`, `plink`, `pscp`, `psftp` and `puttygen` all follow the same
-  directory and saved host keys stay consistent. An invalid or missing target is
-  ignored (with a trace under `PUTTY_CONFIG_DEBUG=1`).
+* A base location may contain `config-location.conf`, a small text file whose
+  first non-comment line is the real configuration directory. `unix/storage.c`
+  reads it, so `putty`, `plink`, `pscp`, `psftp` and `puttygen` all follow the
+  same directory and saved host keys stay consistent. An invalid or missing
+  target is ignored (with a trace under `PUTTY_CONFIG_DEBUG=1`).
+* The base folder is **created if it is not there**, because the redirect file
+  lives in it and on a machine where PuTTY has never run there is nothing to
+  redirect from: that is the first-run path, not an odd one. Without this,
+  "Use This Folder" failed with `Unable to write ~/.putty/config-location.conf:
+  No such file or directory`, and the dialog could not be completed at all.
+  (Found by deleting `~/.putty` and starting the app; `test_sessions` now
+  covers it, and fails if the `make_dir_path(base)` is taken out again.)
+* The redirect is followed immediately: the running process switches folders
+  after the dialog closes, so the very first run uses the new location.
 * The dialog appears when there is no configuration yet (no `sessions`
   subdirectory), or when Option/Alt is held at launch, or when
   `PUTTY_CONFIG_RELOCATE=1`. On acceptance the existing `sessions`,

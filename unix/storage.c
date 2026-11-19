@@ -854,6 +854,17 @@ char *config_location_set(const char *dirtext)
             goto out;
         }
     } else {
+        /*
+         * PuTTY-beter: the redirect marker lives in the base folder, which may
+         * not exist yet - on a machine where PuTTY has never run there is
+         * nothing to redirect from, so this is the *first-run* path, not an
+         * odd one. Create the folder rather than refusing to redirect, or
+         * "Use This Folder" in the first-run dialog cannot work at all (it
+         * fails with "No such file or directory" writing the marker).
+         */
+        if ((err = make_dir_path(base, 0700)) != NULL)
+            goto out;
+
         FILE *fp = fopen(redirect_path, "w");
         if (!fp) {
             err = dupprintf("Unable to write %s: %s",

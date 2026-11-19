@@ -74,11 +74,17 @@ cell too far left, and read `chars[-1]` out of bounds. Fixed in
 PuTTY has always used `~/.putty`. This build offers, once, to keep the
 configuration somewhere else instead — `~/Documents/putty-beter-config` by
 default. Anything already saved is moved there, and the choice is recorded in
-`~/.putty/config-location`, a one-line text file.
+`~/.putty/config-location.conf`, a one-line text file.
+
+**Starting from nothing works.** If `~/.putty` does not exist at all — a fresh
+machine, or after deleting it — it is created to hold that one-line file, along
+with the folder you chose and its `sessions` subdirectory. Nothing has to exist
+in advance.
 
 Nothing is deleted unless it was copied successfully, and nothing is
 overwritten: if the destination already holds one of these files, the old copy
-is simply left where it was. Deleting `config-location` returns to `~/.putty`.
+is simply left where it was. Deleting `config-location.conf` returns to
+`~/.putty`.
 
 Hold **Option (⌥)** while launching PuTTY to reopen the dialog and move the
 folder again, or set `PUTTY_CONFIG_RELOCATE=1`.
