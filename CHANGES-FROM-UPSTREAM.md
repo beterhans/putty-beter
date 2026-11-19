@@ -234,6 +234,22 @@ stores a key keeps its own value.
 | Keepalive interval | 0 (off) | 120 s |
 | Internet protocol version | Auto | IPv4 |
 | Tunnels → IP version, new tunnel | Auto | IPv4 (`config.c`) |
+| Window → Fonts, ordinary text | `client:Monospace 12` | `client:PT Mono 14` (`unix/platform.h`, `unix/window.c`) |
+| Window → Fonts, wide (CJK) text | empty (use the ordinary font) | `client:Lantinghei TC Semi-Bold 14` (same) |
+| Window → Colours, default foreground | `187,187,187` | `242,242,242` (`settings.c`) |
+| Window → Colours, default background | `0,0,0` | `0,48,42` (`settings.c`) |
+| Window → Colours, bold background | `85,85,85` | `64,96,96` (`settings.c`) |
+
+The palette lives in `settings.c` (`load_settings()`) rather than `conf.h`,
+because `CONF_colours` is a subkey map loaded by hand: its nineteen other
+entries, the ANSI sixteen in particular, are upstream's. `platform_default_s()`
+does not touch `Colour*`, so that array is the single source of the default
+palette. The two fonts come from `platform_default_fontspec()`; the generic
+`DEFAULT_GTK_CLIENT_FONT` is deliberately *not* changed, because that is the
+fallback used when a configured font cannot be loaded.
+
+These are the owner's own settings from a saved session. The two fonts also
+become **pterm**'s defaults, since `pterm` shares `unix/window.c`.
 
 Two follow-on changes were needed:
 

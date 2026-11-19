@@ -472,6 +472,19 @@ void fd_socket_set_psb_prefix(Socket *s, const char *prefix);
 #define DEFAULT_GTK_FONT DEFAULT_GTK_CLIENT_FONT
 
 /*
+ * PuTTY-beter: what a new session starts with, for Window -> Fonts. These are
+ * the ordinary and wide (CJK) fonts the owner's own saved session uses. They
+ * replace upstream's default ordinary font ("client:Monospace 12") and
+ * upstream's "no separate wide font", which means "use the ordinary one".
+ *
+ * DEFAULT_GTK_CLIENT_FONT is deliberately left alone: it is the *fallback*
+ * the window uses when the configured font cannot be loaded (unix/window.c),
+ * so a machine without these fonts still starts.
+ */
+#define PUTTY_DEFAULT_GTK_FONT "client:PT Mono 14"
+#define PUTTY_DEFAULT_GTK_WIDEFONT "client:Lantinghei TC Semi-Bold 14"
+
+/*
  * pty.c.
  */
 void pty_pre_init(void);    /* pty+utmp setup before dropping privilege */

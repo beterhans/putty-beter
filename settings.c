@@ -1113,8 +1113,14 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
                  );
 
     for (i = 0; i < 22; i++) {
+        /*
+         * PuTTY-beter: the default palette. Three entries are not upstream's:
+         * the default foreground (0), background (2) and bold background (3)
+         * are the owner's own colours, taken from a saved session. The other
+         * nineteen, and the ANSI sixteen in particular, are untouched.
+         */
         static const char *const defaults[] = {
-            "187,187,187", "255,255,255", "0,0,0", "85,85,85", "0,0,0",
+            "242,242,242", "255,255,255", "0,48,42", "64,96,96", "0,0,0",
             "0,255,0", "0,0,0", "85,85,85", "187,0,0", "255,85,85",
             "0,187,0", "85,255,85", "187,187,0", "255,255,85", "0,0,187",
             "85,85,255", "187,0,187", "255,85,255", "0,187,187",

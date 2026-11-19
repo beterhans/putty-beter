@@ -229,6 +229,14 @@ keep their saved values.
 | Keepalives (seconds) | 0 (off) | **120** |
 | Internet protocol version | Auto | **IPv4** |
 | Connection → Tunnels → IP version (new tunnel form) | Auto | **IPv4** |
+| Window → Fonts → ordinary text | `client:Monospace 12` | **`client:PT Mono 14`** |
+| Window → Fonts → wide (CJK) text | none (use the ordinary font) | **`client:Lantinghei TC Semi-Bold 14`** |
+| Window → Colours → default foreground / background / bold background | `187,187,187` / `0,0,0` / `85,85,85` | **`242,242,242`** / **`0,48,42`** / **`64,96,96`** |
+
+The ANSI palette (Colour 6–21), the cursor colours, *Allow terminal to specify
+ANSI colours*, *Bold-coloured text is shown in bold* and the other Font boxes
+(bold, wide bold) keep upstream's defaults. The background-transparency setting
+is left at 0: only the colours and the fonts are taken from that session.
 
 ### 11. ZMODEM file transfer
 

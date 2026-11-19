@@ -397,8 +397,17 @@ static void gtk_seat_nonfatal(Seat *seat, const char *msg)
  */
 FontSpec *platform_default_fontspec(const char *name)
 {
+    /*
+     * PuTTY-beter: the ordinary and wide (CJK) fonts a new session starts with
+     * are the owner's own choices, not upstream's "client:Monospace 12" and
+     * "no separate wide font" (see unix/platform.h). BoldFont and WideBoldFont
+     * stay empty, which means "bold the ordinary font" and "fall back to the
+     * ordinary one" respectively.
+     */
     if (!strcmp(name, "Font"))
-        return fontspec_new(DEFAULT_GTK_FONT);
+        return fontspec_new(PUTTY_DEFAULT_GTK_FONT);
+    else if (!strcmp(name, "WideFont"))
+        return fontspec_new(PUTTY_DEFAULT_GTK_WIDEFONT);
     else
         return fontspec_new_default();
 }
