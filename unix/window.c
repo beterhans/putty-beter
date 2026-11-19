@@ -224,6 +224,12 @@ struct GtkFrontend {
      */
     bool window_is_rgba;
     /*
+     * PuTTY-beter: set while the terminal's translucent background colour is
+     * current, so that the next filled rectangle replaces the pixels instead
+     * of blending with them (see draw_set_colour and draw_rectangle).
+     */
+    bool draw_bg_replace;
+    /*
      * PuTTY-beter: the password this connection actually answered the login
      * prompt with, so that a successful login can offer to keep it in the
      * session's file (PLAN.md section 4k). NULL if no password has been
@@ -4730,6 +4736,14 @@ static void cairo_set_source_rgb_dim(cairo_t *cr, double r, double g, double b,
 
 static void draw_set_colour(GtkFrontend *inst, int col, bool dim)
 {
+    /*
+     * PuTTY-beter: whether the next *filled rectangle* is the terminal's own
+     * (possibly translucent) background, which must replace the pixels rather
+     * than blend with them. Set by the branch below and consumed by
+     * draw_rectangle().
+     */
+    inst->draw_bg_replace = false;
+
 #ifdef DRAW_TEXT_GDK
     if (inst->uctx.type == DRAWTYPE_GDK) {
         if (dim) {
@@ -4762,11 +4776,24 @@ static void draw_set_colour(GtkFrontend *inst, int col, bool dim)
          * and readable.
          */
         if (col == OSC4_COLOUR_bg) {
+            double a = bg_alpha(inst);
+
             cairo_set_source_rgba(inst->uctx.u.cairo.cr,
                                   dim ? r * 2 / 3 : r,
                                   dim ? g * 2 / 3 : g,
                                   dim ? b * 2 / 3 : b,
-                                  bg_alpha(inst));
+                                  a);
+            /*
+             * A translucent background has to be *put down*, not laid over
+             * what is already in the surface: otherwise the previous frame
+             * shows through it. The cursor is drawn as a filled block in the
+             * cursor colour, so every character that was typed while the
+             * cursor sat on it would keep a ghost of that colour - exactly
+             * the "what I typed is highlighted" symptom. Replacing also stops
+             * the background being blended twice and coming out less
+             * transparent than asked for.
+             */
+            inst->draw_bg_replace = (a < 1.0);
         } else {
             cairo_set_source_rgb_dim(inst->uctx.u.cairo.cr, r, g, b, dim);
         }
@@ -4776,6 +4803,9 @@ static void draw_set_colour(GtkFrontend *inst, int col, bool dim)
 
 static void draw_set_colour_rgb(GtkFrontend *inst, optionalrgb orgb, bool dim)
 {
+    /* A truecolour background is opaque, so a fill may blend as usual. */
+    inst->draw_bg_replace = false;
+
 #ifdef DRAW_TEXT_GDK
     if (inst->uctx.type == DRAWTYPE_GDK) {
 #if GTK_CHECK_VERSION(2,0,0)
@@ -4816,8 +4846,21 @@ static void draw_rectangle(GtkFrontend *inst, bool filled,
     if (inst->uctx.type == DRAWTYPE_CAIRO) {
         cairo_new_path(inst->uctx.u.cairo.cr);
         if (filled) {
+            /*
+             * PuTTY-beter: the terminal's background can be translucent, and a
+             * fill laid *over* what is already in the surface would let the
+             * previous frame show through it (see draw_set_colour()). Replace
+             * instead, so that the alpha acts on the desktop behind the window
+             * and nothing else.
+             */
+            if (inst->draw_bg_replace)
+                cairo_set_operator(inst->uctx.u.cairo.cr,
+                                   CAIRO_OPERATOR_SOURCE);
             cairo_rectangle(inst->uctx.u.cairo.cr, x, y, w, h);
             cairo_fill(inst->uctx.u.cairo.cr);
+            if (inst->draw_bg_replace)
+                cairo_set_operator(inst->uctx.u.cairo.cr,
+                                   CAIRO_OPERATOR_OVER);
         } else {
             cairo_rectangle(inst->uctx.u.cairo.cr,
                             x + 0.5, y + 0.5, w, h);

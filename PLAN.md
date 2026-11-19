@@ -1133,6 +1133,34 @@ that insists on being opaque, so when the setting is on at window creation:
   window really is translucent, because on a solid window the alpha goes
   nowhere useful while macOS would still colour the title bar from it.
 
+**A translucent fill must *replace*, not blend (found 2026-11-19).** The first
+cut painted the terminal's background with `cairo_set_source_rgba()` and the
+default `OVER` operator, which laid the new frame *over* the old one instead of
+replacing it. Two visible consequences, the first reported by the user as "the
+text I typed is highlighted":
+
+* Every character typed while the cursor sits on it keeps a ghost of the cursor.
+  The cursor is drawn as a filled block in the cursor colour, so the cell that
+  held it keeps a 25% tint of that colour for ever — and the cell's own repaint
+  is exactly the same translucent fill, so nothing ever clears it.
+* The background was blended twice per frame (the full-surface erase, then the
+  per-cell fill), so a 64 setting came out 94% opaque rather than 75%.
+
+Measured by rendering the surface offscreen (no screen capture): the ghost was
+340 pixels of exactly `(0,64,0)` — 25% of the cursor colour `(0,255,0)`, and the
+user had set transparency to 64 — while the background came out `(16,0,16)`
+over a magenta probe rather than `(64,0,64)`. After the fix the ghost is gone
+and the background is exactly `(64,0,64)`.
+
+The fix is one flag, `draw_bg_replace`: while the *translucent default
+background* colour is current, `draw_rectangle()` fills with
+`CAIRO_OPERATOR_SOURCE` instead of `OVER`, so the fill replaces the pixels —
+including their alpha — and then the operator returns to `OVER`. Everything
+else still blends as before, so glyphs, the cursor block, selections and
+coloured backgrounds are untouched. The same flag makes `draw_backing_rect()`
+(the full-surface erase) a true erase, which is what now guarantees a stale
+frame cannot survive.
+
 **The title bar is the price.** This is measured, not guessed (a probe printing
 AppKit's own state while the app ran):
 
