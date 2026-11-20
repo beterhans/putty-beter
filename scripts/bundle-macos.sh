@@ -159,7 +159,13 @@ dbg "bundle size: $(du -sh "$APP" | cut -f1)"
 # equivalent, then drop the duplicate Cellar tree.
 log "normalising Cellar -> opt references"
 cd "$APP"
-find "$RES" -type f > "$STAGE/macho-list.txt"
+# The list is every Mach-O in the bundle, not only those under Resources: the
+# two executables in Contents/MacOS must be re-signed as well. On arm64 the
+# linker ad-hoc signs them by itself, so leaving them out went unnoticed; the
+# x86_64 linker does not, and an unsigned nested binary makes the bundle-level
+# codesign below fail - which the "|| true" there hides, leaving the .app
+# unsigned on Intel.
+find Contents -type f > "$STAGE/macho-list.txt"
 while IFS= read -r f; do
     file "$f" | grep -q 'Mach-O' || continue
     dbg "normalising: $f"
