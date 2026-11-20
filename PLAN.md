@@ -30,6 +30,7 @@ Repo: <https://github.com/beterhans/putty-beter>
 | O1 | Session records: **folders**, **saved password**, **comments** | **4** | Password storage is the only risky part |
 | O2 | **MCP for AI** — AI drives the same session window; pause at password for human | **7** in-process / **3** on tmux | `prompts_t` machinery already exists |
 | O3 | **Rust rewrite** with native macOS UI | **9** full parity / **5** MVP | Separate product, not a fork |
+| O4 | **GTK PuTTYgen** on macOS, shipped as `PuTTYGen.app` | **6** | The GUI is Windows-only; the crypto, the formats and the file chooser are already here (§4m) |
 
 **Decision:** keep the PuTTY C core and layer features on top. **O3 is deferred** — a rewrite
 throws away 25 years of SSH/crypto/terminal correctness and invalidates T2/O1/O2 work.
@@ -1221,6 +1222,278 @@ blur.
 
 ---
 
+## 4m. GTK PuTTYgen: the macOS front end  *(design 2026-11-20; not built)*
+
+**Goal:** a real GTK PuTTYgen window on macOS — generate, inspect, load, convert
+and save keys by clicking — shipped as `PuTTYgen.app` beside `PuTTY.app`, and
+universal along with it.
+
+### Why there is nothing to bundle today
+
+Asked to "build a `.app` for puttygen alongside `PuTTY.app`", the honest answer
+was that there is no GUI to put in it. On Unix/macOS `puttygen` is a console
+program, and the GUI is Windows-only:
+
+| Check | Result |
+|---|---|
+| `otool -L build-x86_64/puttygen` | links **only `/usr/lib/libSystem.B.dylib`** — no GTK, no GLib |
+| running it | `Usage: puttygen ( keyfile \| -t type [ -b bits ] ) …` — the CLI |
+| `cmdgen.c` | a single `int main()`; no `#if`-guarded GUI |
+| `unix/CMakeLists.txt:90-103` | `puttygen-common` includes **`no-gtk.c`** and links `keygen console crypto utils` |
+| the GUI | `windows/puttygen.c`, 2615 lines — includes `puttygen-rc.h` and `windows/security-api.h` |
+| unix GTK keygen target | none; `unix/` has no keygen UI source |
+
+`unix/no-gtk.c` is literally the stub that lets a non-GUI Unix program say "there
+is no GTK" (`buildinfo_gtk_version()` returns `NULL`). Upstream never ported the
+GUI PuTTYgen to GTK; that is why `PuTTY.app` exists and `PuTTYgen.app` does not.
+
+### Reference to port
+
+`windows/puttygen.c` is the specification — not to be transliterated, but it is a
+complete, working statement of what the GUI does. Its non-Windows parts map as
+follows:
+
+| Windows | Port to GTK |
+|---|---|
+| `MainDlgProc` (~900 lines) | the main window |
+| `win_progress_*` (`ProgressReceiver`) | a `ProgressReceiver` driving a `GtkProgressBar` |
+| `generate_key_thread` | keygen off the main loop — see "Threading" below |
+| `PassphraseProc` | the passphrase dialog (new passphrase / confirm) |
+| `PPKParamsProc` | the `.ppk` v3 parameters dialog (Argon2 flavour/memory/passes/parallelism) |
+| `LicenceProc`, `AboutProc` | About + the generated `licence.h` text |
+| `ui_set_state` | enable/disable the action buttons, plus the status line and progress |
+| `ui_set_key_type`, `ui_update_key_type_ctrls` | key-type control and the controls it enables |
+| `ui_set_primepolicy`, `ui_set_rsa_strong` | SSH-1-era controls — see open decisions |
+| `ui_set_fptype`, `idc_to_fptype`/`fptype_to_idc` | fingerprint-type picker (SHA-256 / MD5 / bubblebabble) |
+| `setupbigedit1`/`setupbigedit2` | the read-only key box: comment, fingerprint, public blob |
+| `update_ui_after_load`, `load_key_file` | Open Key → chooser → `import_*` / `ppk_load_f` |
+| `start_generating_key` | Generate |
+| `add_certificate`, `remove_certificate`, `CertInfoProc` | OpenSSH-certificate actions — see open decisions |
+| `opt_error`, `usage`, `help` | not needed: the GUI takes no command line |
+
+### What already exists and must be reused
+
+The cryptography, the file formats and the CLI are all here already and are
+arch-independent — **none of this is to be re-implemented**:
+
+| Need | Already here |
+|---|---|
+| Key generation, algorithms, progress, cancellation | `sshkeygen.h` (`keygen()`) |
+| Reading foreign formats (OpenSSH PEM/new, ssh.com) | `import.c` — `import_encrypted()`, `import_ssh1()`, `import_ssh2()`, `export_ssh1()` |
+| `.ppk` read/write and its v3 parameters | `ssh.h` — `ppk_load_f()`, `ppk_loadpub_f()`, `ppk_save_sb()`, `ppk_save_f()`, `ppk_save_parameters`, `ppk_save_default_parameters`, `ppk_params_bad()`, `ppk_encrypted_f()` |
+| Argon2 and its auto-tuning | `ssh.h` — `argon2()`, `argon2_choose_passes()`, `argon2_params_bad()` |
+| Argon2 + AES-CBC + HMAC, as `.ppk` v3 already uses | `crypto/argon2.c`, `crypto/aes.h`, `crypto/hmac.c` |
+| The licence text in an About box | `licence.h` (generated; `dialog.c` already depends on it) |
+| Base64, constant-time compare, secure wipe | `utils/` |
+
+### The file chooser — **the same one the main PuTTY uses**
+
+An explicit requirement, and it is already the right shape: the application has
+exactly one file chooser, and every place that asks for a file or a folder goes
+through it.
+
+```c
+/* unix/gtkmisc.h */
+char *our_file_chooser_run(GtkWindow *parent, const char *title,
+                           bool for_directory, bool for_writing,
+                           const char *initial);
+```
+
+Implemented in `unix/utils/filechooser.c`. It puts a visible **Path:** entry
+across the top of the dialog (GTK hides its own location bar behind Ctrl+L, which
+"is not discoverable"), gives the dialog a sane size and centres it on its
+parent. PuTTYgen must call this for **Open Key**, **Save private key** and
+**Save public key** — it must not build its own `GtkFileChooserDialog`. It is
+already compiled into the `guiterminal` library (`unix/CMakeLists.txt:141`), so
+`puttygenapp` gets it by linking `guiterminal`, as `putty`/`puttyapp` do.
+
+### Building it
+
+`unix/CMakeLists.txt`:
+
+* a new `puttygenapp`, beside `puttygen` (line 99), gated on
+  `GTK_VERSION GREATER_EQUAL 3` the way `puttyapp` (line 215) and `ptermapp`
+  (line 185) are;
+* `puttygen-common` (line 90) **cannot be reused as-is**: it contains
+  `no-gtk.c`, which exists precisely to say "no GTK". Split it — the GTK front
+  end wants `keygen-noise.c`, `noise.c`, `storage.c`, `sshpubk.c`, `sshrand.c`
+  and `stubs/no-timing.c`, but not the `no-gtk.c` stub;
+* dependencies `guiterminal`, `keygen`, `crypto`, `utils`, `console`, the GTK and
+  X11 libraries, and `generated_licence_h` (for `licence.h`).
+
+New sources, both modelled on the existing front ends:
+
+| File | What it is |
+|---|---|
+| `unix/puttygen.c` | the window itself — the port of `windows/puttygen.c` |
+| `unix/main-gtk-puttygen.c` | a `GtkApplication` main with the menu bar, from `unix/main-gtk-application.c:303` |
+
+`main-gtk-puttygen.c` does **not** need the pty environment restore
+(`pty_osx_envrestore_prefix = argv[--argc]`, `unix/main-gtk-application.c:314`);
+that exists so `pterm` can hand a clean environment to shell subprocesses, and
+PuTTYgen has no subprocesses. Keep or drop it, but say which.
+
+### Menus
+
+Follow the main window: a `GtkApplication` menu bar, since
+`unix/main-gtk-application.c` already establishes the pattern and the platform
+puts the menu in the system bar. A minimum set:
+
+* **File** — Open Key…, Save Private Key…, Save Public Key…, Quit
+* **Edit** — Copy, Paste (the key box and the comment field; note the
+  dialog/terminal clipboard work in §4e and §4b, and that the key box must be
+  selectable text)
+* **Key** — Generate, and the conversions (Export OpenSSH key, Export ssh.com key)
+* **Help** — About, Licence
+
+The plain `putty` binary (`main-gtk-simple.c`) has **no menu**; if the first cut
+reuses it, `PuTTYgen.app` will be menu-less and the `PuTTYgen` `.app` should then
+use `puttygenapp` too — one target, not two, or two with the same menu gap as
+`putty`/`puttyapp`.
+
+### Threading
+
+Key generation is CPU-bound and can run for seconds to minutes, and
+`sshkeygen.h` reports progress and supports cancellation. The Windows GUI runs it
+on a worker thread (`generate_key_thread`) and marshals updates back to the
+dialog. GTK3 has the same problem and neither `GTK` nor `cmdgen.c`'s
+`ProgressReceiver` is thread-aware, so the port has to choose:
+
+* a `GThread` for generation and `g_idle_add()` (or `gdk_threads_add_idle`) to
+  push progress and completion onto the main loop — closest to the Windows
+  behaviour; or
+* generate in chunks driven by a `g_timeout_add()` idle callback.
+
+The first is recommended. Whatever is chosen, the progress receiver must not
+touch widgets from the worker thread, and the **Cancel** path must actually call
+the generator's cancellation, not just grey the button.
+
+### Bundling: a second `.app`
+
+* The launcher needs **no change**: `unix/osxlaunch.c` derives everything from
+  its own executable path and then execs `<own path>-bin`
+  (`osxlaunch.c:404-416, 455, 480`). So `Contents/MacOS/PuTTYgen` (a copy of the
+  same `osxlaunch` binary) execs `Contents/MacOS/PuTTYgen-bin`. One launcher
+  serves both apps.
+* New: `unix/puttygen.bundle` + `unix/puttygen.plist`, modelled on
+  `unix/putty.bundle` / `unix/putty.plist`, with its own
+  `CFBundleExecutable = PuTTYgen`, `CFBundleName`/`CFBundleDisplayName =
+  PuTTYGen`, `CFBundleIconFile = PuTTYgen.icns` and a **distinct**
+  `CFBundleIdentifier` (the main app uses
+  `org.tartarus.projects.putty.macputty`; two bundles sharing one identifier is
+  wrong).
+* Icon: `icons/mkicon.py` already has a `puttygen_icon(size)` generator next to
+  `putty_icon`/`pterm_icon`, and `icons/Makefile` already builds `puttygen.ico`
+  from it. Emit a PNG and reuse `scripts/make-icns.sh`, which is how
+  `icons/PuTTY.icns` is produced now. `icons/Makefile`'s `ICNS = PuTTY.icns
+  Pterm.icns` should gain `PuTTYgen.icns`.
+* **`gtk-mac-bundler` takes exactly one bundle file per run** —
+  `tools/gtk-mac-bundler/bundler/main.py`: `if len(argv) != 1: … sys.exit(2)`.
+  Two apps therefore means **two bundler invocations**, each copying the whole
+  GTK tree into its own `.app`.
+* **`scripts/bundle-macos.sh` is single-app from top to bottom**: it hardcodes
+  `APP="$STAGE/unix/PuTTY.app"` and then `cd "$APP"` with every repair pass
+  written against that one path (Cellar→opt, dangling references, `loaders.cache`,
+  GSettings schemas, re-sign, verify). It has to become a loop over app
+  definitions — bundle file, plist, icon, binary, resulting `.app` name — with
+  every pass applied to each app. The §3 fix is a prerequisite: it is what makes
+  the re-sign pass cover `Contents/MacOS`, and a second app doubles the number of
+  places that can silently end up unsigned.
+
+### Universal: two apps, not one
+
+Two apps × two architectures = **four** bundles to merge into two. So
+`scripts/make-universal.sh` (§1c) cannot take a single app path: it needs a
+per-app list, and the verification in `intel_arm_merge.md` §7 has to be run for
+each resulting `.app`. Decide whether that is an argument list of pairs or a
+table in the script. Whichever, the "Mach-O present in only one bundle" rule
+still applies per app.
+
+### Open decisions
+
+1. **Certificates** (`add_certificate`, `remove_certificate`, `CertInfoProc`).
+   Port them, or leave them to the CLI? Check whether `cmdgen.c` exposes the same
+   thing before deciding — the GUI's certificate handling may be the only way to
+   produce a `*-cert.pub`, or it may be a thin wrapper over something the CLI
+   already does.
+2. **SSH-1** (`import_ssh1`, `export_ssh1`, `setupbigedit1`, `ui_set_rsa_strong`,
+   `ui_set_primepolicy`). SSH-1 key files are long dead on macOS and the
+   controls are a whole dialog's worth of UI. Dropping them from the GUI (the CLI
+   keeps them) would cut a lot of the port. Decide explicitly rather than
+   porting them by default.
+3. **Menu bar now or later** — see "Menus".
+4. **Which fingerprint formats** to offer in the picker.
+5. **Where the `.ppk` v3 parameters live in the UI** — its own dialog
+   (`PPKParamsProc`) or folded into the Save flow.
+
+### Files
+
+| File | Change |
+|---|---|
+| `unix/puttygen.c` (new) | the GTK window — the port |
+| `unix/main-gtk-puttygen.c` (new) | `GtkApplication` main + menus |
+| `unix/CMakeLists.txt` | `puttygenapp` target; split `puttygen-common` so the GTK build does not pull `no-gtk.c` |
+| `unix/puttygen.bundle`, `unix/puttygen.plist` (new) | the second bundle |
+| `scripts/bundle-macos.sh` | loop over apps instead of one hardcoded `PuTTY.app` |
+| `icons/Makefile`, `icons/PuTTYgen.icns` | icon, via `mkicon.py` + `scripts/make-icns.sh` |
+| `scripts/make-universal.sh` (not written yet) | merge per app, not per bundle set |
+| `README.md`, `CHANGES-FROM-UPSTREAM.md` | the feature and the file-by-file diff |
+
+### Steps
+
+1. **Decide the open questions above** and write the answers here before coding —
+   SSH-1 and certificates change the size of this by a lot.
+2. `unix/CMakeLists.txt`: split `puttygen-common`, add `puttygenapp`, confirm it
+   links and starts with an empty window.
+3. `unix/puttygen.c`: the main window, key type + bits, Generate, the key box,
+   the progress bar, and **Cancel**. Generate one key end to end and compare it
+   with `./build/puttygen -t ed25519 -o /tmp/x.ppk` for the same parameters.
+4. Load and save: Open Key (via `our_file_chooser_run`) → `ppk_load_f` /
+   `import_*`; Save private / Save public. Round-trip every format the CLI
+   accepts, and diff against the CLI's output.
+5. Passphrase dialogs: new passphrase + confirm, change passphrase (`-P`), and
+   the `.ppk` v3 parameters dialog.
+6. The remaining actions: fingerprint format, conversions, About, Licence.
+7. Bundling: `puttygen.bundle` + plist + icon, and the `bundle-macos.sh` loop.
+8. Universal: extend `make-universal.sh` to the four-bundle case.
+9. Docs: PLAN (this section → "as built"), README, `CHANGES-FROM-UPSTREAM.md`.
+
+### Verification
+
+* **Against the CLI**, which is the oracle: for each algorithm the GUI offers,
+  generate with the GUI and with `puttygen`, and compare `-l` fingerprints and
+  `-L` public blobs. A GUI that generates a different key from the same
+  parameters is a bug in the GUI.
+* **Round trips**: load every format `puttygen` can load, re-save, reload, and
+  compare fingerprints; do it both with and without a passphrase, and once with
+  a `.ppk` v3 file written at non-default Argon2 parameters.
+* **The chooser**: confirm the dialog that appears is the one with the **Path:**
+  box — i.e. `our_file_chooser_run`, not a bare `GtkFileChooserDialog`.
+* **Cancel** mid-generation: the process must stay responsive and no half-written
+  key may be left behind.
+* **Bundle**: `lipo -archs` on every Mach-O → `x86_64 arm64`;
+  `codesign --verify --deep --strict` clean on both apps; no dangling
+  `@executable_path` references; launch both on arm64 and on Intel hardware.
+* `test_conf`, `test_sessions`, `test_sesssearch`, `test_sesspass`,
+  `test_mcp_buffer`, `test_terminal`, `test_lineedit` must all still pass —
+  this work should not touch them.
+
+### Risks / not in scope
+
+* **Size.** `windows/puttygen.c` is 2615 lines of dialog code, and the GTK dialog
+  framework in `unix/dialog.c` is built for the *configuration box* — keyword-driven
+  panels of controls, not for a live key display with a progress bar and threaded
+  generation. Expect to write bespoke GTK widgets rather than reuse `dialog.h`,
+  and expect the reuse that does pay off to be `our_file_chooser_run`, the
+  clipboard handling and `licence.h`.
+* **Not in scope:** any change to the key-generation, import or `.ppk` code
+  itself; the CLI (`cmdgen.c`) stays exactly as it is; Windows is untouched.
+* The Windows `puttygen` has a **drag-and-drop** entry point (dropping a key on
+  the window loads it). Nice to have; not required, and it would use the
+  `drag_data_received` pattern already added for the terminal in §4b.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.
@@ -1969,3 +2242,15 @@ crates*, not a port of PuTTY:
       - [ ] **M6d** — audit log, read-only/confirm modes, GUI badge (4d)
       - [ ] **M6e** — `open_session`, fleet runs, ZMODEM tools (4e)
 - [ ] **M7** *(optional)* — native macOS UI evaluation (Phase 5, O3)
+- [ ] **M8** — GTK PuTTYgen front end, shipped as a `PuTTYGen.app` beside `PuTTY.app`
+      and universal with it (O4, §4m) — design only
+      - [ ] **M8a** — settle the open decisions (SSH-1 and certificates), split
+            `puttygen-common`, add the `puttygenapp` target: it starts, empty
+      - [ ] **M8b** — main window: key type/bits, Generate, progress, Cancel,
+            the key box — verified against the CLI
+      - [ ] **M8c** — Open Key / Save private / Save public through
+            `our_file_chooser_run`, plus the passphrase and `.ppk` v3 dialogs
+      - [ ] **M8d** — bundle `PuTTYGen.app` (two bundler runs; `bundle-macos.sh`
+            looped over apps, per §4m)
+      - [ ] **M8e** — four bundles → two universal `.app`s (`make-universal.sh`
+            per app)
