@@ -16,8 +16,14 @@ Written 2026-11-20 on the Intel Mac (`MacMini2018`, macOS 15.8.2, x86_64).
 | | |
 |---|---|
 | fix for `scripts/bundle-macos.sh` (§3) | **`fd49206`** — *"Sign the bundle's Contents/MacOS binaries on x86_64"* |
-| this document | the commit immediately after `fd49206` |
+| this document | **`0ca60de`** — *"Hand over the Intel slice: intel_arm_merge.md"* |
+| the GTK PuTTYgen design (§4m, M8) | **`75c87d3`** — *"PLAN.md: design the GTK PuTTYgen front end"* |
 | pushed to the remote? | **no** — the Intel Mac has no git credentials; **push from the arm Mac** (see §9) |
+
+Oldest-to-newest: `fd49206` → `0ca60de` → `75c87d3`. All three are local only.
+Note the third: it is a *design*, not built code — §4m and M8 in `PLAN.md`
+describe a `PuTTYGen.app` that does not exist yet, and when it does, the tables
+in §1 and §7 of this document grow a second app.
 
 ---
 
