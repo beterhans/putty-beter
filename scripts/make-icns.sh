@@ -24,6 +24,12 @@ log() {
     printf '[make-icns] %s\n' "$*"
 }
 
+# Chatty only when DEBUG=1, like the other scripts.
+dbg() {
+    [ "${DEBUG:-0}" = "1" ] && printf '[make-icns][debug] %s\n' "$*" >&2
+    return 0
+}
+
 if [ -z "$SRC" ] || [ -z "$DST" ]; then
     echo "usage: $0 <source.png> <output.icns>" >&2
     exit 2
@@ -37,6 +43,27 @@ for tool in sips iconutil; do
         exit 1
     }
 done
+
+# The source has to be square. Each iconset entry is produced with `sips -z N N`,
+# which stretches to the exact size and ignores the aspect ratio, so a
+# non-square source would come out distorted - silently. Refuse instead, and say
+# what to do about it.
+SRC_W="$(sips -g pixelWidth "$SRC" | awk '/pixelWidth/{print $2}')"
+SRC_H="$(sips -g pixelHeight "$SRC" | awk '/pixelHeight/{print $2}')"
+if [ "$SRC_W" != "$SRC_H" ]; then
+    log "ERROR: source is not square: $SRC_W x $SRC_H"
+    log "       'sips -z' would stretch it to a square. Crop or pad the PNG"
+    log "       (transparent padding, centred) so that it is square, and that"
+    log "       its artwork reaches the edges: macOS scales the whole canvas, so"
+    log "       a transparent margin makes the finished icon look undersized."
+    exit 1
+fi
+dbg "source: $SRC_W x $SRC_H"
+
+if [ "$SRC_W" -lt 1024 ]; then
+    log "WARNING: source is smaller than 1024 x 1024 ($SRC_W x $SRC_H);"
+    log "         the largest icon will be upscaled and may look soft"
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/make-icns.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT

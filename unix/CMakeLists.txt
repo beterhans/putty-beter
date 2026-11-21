@@ -87,10 +87,15 @@ target_link_libraries(psusan
   eventloop sshserver keygen settings network crypto utils)
 installed_program(psusan)
 
+# PuTTY-beter: puttygen-common holds the pieces every PuTTYgen front end needs
+# (key generation helpers, the .ppk reader/writer, the RNG). It deliberately no
+# longer contains no-gtk.c: that file exists to claim the program has no GTK,
+# and the GUI front end (puttygenapp, below) does have GTK, pulling the real
+# buildinfo_gtk_version() in from the utils library. The command-line tools
+# list no-gtk.c themselves.
 add_library(puttygen-common OBJECT
   ${CMAKE_SOURCE_DIR}/stubs/no-timing.c
   keygen-noise.c
-  no-gtk.c
   noise.c
   storage.c
   ${CMAKE_SOURCE_DIR}/sshpubk.c
@@ -98,12 +103,14 @@ add_library(puttygen-common OBJECT
 
 add_executable(puttygen
   ${CMAKE_SOURCE_DIR}/cmdgen.c
+  no-gtk.c
   $<TARGET_OBJECTS:puttygen-common>)
 target_link_libraries(puttygen keygen console crypto utils)
 installed_program(puttygen)
 
 add_executable(cgtest
   ${CMAKE_SOURCE_DIR}/cgtest.c
+  no-gtk.c
   $<TARGET_OBJECTS:puttygen-common>)
 target_link_libraries(cgtest keygen console crypto utils)
 
@@ -222,6 +229,23 @@ endif()
       guiterminal eventloop sshclient otherbackends settings
       network crypto utils puttyxpms
       ${GTK_LIBRARIES} ${X11_LIBRARIES} ${X11_Xrender_LIB})
+
+    # PuTTY-beter: the GUI PuTTYgen front end (PLAN.md section 4m). Unlike the
+    # terminal front ends it does not link guiterminal: it needs no terminal,
+    # no dialog.c and no session machinery. It links utils (for the one file
+    # chooser, our_file_chooser_run), keygen (import.c) and crypto (Argon2,
+    # AES, hashes) directly, plus the shared puttygen-common objects. There is
+    # no no-gtk.c here - the GUI has GTK, so buildinfo reports the real
+    # version - and no be_list(), because PuTTYgen has no network backends.
+    add_executable(puttygenapp
+      puttygen.c
+      main-gtk-puttygen.c
+      $<TARGET_OBJECTS:puttygen-common>)
+    target_link_libraries(puttygenapp
+      keygen crypto utils
+      ${GTK_LIBRARIES} ${X11_LIBRARIES} ${X11_Xrender_LIB})
+    # puttygen.c uses LICENCE_TEXT() from the generated licence.h.
+    add_dependencies(puttygenapp generated_licence_h)
   endif()
 
   add_executable(puttytel

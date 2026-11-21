@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIconFile</key>
+    <string>PuTTYgen.icns</string>
+    <key>CFBundleName</key>
+    <string>PuTTYGen</string>
+    <key>CFBundleDisplayName</key>
+    <string>PuTTYGen</string>
+    <key>CFBundleExecutable</key>
+    <string>PuTTYGen</string>
+    <key>CFBundleVersion</key>
+    <string>0.85-beter.1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.85-beter.1</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <!-- Distinct from PuTTY.app's org.tartarus.projects.putty.macputty: two
+         bundles must not share a bundle identifier. -->
+    <key>CFBundleIdentifier</key>
+    <string>org.tartarus.projects.putty.macputtygen</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Original author: © 1997-2026 Simon Tatham. All rights reserved.&#10;This fork: © 2026 beterhans. All rights reserved.</string>
+</dict>
+</plist>

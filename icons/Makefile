@@ -20,7 +20,7 @@ MONOSVGS = $(patsubst %,%-mono.svg,$(ICONS))
 
 ICOS = putty.ico puttygen.ico pscp.ico pageant.ico pageants.ico puttycfg.ico \
        puttyins.ico pterm.ico ptermcfg.ico
-ICNS = PuTTY.icns Pterm.icns
+ICNS = PuTTY.icns Pterm.icns PuTTYgen.icns
 CICONS = putty-xpm.c putty-config-xpm.c pterm-xpm.c pterm-config-xpm.c \
          putty-rgb.c putty-config-rgb.c pterm-rgb.c pterm-config-rgb.c
 
@@ -144,5 +144,27 @@ Pterm.icns: pterm-16-mono.pam pterm-16.pam \
 	                                    colour:pterm-128.pam \
 		output:$@
 
+# PuTTY-beter: this is the *fallback* PuTTYGen.app icon. The shipped icon is
+# built from icons/puttygen-icon.png by scripts/bundle-macos.sh (via
+# scripts/make-icns.sh), the same way PuTTY.icns is; this mkicon.py/macicon.py
+# route is only used when that PNG is absent, and bundle-macos.sh overwrites
+# this file whenever the PNG is present. Same recipe as PuTTY.icns/Pterm.icns:
+# mkicon.py draws the icon straight into a PAM, and macicon.py wraps the PAMs
+# into an .icns. No external image tools needed.
+PuTTYgen.icns: puttygen-16-mono.pam puttygen-16.pam \
+	       puttygen-32-mono.pam puttygen-32.pam \
+	       puttygen-48-mono.pam puttygen-48.pam \
+	       puttygen-128.pam
+	./macicon.py mono:puttygen-16-mono.pam colour:puttygen-16.pam \
+	             mono:puttygen-32-mono.pam colour:puttygen-32.pam \
+	             mono:puttygen-48-mono.pam colour:puttygen-48.pam \
+	                                    colour:puttygen-128.pam \
+		output:$@
+
+# The icon *sources* (putty-beter-icon.png, puttygen-icon.png) are checked in,
+# so `clean` must not take them: only the generated PNGs go.
+ICON_SOURCES = putty-beter-icon.png puttygen-icon.png
+
 clean:
-	rm -f *.pam *.png *.ico *.icns *.c
+	rm -f *.pam *.ico *.icns *.c
+	rm -f $(filter-out $(ICON_SOURCES),$(wildcard *.png))
