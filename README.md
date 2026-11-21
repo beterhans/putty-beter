@@ -415,6 +415,16 @@ then add to `~/.config/opencode/opencode.json`:
 }
 ```
 
+`PuTTY.app` also carries a copy of the bridge, so the app is self-describing:
+`bundle-macos.sh` installs it at `Contents/Resources/putty-mcp`, reachable as
+`Contents/MacOS/putty-mcp` through a symlink. It is **source only** — the npm
+packages are not bundled, because `npm install` inside the .app would change the
+bundle and break its signature — so it ships with a `SETUP.txt` that says to copy
+the folder out, install there, and point the client at the copy. (The symlink is
+not decoration: macOS treats everything under `Contents/MacOS` as code, and a
+bundle with unsigned non-code files there does not seal; the files themselves are
+under `Resources`, where the seal covers them.)
+
 It is also a plain command-line client, which is the first thing to reach for
 when something is wrong — no LLM involved:
 

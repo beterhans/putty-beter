@@ -2209,8 +2209,20 @@ default read budget), `CMakeLists.txt`; new `mcp/` for the bridge.
 | `unix/window.c` | `McpSession *mcp` in `GtkFrontend`; `mcp_start()` / `mcp_stop()` / `mcp_get_view()`; the stream tap in `zm_terminal_output()` |
 | `conf.h`, `config.c` | `CONF_mcp_enabled` (`McpEnabled`) and `CONF_mcp_write` (`McpWrite`), and the `Session/Automation (MCP)` panel with a checkbox for each |
 | `unix/CMakeLists.txt`, `CMakeLists.txt` | `mcp.c mcp-buffer.c` into `guiterminal`; new `test_mcp_buffer` target |
-| `mcp/` (new) | the Node bridge: `bin/putty-mcp.mjs`, `src/protocol.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/manual.mjs`, `USER-MANUAL.md`, `README.md` |
+| `mcp/` (new) | the Node bridge: `bin/putty-mcp.mjs`, `src/protocol.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/manual.mjs`, `USER-MANUAL.md`, `README.md`, `SETUP.txt` (the note the app ships beside it) |
 | `scripts/test-mcp.sh` (new) | the smoke test: starts its own `pterm` against a throwaway `PUTTYDIR` and drives the bridge |
+
+**The bridge ships inside the app** (2026-11-21). `bundle-macos.sh` copies `mcp/`
+into every `PuTTY.app` it builds — on every run, reused tree or not — at
+`Contents/Resources/putty-mcp`, with a symlink from `Contents/MacOS/putty-mcp` so
+the configured path is the obvious one. The symlink is required, not cosmetic:
+macOS treats everything under `Contents/MacOS` as nested code, so unsigned
+non-code files there stop the bundle sealing (`"code object is not signed at
+all"`, measured). Source only — the npm packages are not bundled, because
+`npm install` inside the .app would change the bundle and break its signature —
+so `SETUP.txt` tells the user to copy the folder somewhere writable, install
+there, and point the MCP client at the copy. `MCP_APP=` picks the app (default
+`PuTTY`; `PuTTYGen` has no MCP server). This is `CHANGES-FROM-UPSTREAM.md` §19.
 
 **The wire protocol**, which the sketch left open. Both directions are
 `u32 nfields`, then `nfields × (u32 length, length bytes)`, big-endian. A field

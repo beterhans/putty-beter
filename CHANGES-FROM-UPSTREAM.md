@@ -51,7 +51,7 @@ fixes, so `git log` alone shows only the later work.
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
-| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. |
+| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. **The bridge itself ships inside `PuTTY.app`**, with the note that says how to configure it as an MCP server (section 19). |
 | PuTTYGen GUI | `puttygen` gains a **GTK front end** — `unix/puttygen.c`, a port of the Windows-only `windows/puttygen.c` — built as `puttygenapp` and shipped as `PuTTYGen.app` beside `PuTTY.app`. Generate, inspect, load, convert and save keys by clicking, on a worker thread with a working Cancel. The command-line `puttygen` is unchanged and is the oracle the GUI is tested against. |
 | Version and identity | The fork's own version string — **0.85-beter.1** — in `version.h`, `LATEST.VER` and both `Info.plist`s, a clickable link to <https://github.com/beterhans/putty-beter> at the foot of every About box, and a second copyright line (`This fork: Copyright 2026 beterhans.`) below the preserved upstream notice. See section 18. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh` (now building **both** apps), `scripts/make-universal.sh` (universal apps + the `PuTTY-universal.dmg` installer), `scripts/make-icns.sh`, `scripts/test-puttygen-gui.sh`, `CMakePresets.json`, self-contained `PuTTY.app` and `PuTTYGen.app` with this fork's own icons, and GSettings schemas compiled into each bundle. |
@@ -112,7 +112,7 @@ tool will give slightly different numbers for the same change.
 |---|---|
 | `CMakePresets.json` | `arm64`, `x86_64`, `debug` presets |
 | `scripts/build-macos.sh` | Per-architecture build, one command |
-| `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, **compile the GSettings schemas into the bundle**, ad-hoc re-sign |
+| `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, **compile the GSettings schemas into the bundle**, **install the MCP bridge** (section 19), ad-hoc re-sign |
 | `terminal/zmodem.c` | The ZMODEM engine: sender and receiver, written in-tree from the public-domain spec and Forsberg's original `rzsz`. Pure C with a callback interface, so it has no GTK, display or filesystem dependency and can be tested on its own |
 | `terminal/zmodem.h` | The `ZmodemCallbacks` interface it talks to the front end through |
 | `test/test_zmodem.c` | 135 checks: independent CRC vectors, a full loopback round trip, and the cancel / refused-file paths |
@@ -154,6 +154,7 @@ tool will give slightly different numbers for the same change.
 | `unix/puttygen.plist` | Its `Info.plist`: `CFBundleName`/`CFBundleExecutable` `PuTTYGen`, `CFBundleIconFile PuTTYgen.icns`, and its own bundle identifier |
 | `scripts/test-puttygen-gui.sh` | The GUI checked against the command-line `puttygen` (33 checks): every key type, every loadable format, a save/reload round trip, a cancelled 4096-bit RSA generation, and that the file chooser is the application's own |
 | `scripts/make-universal.sh` | Merges the per-architecture `.app` bundles into universal ones (`lipo -create` per Mach-O, re-signed, verified) and packages them as a drag-install `PuTTY-universal.dmg` with an `/Applications` symlink |
+| `mcp/SETUP.txt` | The note installed beside the bundled MCP bridge: how to configure it as an MCP server and what it needs to run (section 19) |
 | `icons/puttygen-icon.png` | The `PuTTYGen.app` icon source (1024x1024, artwork cropped to the canvas), converted to `icons/PuTTYgen.icns` at bundle time |
 | `icons/PuTTYgen.icns` | Generated (gitignored) from `icons/puttygen-icon.png`; what `unix/puttygen.plist` asks for |
 
@@ -1231,6 +1232,36 @@ PuTTYGen's About box also picked up a small fix while it was being touched: it
 now clears the selectable label's initial select-all
 (`gtk_label_select_region(label, 0, 0)`, exactly as `unix/dialog.c` already did),
 so it no longer opens as a solid blue highlight.
+
+## 19. The MCP bridge ships inside PuTTY.app
+
+An agent drives PuTTY through `mcp/`, a Node program that speaks MCP on stdio and
+talks to a *live* PuTTY window over a Unix socket (section 13). The app now carries
+a copy of it, so the app is self-describing: `scripts/bundle-macos.sh` installs
+`mcp/` into every `PuTTY.app` it builds, on every run — including a run that
+reuses an existing tree.
+
+It lands at `Contents/Resources/putty-mcp`, with a symlink to it from
+`Contents/MacOS/putty-mcp`, so the path to configure is the obvious
+`.../Contents/MacOS/putty-mcp/bin/putty-mcp.mjs` (and the note is at
+`.../putty-mcp/SETUP.txt` next to it). **The symlink is load-bearing.** macOS
+treats everything under `Contents/MacOS` as nested *code*: measured, a bundle with
+an unsigned non-code file there fails to seal — `codesign` says *"code object is
+not signed at all"* — and `codesign --verify --deep --strict` then reports *"a
+sealed resource is missing or invalid / file added"*. Files under
+`Contents/Resources` are covered by the bundle seal and need no signature of their
+own, and `codesign` ignores a symlink in `MacOS`. (The alternative — signing each
+bridge file individually — survives neither the merge's `xattr -cr` nor a plain
+copy, so it is not used.)
+
+**Source only, deliberately.** The two npm packages
+(`@modelcontextprotocol/sdk`, `zod`) are not bundled: they are 23 MB and ~3400
+files, and `npm install` inside the .app would change the bundle and invalidate
+its signature. `mcp/SETUP.txt` is installed beside the code instead, and tells the
+human to copy the folder somewhere writable, `npm install` there, and point the
+MCP client at the copy — with the OpenCode configuration written out, and the
+Node requirement (20 or newer) stated. `MCP_APP=` (default `PuTTY`) chooses which
+app gets the bridge; `PuTTYGen.app` has no MCP server, so it gets none.
 
 ## Worth reporting upstream
 

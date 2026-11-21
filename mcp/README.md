@@ -56,6 +56,17 @@ for.
    }
    ```
 
+**PuTTY.app carries a copy too.** `bundle-macos.sh` installs this directory into
+every PuTTY.app it builds, at `Contents/Resources/putty-mcp` — reachable at the
+same path under `Contents/MacOS/putty-mcp`, through a symlink, because that is
+where a runnable helper is expected. It is **source only**: the npm packages are
+not bundled, because `npm install` inside the .app would change the bundle and
+break its code signature. That copy carries `SETUP.txt`, which is steps 1–4 above
+with the in-bundle paths filled in, so someone who has only the app can still set
+the bridge up (copy the folder somewhere writable, `npm install` there, point the
+client at the copy). You do not need it if you have the source — but it is what
+makes the app self-describing.
+
 ## Using it without an agent
 
 The same program is a plain command-line client, which is the first thing to
