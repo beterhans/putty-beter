@@ -1883,6 +1883,52 @@ signal, and must not hold up another window that is closing.
 
 ---
 
+### 4n as built (M9, 2026-11-22)
+
+Implemented as designed, on the arm Mac, with `CHANGES-FROM-UPSTREAM.md` §20 as
+the file-by-file record. The three open decisions were settled like this:
+
+* **Which closes are delayed:** every close this setting drives, a clean `exit`
+  included. That is what the request read as ("every time the window is about to
+  close because of this setting"), and `CloseOnExitDelay=0` covers the other
+  taste.
+* **Where the countdown is drawn:** a GTK status line — a `GtkLabel` packed below
+  the terminal in a `GtkVBox`, hidden until needed. This cannot touch the
+  terminal's contents or scrollback, which is the whole point; the terminal's own
+  last line would have corrupted exactly the text being read.
+* **Scope:** per session only, like every other control on that panel. No global
+  default beyond the built-in 2 — except that **`pterm` keeps 0**: it shares
+  `unix/window.c` but has no configuration panel and no saved sessions, so a
+  countdown there could never be switched off. `platform_default_i()` returns 0
+  when `saved_sessions` is false, which is the design's "nothing headless
+  changes" made true rather than merely hoped for.
+
+**What the build and the tests said.** `PUTTY_BETER_DEBUG=exit` is the switch the
+design asked for, and it made every case (delay 2, delay 0, `CloseOnExit=Never`,
+a keystroke cancelling, a second keystroke closing, a rejected login) checkable
+without a screen. The `test_conf`, `test_sessions`, `test_sesspass`,
+`test_sesssearch`, `test_terminal` and `test_lineedit` binaries all pass. See §20
+of `CHANGES-FROM-UPSTREAM.md` for the table.
+
+**The Synology case, explained.** `plink -v` against `johnny@S-D220.local` shows
+the sequence ends `Access granted` → `Opened main channel` → `Started a
+shell/command` → `Permission denied, please try again.` → `Session sent command
+exit status 1`. The password is *accepted*; the **account** is refused at the
+session level. So the readable exit is the right fix, and the exit code is 1
+(non-clean) on the platform default `CloseOnExit=2`. The screenshot of the held
+window, banner and countdown line and all, is described in this round's
+`_agent/` log.
+
+**Open, for §4k, found by this work.** The fork's "Remember Login" offer (§4k)
+fires on `notify_session_started`, which is the main channel opening — *before*
+the server refuses the session. On this NAS that means a dialog saying "Login
+succeeded. Remember this password…" appears for a login that never worked, and
+now it is visible for the two seconds of the countdown. The offer should wait for
+the session to be genuinely established rather than merely channelled; that is a
+design change in §4k, not here, and nothing is saved unless the user clicks Yes.
+
+---
+
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
 
 **Goal:** organise saved sessions in folders, add comments, optionally save passwords.
@@ -2680,5 +2726,6 @@ crates*, not a port of PuTTY:
             as `build-universal/PuTTY-universal.dmg` (both apps + `/Applications`
             symlink, drag-install; mounted and verified). See PLAN §1c and §4m
             "As run on the arm Mac".
-- [ ] **M9** — a readable exit: hold the window open for a two-second countdown
-      before closing, so the reason a session dropped can be read (§4n)
+- [x] **M9** — a readable exit: hold the window open for a two-second countdown
+      before closing, so the reason a session dropped can be read (§4n, and
+      "4n as built" for the decisions, the tests and what the SSH log showed)

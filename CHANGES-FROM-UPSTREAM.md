@@ -265,6 +265,7 @@ stores a key keeps its own value.
 | Window → Colours, default foreground | `187,187,187` | `242,242,242` (`settings.c`) |
 | Window → Colours, default background | `0,0,0` | `0,48,42` (`settings.c`) |
 | Window → Colours, bold background | `85,85,85` | `64,96,96` (`settings.c`) |
+| "Seconds to hold the window open first" (**new setting**) | — | 2 (§20) |
 
 The palette lives in `settings.c` (`load_settings()`) rather than `conf.h`,
 because `CONF_colours` is a subkey map loaded by hand: its nineteen other
@@ -378,6 +379,9 @@ These are runtime switches and cost nothing when unset.
 * `PUTTY_SESSPASS_DEBUG=1` — the saved-session password and the login name kept
   beside it: a blob being decoded, an injection into a password prompt, and a
   login name remembered from the `login as:` prompt (never the password itself).
+* `PUTTY_BETER_DEBUG=exit` — the readable exit (§20): which path closed the
+  window, the exit code, the `CloseOnExit` and delay values in force, whether the
+  countdown was started, and whether a keystroke or click cancelled it.
 * `ZMODEM_INTEROP_TRACE=1`, `ZMODEM_INTEROP_DUMP=1` (raw streams to
   `/tmp/zm-in-*.bin` and `zm-out-*.bin`) and `ZMODEM_INTEROP_PRINTABLE=1` —
   only for `test/test_zmodem_interop`.
@@ -1282,6 +1286,83 @@ run where symlinks are readable — the **arm Mac**.
 `mcp/SETUP.txt`, installed beside the code, states the result: Node 20 or newer is
 all a user needs. `MCP_APP=` (default `PuTTY`) chooses which app gets the bridge;
 `PuTTYGen.app` has no MCP server, so it gets none.
+
+## 20. The window is held open when a session ends ("a readable exit")
+
+**What and why.** When a session ends and `CloseOnExit` says the window goes,
+`exit_callback()` (`unix/window.c`) destroyed it at once, so the last thing the
+session printed — normally the reason it dropped — was unreadable. It is now held
+for a **countdown**, two seconds by default, with a line under the terminal
+saying so; any keystroke or click cancels the countdown and leaves the window
+open, and a later one closes it as before. Design of record: `PLAN.md` §4n.
+
+**New setting.** `conf.h`:
+
+```c
+CONF_OPTION(close_on_exit_delay,
+    VALUE_TYPE(INT), /* in seconds */
+    DEFAULT_INT(2),
+    SAVE_KEYWORD("CloseOnExitDelay"),
+)
+```
+
+Plain `INT` with a `SAVE_KEYWORD`, so `settings.c` saves and loads it
+automatically. **0 means "close at once, exactly as upstream"**, which is what
+keeps the feature honest for anyone who does not want it — and what lets a
+session that drops often be set to skip the wait.
+
+**The control** is in the Session panel, beside the *Close window on exit* radio
+buttons (`config.c`), as a `ctrl_editbox` with `ED_INT` — the same shape as
+*Lines of scrollback*. It is a per-session setting like the rest of that panel.
+
+**pterm does not get it.** `pterm` shares `unix/window.c`, so it would have
+inherited the two seconds with no way to switch them off — no configuration
+panel, no saved sessions. `platform_default_i()` therefore returns **0** for
+`CloseOnExitDelay` when `saved_sessions` is false, which leaves `pterm`'s
+behaviour exactly upstream's: measured 0.20 s to run and close `pterm -e …`,
+against 2.56 s for the same with `putty`. `plink`, `pscp` and `psftp` link no
+window code at all. (`platform_default_i()` is reached for both tools because
+`unix/main-gtk-simple.c` calls `do_defaults()` unconditionally; the name it is
+handed is the save keyword, `"CloseOnExitDelay"`.)
+
+**The countdown** is a GLib timeout (`g_timeout_add`, one second per tick), never
+a blocking sleep, so the window keeps painting while it counts. It is a `GtkLabel`
+that `unix/window.c` packs **below** the terminal in a `GtkVBox`, hidden until it
+has something to say: writing the countdown into the terminal itself would disturb
+exactly the text the feature exists to show. The tick destroys the window when the
+count reaches zero; a keypress (`key_pressed()`), or a mouse press
+(`button_internal()`), cancels it. `delete_inst()` removes the timeout before
+freeing the `GtkFrontend` it is the user data of, and the tick clears the id
+before destroying so that path cannot double-remove the source. Restarting the
+session from the menu clears the line again.
+
+Upstream's GTK behaviour — any keypress closes a window whose session has exited —
+is only *deferred*: the first keypress cancels the hold, the next closes.
+
+**What the tests found** (arm64 build, macOS 27, 2026-11-22; the trace under
+`PUTTY_BETER_DEBUG=exit` was the instrument):
+
+| case | result |
+|---|---|
+| default (2 s), clean end of session | held 2 s, counted down, closed — 2.64 s wall clock from launch |
+| `CloseOnExitDelay=0` | `no delay: destroying the window now`, 0.55 s — upstream's behaviour |
+| `CloseOnExit=Never` | unchanged: no trace, no close |
+| `pterm -e …` (no settings UI) | unchanged: `delay 0`, `no delay`, 0.20 s |
+| `CloseOnExitDelay=5` in a session file | loaded and honoured (`delay 5`), so the keyword round-trips |
+| a keystroke during the countdown | cancelled, window stayed open (4 s were left) |
+| a second keystroke | closed the window, as upstream does |
+| `johnny@S-D220.local` (rejected) | the banner and `Permission denied, please try again.` held on screen |
+
+The last row is the case from `PLAN.md` §4n, and the SSH log is worth recording:
+`plink -v` shows **`Access granted`**, `Opening main session channel`,
+`Opened main channel`, `Started a shell/command`, and only then
+`Permission denied, please try again.` / `Session sent command exit status 1`. So
+the password is accepted and the *account* is refused at the session level; the
+window closes non-cleanly (exit code 1) on the platform default `CloseOnExit=2`.
+That is also why the fork's "Remember Login" offer (§14, `PLAN.md` §4k) appears on
+this connection: it is triggered by `notify_session_started`, which fires when the
+main channel opens — before the server refuses the session. See §4n's "As built"
+for that, and for what the code should do about it.
 
 ## Worth reporting upstream
 

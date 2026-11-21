@@ -124,6 +124,30 @@ things that do work instead:
   changes nothing for `GTK_WIN_POS_CENTER` (see above), so it is only useful for
   things that genuinely follow the pointer.
 
+**But CoreGraphics can see the window, and can photograph just that window.**
+AppleScript's accessibility view is empty; the window server's is not.
+`CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)` returns a
+dictionary per window, and filtering on `kCGWindowOwnerPID` gives the window
+number and its `kCGWindowBounds` for a given process:
+
+```swift
+let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
+for w in list where (w[kCGWindowOwnerPID as String] as? Int) == pid { … }
+```
+
+then `screencapture -x -o -l <window number> out.png` writes **only that window**,
+title bar and all — no desktop, no other application's contents. Measured
+2026-11-22 while checking the readable exit (`PLAN.md` §4n): the same pid came
+back as two windows, so pick by size or by `kCGWindowName` — a modal message box
+(`PuTTY Remember Login`) is a window of its own.
+
+One more trap, from driving a keystroke: it goes to whatever is **frontmost**, so
+re-assert `set frontmost of process "putty" to true` before *each* one, and check
+`frontmost` before sending — a process that has just exited makes even the
+`set frontmost …` line fail (`Can't set process "putty" to true. (-10006)`), which
+is easy to misread as "the keystroke did not work". The application's own trace
+(`PUTTY_BETER_DEBUG=exit`, §20 of `CHANGES-FROM-UPSTREAM.md`) is what settles it.
+
 There is no way to get a second window into one process from the command line,
 either: the `puttyapp` / `ptermapp` builds reject `-load` and `-e`, and each
 launch is its own process. The in-window menu is the only route, and it is the

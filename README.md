@@ -244,6 +244,7 @@ keep their saved values.
 | Window → Fonts → ordinary text | `client:Monospace 12` | **`client:PT Mono 14`** |
 | Window → Fonts → wide (CJK) text | none (use the ordinary font) | **`client:Lantinghei TC Semi-Bold 14`** |
 | Window → Colours → default foreground / background / bold background | `187,187,187` / `0,0,0` / `85,85,85` | **`242,242,242`** / **`0,48,42`** / **`64,96,96`** |
+| Session → seconds to hold the window open first (**new setting**) | — | **2** (§12d) |
 
 The ANSI palette (Colour 6–21), the cursor colours, *Allow terminal to specify
 ANSI colours*, *Bold-coloured text is shown in bold* and the other Font boxes
@@ -354,6 +355,45 @@ the **primary** monitor. A position given explicitly still wins.
 The platform behaviour behind all of this — why the wrong monitor is picked, what
 does *not* change it, and how to measure it — is written up with its numbers in
 [`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
+
+### 12d. A readable exit: the window is held open when a session ends
+
+When a session ends and *Close window on exit* says the window goes, PuTTY
+destroys it at once — and whatever the session printed on its way out, which is
+usually the reason it dropped, goes with it. The window is now held for a short
+**countdown** (two seconds by default) with a line under the terminal:
+
+> The session has ended.  This window closes in 2 seconds.  Press any key to keep
+> it open.
+
+Any keystroke or click cancels the countdown and leaves the window open, so the
+reason can be read and copied; the *next* keystroke closes the window as it always
+did, and the window's close button still works straight away. The line is a GTK
+label **below** the terminal, so nothing the session printed, and nothing in the
+scrollback, is touched or reflowed.
+
+* **Session → "Seconds to hold the window open first (0 = close at once)"**, a new
+  box next to *Close window on exit*. **0 reproduces upstream exactly.** It is a
+  per-session setting like everything else on that panel, so a session you know
+  drops often can be set to skip the wait.
+* The countdown runs in the GTK main loop (`g_timeout_add`), never a blocking
+  sleep, so the window keeps painting and stays responsive while it counts.
+  `CloseOnExit=Never` is unchanged, and so is `pterm`: it has no configuration
+  panel and no saved sessions, so its user could never switch the hold off, and it
+  keeps upstream's close-at-once (`platform_default_i()` in `unix/window.c`
+  returns 0 for it). `plink`, `pscp` and `psftp` have no window at all.
+* `PUTTY_BETER_DEBUG=exit` traces the decision on stderr: which path fired, the
+  exit code, the delay, and whether a keystroke cancelled the countdown.
+
+The case that prompted it was a saved session to a Synology NAS. `PUTTY_SESSPASS_DEBUG`
+and `plink -v` show what actually happens: the login is **accepted** — `Access
+granted` — the main channel opens, and then the account is refused at the session
+level, the server printing `Permission denied, please try again.` with exit status
+1. The window used to disappear before any of that could be read, which is why it
+looked like a crash. The cause is upstream's default rather than a bug:
+`CloseOnExit` is **Always** on Unix, from `platform_default_i()` in
+`unix/window.c`. [`PLAN.md`](PLAN.md) §4n is the design of record and carries the
+test results.
 
 ### 13. MCP: let an AI agent read a session
 
