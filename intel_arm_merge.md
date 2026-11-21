@@ -1,8 +1,9 @@
 # intel_arm_merge.md — handing the Intel slice to the arm Mac
 
-**Purpose.** The x86_64 ("Intel") slice of `PuTTY.app` is built and signed on the
-Intel Mac. This document is the handover to the arm Mac side, whose job is to
-merge it with the arm64 slice into one universal `.app` — Phase 1c of `PLAN.md`.
+**Purpose.** The x86_64 ("Intel") slices of `PuTTY.app` **and** `PuTTYGen.app` are
+built and signed on the Intel Mac. This document is the handover to the arm Mac
+side, whose job is to merge each with its arm64 slice into one universal `.app` —
+Phase 1c of `PLAN.md`.
 
 **Everything referenced here lives in this repo** (`build-arm64/…`,
 `build-x86_64/…`, `scripts/…`). Nothing is on the Intel Mac's local SSD; that
@@ -21,19 +22,138 @@ Written 2026-11-20 on the Intel Mac (`MacMini2018`, macOS 15.8.2, x86_64).
 | pushed to the remote? | **no** — the Intel Mac has no git credentials; **push from the arm Mac** (see §9) |
 
 Oldest-to-newest: `fd49206` → `0ca60de` → `75c87d3`. All three are local only.
+
+**Nothing has been committed since.** As of **2026-11-21** the working tree also
+holds uncommitted work from both sides: the arm side's GTK PuTTYgen port
+(`unix/puttygen.c`, `unix/main-gtk-puttygen.c`, `unix/puttygen.bundle`,
+`unix/puttygen.plist`, the `icons/` and `scripts/` changes, `PLAN.md`), and the
+Intel side's `scripts/make-universal.sh`, the `bundle-macos.sh` fixes described in
+§0, and this document. Check `git status` before committing so the two sets do not
+end up in one unexplained commit.
 Note the third: it is a *design*, not built code — §4m and M8 in `PLAN.md`
 describe a `PuTTYGen.app` that does not exist yet, and when it does, the tables
 in §1 and §7 of this document grow a second app.
 
 ---
 
+## 0. Update — 2026-11-21, Intel Mac: two apps, and the merge script exists
+
+**Everything below §0 was written for one app.** Since then the arm side built the
+GTK PuTTYgen front end (`PLAN.md` §4m) and rewrote `scripts/bundle-macos.sh` to
+bundle several apps in one run. Two things follow, and both are now handled:
+
+* **There are four bundles, not two.** `PuTTY.app` and `PuTTYGen.app`, each with
+  an arm64 slice (`build-arm64/bundle-stage/unix/`) and an x86_64 slice
+  (`build-x86_64/bundle-stage/unix/`). The merge is per app: two `lipo` runs over
+  two pairs, producing two universal apps. Wherever this document says
+  "PuTTY.app", read "each app in the list"; §6 and §7 below have been superseded
+  on that point by the script that now exists.
+
+* **`scripts/make-universal.sh` now exists** — written on the Intel Mac
+  2026-11-21, not on the arm side as §6 originally proposed. It merges **both
+  apps** by default, and (added 2026-11-21 on the arm Mac) packages the result as
+  a drag-install disk image:
+
+  ```sh
+  scripts/make-universal.sh                  # both apps, then the DMG
+  APPS=PuTTYGen scripts/make-universal.sh    # one of them
+  scripts/make-universal.sh <arm64.app> <x86_64.app> [<out.app>]   # explicit
+  ```
+
+  Defaults: `build-arm64/bundle-stage/unix` + `build-x86_64/bundle-stage/unix` →
+  `build-universal/<name>.app`, then `build-universal/PuTTY-universal.dmg`. It
+  walks the arm64 bundle as the structural authority, `lipo -create`s every Mach-O
+  that has a counterpart, copies non-Mach-O through (noting the ones that differ —
+  §4's six), **fails loudly** on a Mach-O that exists in only one slice, re-signs
+  every Mach-O **including `Contents/MacOS`** (the §3 trap) with no `|| true`, then
+  checks: every Mach-O carries both slices, `codesign --verify --deep --strict`
+  passes, and no absolute Homebrew path leaked into the main binary. It refuses to
+  start if either slice is already universal, is the same arch twice, or has a
+  stray entry in its root.
+
+* **The merge has now been run end to end on the arm Mac (2026-11-21)** — this was
+  the one step §9 called out as never executed. Both apps came out **275 files, 75
+  Mach-O, all `x86_64 arm64`**, seal valid, no Homebrew leak; `PuTTYGen` generates
+  three keys. The disk image was then mounted and checked: `PuTTY.app`,
+  `PuTTYGen.app` and an `Applications -> /Applications` symlink at the volume
+  root, both apps sealing clean, and the universal `PuTTYGen` running from inside
+  the mounted image. The image is a plain UDZO (no background or icon layout, which
+  needs a mounted, Finder-arranged volume); it is built with `diskutil image
+  create from`, because macOS 27 deprecates `hdiutil create` — the script prefers
+  the new verb and falls back to `hdiutil` where it is absent. `MAKE_DMG=0` skips
+  it; the one-app form writes `<app>-universal.dmg` so it cannot overwrite the
+  suite image.
+
+* **Four failure modes were found on the Intel side and fixed** in
+  `scripts/bundle-macos.sh` (backups `-05.old`, `-06.old`):
+
+  1. **A rebuild that did not replace the previous app nested it inside the new
+     one** — `PuTTY.app/.PuTTY.app`. That entry sits in the bundle root, outside
+     the signature seal, so `codesign --verify` said *"unsealed contents present
+     in the bundle root"* and Gatekeeper refused the app while the build logged
+     `done`. The x86_64 `PuTTY.app` was unopenable because of exactly this. Now
+     `clear_app` insists the old app is gone before rebuilding (a `rm -rf` on SMB
+     is where this starts), `app_complete` rejects a bundle with a stray root
+     entry, and `verify` names the offender and fails the build.
+  2. **A failed `codesign --verify --deep --strict` was only a `WARNING`** — which
+     is why an unopenable bundle was reported as a successful build. Now fatal.
+  3. **The copy-back path** — which only the Intel Mac takes, because there
+     `/Volumes/Backup` is SMB and the script stages on local disk — had both
+     hazards: an unguarded `rm -rf` before `cp -R` (which nests), and an "already
+     up to date" test that could not see a stray root entry. Both fixed; the
+     copy-back now also requires `app_complete`, so a bad copy fails the build.
+  4. **`com.apple.quarantine` on the built apps** — several hundred files in this
+     repository carry it (attribute agent `Brave`), including `unix/putty.plist`
+     and `unix/puttygen.plist`, and `cp` propagates it into
+     `Contents/Info.plist` of every bundle built from them. **Correction:** an
+     earlier draft of this section claimed that alone makes Finder refuse the
+     app. It does not — measured on the Intel Mac, a bundle with a valid seal and
+     a quarantined `Info.plist` **launches normally**. The unopenable app was the
+     nested entry in item 1, full stop. It is still a download marker with no
+     place in a build product (it is what makes a *fetched* copy look "damaged"
+     to Gatekeeper), so `bundle-macos.sh` and `make-universal.sh` now clear
+     extended attributes on the bundle they produce, and `xattr -cr <app>` fixes
+     one that appears anyway.
+
+* **The x86_64 slices were rebuilt on the Intel Mac on 2026-11-21 and verified.**
+  `PuTTY.app` and `PuTTYGen.app`: each **275 files, 75 Mach-O, all `x86_64`**,
+  bundle root containing only `Contents`, `codesign --verify` seal good, and both
+  **launch natively there**. §4's table below has been updated with these
+  numbers. (The two apps' file sets differ in exactly six paths — each app's
+  launcher, its `-bin` and its `.icns` — which is by design; the merge pairs
+  *within* an app, never across apps.)
+
+* **`build-arm64/` no longer exists** — it has been removed from the share, so
+  there is **no arm64 slice to merge at the moment**. §2 already said to rebuild
+  arm64 first because its provenance was uncertain; that is now *mandatory*
+  rather than prudent, and it is the one reason `make-universal.sh` has not been
+  run end to end. Its guard paths have been tested (missing bundle, same arch
+  twice, stray root entry — all exit non-zero) and `bash -n` is clean, but the
+  first real merge is the arm side's to do.
+
+* **Per-app facts the merge depends on** (verified 2026-11-21, both arches):
+
+  | App | `CFBundleExecutable` | `Contents/MacOS/<exe>-bin` | `CFBundleIdentifier` |
+  |---|---|---|---|
+  | `PuTTY.app` | `PuTTY` | the `puttyapp` binary | `org.tartarus.projects.putty.macputty` |
+  | `PuTTYGen.app` | `PuTTYGen` | the `puttygenapp` binary | `org.tartarus.projects.putty.macputtygen` |
+
+  The launcher is the same `osxlaunch` binary under each app's own name
+  (`unix/osxlaunch.c` execs `<its own path>-bin`), so `Contents/MacOS/PuTTY` and
+  `Contents/MacOS/PuTTYGen` are byte-identical launchers and merge cleanly.
+
+---
+
 ## 1. What the Intel side produced
+
+*(Superseded by §0 for the current state: there are two apps at 275 files each,
+and `build-arm64/` is now gone. This table is the 2026-11-20 origin record.)*
 
 | Artefact | Path (in this repo) | State |
 |---|---|---|
 | x86_64 build tree | `build-x86_64/` | 536/536 targets, all tests pass |
 | **x86_64 app bundle** | `build-x86_64/bundle-stage/unix/PuTTY.app` | **275 files, 75 Mach-O, all `x86_64`, ad-hoc signed** |
-| arm64 app bundle (pre-existing) | `build-arm64/bundle-stage/unix/PuTTY.app` | 273 files, 75 Mach-O, all `arm64`, ad-hoc signed |
+| arm64 app bundle (pre-existing) | `build-arm64/bundle-stage/unix/PuTTY.app` | 273 files, 75 Mach-O, all `arm64`, ad-hoc signed — **and now deleted; §0**, rebuild it |
 
 Verified on the share, on the x86_64 bundle:
 
@@ -81,21 +201,39 @@ git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git tools/gtk-mac-bundl
 # then copy build-arm64/ and build-x86_64/ from the shared tree
 ```
 
-**Sanity check, run this first on the arm Mac** — it confirms you have the fix
-and the Intel slice, before any merging:
+**Sanity check, run this first on the arm Mac** — it confirms you have the fixes
+and both Intel slices, before any merging:
 
 ```sh
-git log -1 --format='%h %s'                                   # expect fd49206 or later
-grep -n 'find Contents -type f' scripts/bundle-macos.sh        # must print line 168
-test -d build-x86_64/bundle-stage/unix/PuTTY.app && echo "Intel slice: present"
-file build-x86_64/bundle-stage/unix/PuTTY.app/Contents/MacOS/PuTTY-bin   # expect x86_64
+git log -1 --format='%h %s'                 # expect a 2026-11-21 commit or later
+grep -n 'stray_root_entries\|clear_app' scripts/bundle-macos.sh   # the §0 fixes
+for n in PuTTY PuTTYGen; do
+    a="build-x86_64/bundle-stage/unix/$n.app"
+    test -d "$a" && echo "$n slice: present"
+done
+lipo -archs build-x86_64/bundle-stage/unix/PuTTY.app/Contents/MacOS/PuTTY-bin      # x86_64
+lipo -archs build-x86_64/bundle-stage/unix/PuTTYGen.app/Contents/MacOS/PuTTYGen-bin # x86_64
 ```
 
 ---
 
 ## 2. **Read this before merging: rebuild arm64 first**
 
-The arm64 bundle's provenance is **not certain**:
+**The arm64 build directory no longer exists** (§0) — so this is no longer a
+question of provenance, there is simply nothing to merge until you rebuild. Two
+occurrences, and either order works:
+
+```sh
+./scripts/build-macos.sh arm64
+./scripts/bundle-macos.sh arm64
+```
+
+On the arm Mac that is a couple of minutes, because the repository is on local
+disk there (see §8 for why that matters on the Intel side). This also picks up
+the §3 fix and everything in §0.
+
+The rest of this section is the original 2026-11-20 note, kept for the record —
+the arm64 bundle's provenance *was* uncertain before it was deleted:
 
 * `build-arm64/bundle-stage/unix/PuTTY.app` — mtime `2026-11-19 13:36:27`
 * commit `e1b0388` ("Open a new session window on the monitor the configuration
@@ -103,19 +241,11 @@ The arm64 bundle's provenance is **not certain**:
   `2026-11-19 13:38:06`, i.e. **90 seconds later**
 * `build-arm64/puttyapp` — mtime `2026-11-19 13:41:21` (rebuilt after the commit)
 
-The bundled `PuTTY-bin` and the current `build-arm64/puttyapp` are the **same
-size** (1,549,800 bytes) and differ only in the load-command region where
-`install_name_tool` writes, so it is *probably* already current — but it cannot
-be proven from metadata, and a stale slice fails silently.
-
-**So, on the arm Mac, before merging:**
-
-```sh
-./scripts/build-macos.sh arm64
-./scripts/bundle-macos.sh arm64
-```
-
-This also picks up §3 below. It is a couple of minutes on local disk.
+The bundled `PuTTY-bin` and the `build-arm64/puttyapp` of the day were the **same
+size** (1,549,800 bytes) and differed only in the load-command region where
+`install_name_tool` writes, so it was *probably* current — but it could not be
+proven from metadata, and a stale slice fails silently. That is why rebuilding
+was the advice then; now there is nothing there to rebuild from.
 
 ---
 
@@ -153,6 +283,14 @@ Backup of the pre-fix script: `scripts/bundle-macos.sh-03.old`.
 ## 4. Measured facts about the two bundles
 
 Both were counted on the share, file by file.
+
+*(Originally measured 2026-11-20 on `PuTTY.app` alone. The x86_64 column was
+**re-measured 2026-11-21** on the rebuilt pair — `PuTTY.app` and `PuTTYGen.app`
+are both 275 files / 75 Mach-O — and is unchanged. The arm64 column is the
+2026-11-20 figure for `PuTTY.app`; the arm64 bundle is gone, so re-measure it
+after the rebuild in §2. The per-app file sets differ only in the three
+app-specific paths — launcher, `-bin`, `.icns` — so these totals apply to either
+app.)*
 
 | | arm64 | x86_64 |
 |---|---|---|
@@ -209,9 +347,16 @@ should still report it, so a genuine surprise is visible.
 
 ---
 
-## 6. Spec for `scripts/make-universal.sh` (to be written on the arm Mac)
+## 6. Spec for `scripts/make-universal.sh`
 
-`scripts/make-universal.sh` **does not exist yet.** This is the piece to write.
+**Superseded by §0: the script now exists.** Written on the Intel Mac 2026-11-21,
+it merges both apps by default and implements the algorithm below, with the
+loop-in-the-current-shell shape this section recommends (here-strings, so an
+`exit 1` really exits). It was run end to end on the arm Mac 2026-11-21. One
+addition beyond this spec: after the merge it packages the result as a
+drag-install disk image (§0). What follows is kept as the design rationale.
+
+Original spec (for one app, arm side to write):
 
 ### Interface
 
@@ -371,6 +516,23 @@ That keeps the loop in the current shell, so `exit 1` really exits.
 
 ## 7. Verification — do all of these
 
+(Once per app: `make-universal.sh` merges `PuTTY.app` and `PuTTYGen.app`, so run
+this twice — `APP=build-universal/PuTTY.app`, then `APP=build-universal/PuTTYGen.app`.
+`make-universal.sh` already performs all four checks itself and exits non-zero if
+any fails; this section is what you run by hand to see the evidence.)
+
+For the disk image, the by-hand check is to mount it and look:
+
+```sh
+hdiutil verify build-universal/PuTTY-universal.dmg
+MP=$(hdiutil attach build-universal/PuTTY-universal.dmg -nobrowse -readonly \
+        | grep -o '/Volumes/.*' | head -1)
+ls -la "$MP"                 # PuTTY.app  PuTTYGen.app  Applications -> /Applications
+codesign --verify --deep --strict "$MP/PuTTYGen.app"
+lipo -archs "$MP/PuTTYGen.app/Contents/MacOS/PuTTYGen-bin"      # x86_64 arm64
+hdiutil detach "$MP"
+```
+
 ```sh
 APP=build-universal/PuTTY.app
 
@@ -429,31 +591,53 @@ slice, which is the end-to-end check that the Intel side is real.
   drops it for general applications) — which is exactly why the universal
   `.app` still matters for Intel Macs on macOS ≤ 27, and why the arm64 slice
   must stay native.
-* **`v1` is still `Unidentified build`.** `unix/putty.plist` has
-  `CFBundleVersion` / `CFBundleShortVersionString` = "Unidentified build"
-  (`PLAN.md` §4 item 6). Set those before anything is shipped.
-* **Not notarized.** The bundle is ad-hoc signed only; Gatekeeper needs
-  right-click → Open or `xattr -dr com.apple.quarantine`. Notarization
-  (`notarytool`, hardened runtime, a Developer account) is still open —
-  `PLAN.md` §4 items 8–9.
+* **The version string is `0.85-beter.1` (set 2026-11-21).** `version.h`,
+  `LATEST.VER` and both `Info.plist`s carry it, and every About box links to
+  <https://github.com/beterhans/putty-beter> (`PLAN.md` §4 item 6,
+  `CHANGES-FROM-UPSTREAM.md` §18). **This makes the two slices below stale**:
+  they were built before it, so the x86_64 slice still announces `Unidentified
+  build` and has no About link — rebuild *both* slices from one revision before
+  merging, or the universal app will carry a different version per architecture.
+  (`SSHVER` also changes: the banner is now
+  `SSH-2.0-PuTTY_Release_0.85_beter.1`.)
+* **Not notarized.** Both bundles are ad-hoc signed only, so Gatekeeper on a
+  *different* Mac needs right-click → Open; the local build launches normally
+  here. Notarization (`notarytool`, hardened runtime, a Developer account) is
+  still open — `PLAN.md` §4 items 8–9. Note that quarantine is **not** the
+  problem it looks like: see §0 item 4 — several hundred files in this repository
+  carry `com.apple.quarantine` (a browser download) and it propagates into every
+  bundle's `Info.plist`, but a valid seal plus a quarantined `Info.plist` still
+  launches. Both scripts now clear xattrs on what they produce anyway.
 
 ---
 
 ## 9. Checklist for the arm Mac side
 
-- [ ] Confirm you have the fix and the Intel slice — run the three-line check in §1a.
+- [ ] Confirm you have the fixes and both Intel slices — run the check in §1a.
+      **See §0 first**: the x86_64 slices were rebuilt 2026-11-21 and
+      `bundle-macos.sh` changed again.
 - [ ] `./scripts/build-macos.sh arm64` — record the revision and toolchain.
-- [ ] `./scripts/bundle-macos.sh arm64` — replaces the uncertain arm64 bundle (§2).
-- [ ] Record `lipo -archs` of `build-arm64/…/PuTTY-bin` → `arm64`, and of
-      `build-x86_64/…/PuTTY-bin` → `x86_64`.
-- [ ] Write `scripts/make-universal.sh` (§6).
-- [ ] Run it; work through §7 until clean.
-- [ ] Launch the result on the arm Mac **and** hand it back to the Intel Mac to launch.
-- [ ] **Push.** The Intel Mac has no credentials, so `fd49206` and this document are
-      committed locally but **not on the remote** until you run
-      `git push origin main` — that is the first thing to do.
-- [ ] Only then: signing identity, hardened runtime, notarization, and the
-      version strings in `unix/putty.plist`.
-- [ ] Decide whether `PLAN.md` §4's "1b — not started" / "1c — not started"
-      status lines and `README.md`'s "This path is not yet verified" should now
-      be updated — they are stale as of this handover.
+- [ ] `./scripts/bundle-macos.sh arm64` — **there is no arm64 bundle at all right
+      now** (`build-arm64/` was deleted, §2); on the arm Mac the repo is on local
+      disk, so this takes minutes, not hours.
+- [ ] Record `lipo -archs` of each slice's `Contents/MacOS/<exe>-bin`:
+      `build-arm64/…` → `arm64`, `build-x86_64/…` → `x86_64`, for **both** apps.
+- [x] `scripts/make-universal.sh` is **written** (Intel side, 2026-11-21) — §6 —
+      and **run end to end** (arm Mac, 2026-11-21, §0): two universal apps plus
+      `build-universal/PuTTY-universal.dmg`. Nothing left to write or run here
+      unless a slice is rebuilt.
+- [x] Work through §7 until clean — done for the merged apps, and the disk image
+      additionally mounted and inspected (both apps present, seal valid, universal
+      `PuTTYGen` runs from the mounted volume).
+- [ ] Launch both results on the arm Mac **and** hand them back to the Intel Mac to
+      launch — the universal `PuTTYGen` was launched on the arm Mac (generates
+      three keys); the Intel-side launch is still to do.
+- [ ] **Push.** The Intel Mac has no credentials, so its commits are local only until
+      you run `git push origin main`.
+- [ ] Only then: signing identity, hardened runtime, notarization. (The version
+      strings are **done** — `0.85-beter.1` in `version.h`, `LATEST.VER` and both
+      plists, with an About link home; see §8. Rebuild both slices so the merged
+      app is one version, not two.)
+- [ ] Decide whether `PLAN.md` §4's phase status lines and `README.md`'s "This
+      path is not yet verified" need further updating — the phase 1b/1c lines were
+      refreshed 2026-11-21 but `README.md` was not.

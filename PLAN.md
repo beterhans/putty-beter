@@ -101,10 +101,28 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
 - **1a — done.** `scripts/build-macos.sh arm64` then
   `scripts/bundle-macos.sh arm64` produce a self-contained `PuTTY.app` that
   launches and runs. All standalone tests and cryptsuite pass.
-- **1b — not started.** The x86_64 build. Needs Homebrew under `/usr/local`
-  (through Rosetta), so that the GTK dependencies are x86_64 as well.
-- **1c — not started.** `scripts/make-universal.sh`: `lipo -create` every
-  Mach-O in the two bundles into one, then re-sign.
+- **1b — done on both machines (Intel 2026-11-21).** The x86_64 build and **both**
+  bundles were produced and verified on the Intel Mac — 536 targets, tests pass,
+  and for each app (`PuTTY.app`, `PuTTYGen.app`): 275 files, 75 Mach-O, all
+  `x86_64`, bundle root clean, seal valid, and both launch natively there. Two
+  bundling bugs were found and fixed in the process; see `intel_arm_merge.md` §0
+  and §4m's "As built on Intel". (The earlier Intel run, 2026-11-20, covered
+  `PuTTY.app` only — `PuTTYGen.app`/`puttygenapp` did not exist yet.)
+- **1c — done (arm Mac, 2026-11-21).** `scripts/make-universal.sh` merges **both**
+  apps by default: `APPS="PuTTY PuTTYGen"`, or an explicit
+  `<arm64.app> <x86_64.app> [<out.app>]` pair for one app. arm64 is the
+  structural authority; every Mach-O with a counterpart is `lipo -create`d;
+  non-Mach-O is copied through (noting the ones that differ); a Mach-O present in
+  only one slice is a **hard error**; then every Mach-O — **including
+  `Contents/MacOS`**, the trap in `intel_arm_merge.md` §3 — is re-signed with no
+  `|| true`, and the result is checked (both slices everywhere, seal, no absolute
+  Homebrew path). Run end to end on the arm Mac: `PuTTY.app` and `PuTTYGen.app`
+  each 275 files / 75 Mach-O, all `x86_64 arm64`, seal valid, `lipo -archs` on the
+  launcher `x86_64 arm64`, and `PuTTYGen` generates three keys. It also packages
+  the result: **`build-universal/PuTTY-universal.dmg`**, a compressed image whose
+  volume holds both apps and an `/Applications` symlink for drag-install (verified
+  by mounting: both apps present, seal valid, universal PuTTYGen runs from the
+  mounted image). See §4m "As run on the arm Mac".
 - **Signing / notarisation — not started.** Needs an Apple Developer account, a
   hardened runtime and `notarytool`.
 
@@ -211,7 +229,11 @@ Rosetta is on its way out anyway.
    ```
 5. **Re-sign inside-out** after lipo (inner dylibs/plugins first, then the bundle):
    `codesign --force --sign <id> …`; verify with `codesign --verify --deep --strict`.
-6. Set real version strings in `unix/putty.plist` (currently "Unidentified build").
+6. **Done 2026-11-21.** Set real version strings in `unix/putty.plist` (it said
+   "Unidentified build"): the fork's version is `0.85-beter.1` — in `version.h`
+   (`RELEASE`/`TEXTVER`/`SSHVER`), `LATEST.VER`, and both plists' `CFBundleVersion`
+   / `CFBundleShortVersionString` — and every About box now links to
+   <https://github.com/beterhans/putty-beter>. See `CHANGES-FROM-UPSTREAM.md` §18.
 7. macOS nits: Retina/HiDPI, `NSHighResolutionCapable`, menu bar, app icon (`icons/PuTTY.icns`).
 8. Notarization for distribution (`notarytool`).
 9. **Verify:** `lipo -archs` on *every* Mach-O in the bundle reports `x86_64 arm64`; launch on
@@ -1222,10 +1244,10 @@ blur.
 
 ---
 
-## 4m. GTK PuTTYgen: the macOS front end  *(design 2026-11-20; not built)*
+## 4m. GTK PuTTYgen: the macOS front end  *(design 2026-11-20; built 2026-11-21 — see "As built" at the end)*
 
 **Goal:** a real GTK PuTTYgen window on macOS — generate, inspect, load, convert
-and save keys by clicking — shipped as `PuTTYgen.app` beside `PuTTY.app`, and
+and save keys by clicking — shipped as `PuTTYGen.app` beside `PuTTY.app`, and
 universal along with it.
 
 ### Why there is nothing to bundle today
@@ -1391,23 +1413,27 @@ the generator's cancellation, not just grey the button.
   `tools/gtk-mac-bundler/bundler/main.py`: `if len(argv) != 1: … sys.exit(2)`.
   Two apps therefore means **two bundler invocations**, each copying the whole
   GTK tree into its own `.app`.
-* **`scripts/bundle-macos.sh` is single-app from top to bottom**: it hardcodes
+* **`scripts/bundle-macos.sh` is single-app from top to bottom** — **done
+  2026-11-21** (departure 10 below). It hardcoded
   `APP="$STAGE/unix/PuTTY.app"` and then `cd "$APP"` with every repair pass
   written against that one path (Cellar→opt, dangling references, `loaders.cache`,
-  GSettings schemas, re-sign, verify). It has to become a loop over app
+  GSettings schemas, re-sign, verify). It is now a loop over app
   definitions — bundle file, plist, icon, binary, resulting `.app` name — with
-  every pass applied to each app. The §3 fix is a prerequisite: it is what makes
+  every pass applied to each app. The §3 fix was a prerequisite: it is what makes
   the re-sign pass cover `Contents/MacOS`, and a second app doubles the number of
-  places that can silently end up unsigned.
+  places that can silently end up unsigned — which is where the Intel-only bugs
+  in "As built on Intel" came from.
 
 ### Universal: two apps, not one
 
 Two apps × two architectures = **four** bundles to merge into two. So
-`scripts/make-universal.sh` (§1c) cannot take a single app path: it needs a
-per-app list, and the verification in `intel_arm_merge.md` §7 has to be run for
-each resulting `.app`. Decide whether that is an argument list of pairs or a
-table in the script. Whichever, the "Mach-O present in only one bundle" rule
-still applies per app.
+`scripts/make-universal.sh` (§1c) cannot take a single app path. **Settled when
+it was written (2026-11-21):** it loops over an `APPS` list — `PuTTY PuTTYGen`
+by default, overridable — and also accepts an explicit `<arm64.app> <x86_64.app>
+[<out.app>]` argument list for a single app, as §6 of `intel_arm_merge.md`
+specified. The verification in `intel_arm_merge.md` §7 has to be run for each
+resulting `.app` (the script performs those checks itself). The "Mach-O present
+in only one bundle" rule applies per app.
 
 ### Open decisions
 
@@ -1436,7 +1462,7 @@ still applies per app.
 | `unix/puttygen.bundle`, `unix/puttygen.plist` (new) | the second bundle |
 | `scripts/bundle-macos.sh` | loop over apps instead of one hardcoded `PuTTY.app` |
 | `icons/Makefile`, `icons/PuTTYgen.icns` | icon, via `mkicon.py` + `scripts/make-icns.sh` |
-| `scripts/make-universal.sh` (not written yet) | merge per app, not per bundle set |
+| `scripts/make-universal.sh` (written 2026-11-21; see "As built on Intel") | merge per app, not per bundle set |
 | `README.md`, `CHANGES-FROM-UPSTREAM.md` | the feature and the file-by-file diff |
 
 ### Steps
@@ -1491,6 +1517,265 @@ still applies per app.
 * The Windows `puttygen` has a **drag-and-drop** entry point (dropping a key on
   the window loads it). Nice to have; not required, and it would use the
   `drag_data_received` pattern already added for the terminal in §4b.
+
+### As built (2026-11-21)
+
+Built and verified on arm64. The window is `unix/puttygen.c` (~2000 lines), the
+GtkApplication wrapper and menu bar are `unix/main-gtk-puttygen.c`, and
+`puttygenapp` is a new CMake target. `PuTTYGen.app` is produced by the now
+looped `scripts/bundle-macos.sh`, and `scripts/test-puttygen-gui.sh` is the
+repeatable check (**30/30**) against the command-line `puttygen`.
+
+**Open decisions, settled.**
+
+| Question | Answer |
+|---|---|
+| Certificates (add/remove/cert-info) | **Not in the GUI.** `cmdgen.c` does expose them (`--certificate`, `--remove-certificate`, `--cert-info`), so a loaded certificate is displayed and can be re-saved, but nothing is added or removed here. |
+| SSH-1 | **Dropped.** No RSA1 key type, no SSH-1 save, no prime-policy-for-SSH-1. Loading an SSH-1 file gives a message pointing at the CLI, which keeps all of it. |
+| Menu bar | **Yes**, a GtkApplication menubar (File / Edit / Key / Help), so the menu lands in the macOS system bar. |
+| Fingerprint formats | **SHA-256 and MD5** — the two the `FingerprintType` enum has. There is no bubblebabble in this version. |
+| `.ppk` v3 parameters | **Its own dialog** (Key → Private Key File Parameters…), a port of `PPKParamsProc`: version, Argon2 flavour, memory, passes-or-time, parallelism. |
+| Prime generation policy | A combo (probabilistic / proven / proven-even), as on Windows. |
+| Threading | The first option: a `GThread` plus a 50 ms `g_timeout_add()` poll of a mutex-protected progress fraction. No widget is touched off the main thread, and the progress arithmetic is the Windows `win_progress_*` phase weighting. |
+| Naming | `PuTTYGen.app` (capital G), `CFBundleIdentifier org.tartarus.projects.putty.macputtygen`, app id `…macputtygen`. |
+
+**Departures from the sketch, and why.**
+
+1. **`puttygenapp` does not link `guiterminal`.** The plan assumed it would, to
+   get `our_file_chooser_run`. But the chooser actually lives in the `utils`
+   library (`unix/utils/filechooser.c`, added to `utils` inside `if(GTK_FOUND)`),
+   and `guiterminal` would drag in the whole terminal, `dialog.c` and the
+   session machinery for nothing. The target links `keygen` (for `import.c`),
+   `crypto`, `utils` and the `puttygen-common` objects directly. Consequence:
+   three symbols the terminal front ends get from `console.c`/`dialog.c` have
+   GUI versions of their own here — `modalfatalbox`, `nonfatal` and
+   `old_keyfile_warning`.
+2. **About and Licence are plain `GtkWindow`s** built with `our_dialog_new()`,
+   exactly as `unix/dialog.c` builds them, rather than `gtk_show_about_dialog()`
+   or a `GtkDialog`. On macOS a real GtkDialog gets an RGBA visual and a
+   **see-through title bar**; that was the first bug found by eye (see below).
+   Every remaining GtkDialog — the message boxes, the passphrase prompt and the
+   parameters dialog — calls `gtk_dialog_fix_macos_titlebar()` from
+   `gtkcompat.h`, the fix already used by the file chooser and the
+   configuration-folder dialogs.
+3. **`show_all()` comes before the state is applied.** `gtk_widget_show_all()`
+   makes every child visible, including the controls belonging to other key
+   types (the bit count, the curve picker, the prime-policy combo, "strong RSA")
+   and the widgets that belong to the "generating" state. Applying the state
+   first and showing the window afterwards left an Ed25519 window displaying a
+   bit count and a prime-generation policy.
+4. **No mouse-wiggling entropy collection.** `/dev/urandom` is available and is
+   a better source; `get_random_data()` supplies a fresh seed before every key
+   generation.
+5. **One PRNG for the process, and the launcher's argument is dropped.** Two
+   small things that only show up when the program is run twice or from a
+   bundle.
+   (a) `random_setup_special()` is not repeatable: it ends in
+   `random_create()`, which asserts that no PRNG exists yet. Calling it per
+   generation therefore **aborted the process the second time a key was
+   generated** — and, earlier, saving a *loaded* key tripped
+   `assert(random_active > 0)` for the opposite reason. Both are the same
+   mistake about the PRNG's lifetime. It is now created **once**, at startup,
+   exactly where `windows/puttygen.c` does it (`WinMain`); key generation only
+   calls `random_reseed()` with fresh bytes, and saving a key just draws from
+   it. No `random_ref()` anywhere. `PUTTYGEN_SELFTEST_REPEAT=<n>` exists to
+   keep this fixed: it generates n keys in one process.
+   (b) `osxlaunch.c` always appends one argument (an unused environment-variable
+   prefix the terminal front ends use to restore a clean environment for their
+   shell subprocesses, `pty_osx_envrestore_prefix` in
+   `main-gtk-application.c`). PuTTYGen has no subprocesses, so the value is
+   unused — but it must still be consumed, or GtkApplication treats it as a file
+   name and refuses to start with "This application can not open files."
+6. **Cancel really cancels.** `sshkeygen.h` has no cancellation hook, so the
+   Cancel button unwinds the generator with a `longjmp` back to the worker
+   thread's entry point (the user's Cancel sets a flag the progress callbacks
+   test). The memory the generator held at that instant is leaked, once per
+   cancel; nothing half-written can be left behind, because no file is written
+   until the key is complete. Verified: a 4096-bit RSA generation cancelled at
+   400 ms returns in about a second.
+7. **`import_possible()` is not the test for "can we open this".** It answers
+   only "is this a foreign format the import machinery converts", so it is false
+   for PuTTY's own `.ppk` and for public-key-only files — using it as the guard
+   rejected every native `.ppk` with "Couldn't load private key (PuTTY SSH-2
+   private key)". The natively-loadable types are listed explicitly; loading a
+   `.ppk`, an OpenSSH private key and a public-key-only file all work, and a
+   public-only key disables Save Private Key / Export while Save Public Key
+   still works.
+8. **`unix/CMakeLists.txt` splits `puttygen-common`.** `no-gtk.c` — the file
+   whose whole purpose is to say "this program has no GTK" — was inside it, so
+   the CLI tools now list it themselves and the GUI target does not. This is
+   the one change to an existing target's inputs.
+9. **The icon comes from a PNG, like PuTTY.app's.** `icons/puttygen-icon.png`
+   (the artwork chosen for the app) is converted to `icons/PuTTYgen.icns` by
+   `scripts/make-icns.sh` (`sips` + `iconutil`), exactly as
+   `icons/putty-beter-icon.png` produces `icons/PuTTY.icns`. The upstream route
+   — `icons/mkicon.py`'s existing `puttygen_icon()` drawing wrapped by
+   `icons/macicon.py`, which is how `PuTTY.icns`/`Pterm.icns` are made — is
+   kept in `icons/Makefile` as a **fallback** for when the PNG is absent, and
+   `bundle-macos.sh` overwrites its output whenever the PNG is there, so a
+   stale `mkicon`-derived `.icns` cannot reach a bundle. `icons/Makefile` also
+   stopped `clean` from deleting the two checked-in icon sources.
+
+   **A rule the first icon attempt got wrong:** the source must be **square**,
+   with the artwork reaching the edges. macOS scales the *whole canvas* when it
+   draws a Dock icon, so a transparent margin shrinks the finished icon — the
+   first version of `icons/puttygen-icon.png` had an 11–13% margin on each side
+   and the Dock icon came out visibly smaller than its neighbours, with the
+   artwork's own light "glossy" tile reading as an extra white frame (measured
+   against a full-bleed test icon, which macOS renders with no frame at all).
+   `scripts/make-icns.sh` now refuses a non-square source instead of letting
+   `sips -z` stretch it, and says why; the shipped `icons/puttygen-icon.png` is
+   1024x1024 with the artwork cropped to the canvas.
+10. **`bundle-macos.sh` is now a loop over apps, and it reuses what it already
+    built.** Each entry is `<app>:<bundle>:<binary>:<icon>` (`APPS=` overrides
+    the list), and every repair pass — Cellar→opt, dangling references,
+    `loaders.cache`, GSettings schemas, re-sign, verify — became a function
+    taking the app path. The re-sign pass now also reports
+    `codesign --verify --deep --strict`, which the old script never did (and
+    which is how the Intel-only signing bug hid). `BUILD_DIR` and `STAGE` can be
+    overridden, which is what makes it possible to assemble a bundle from a
+    scratch build tree.
+    **Bundling is the same cost every time**, because gtk-mac-bundler copies the
+    whole GTK closure (~275 files, 44 MB) and never checks whether a file is
+    already there: ~60 s per app on local disk, and 20+ minutes on a slow network
+    mount (measured on the Intel Mac). So the stage is no longer wiped: a bundle
+    that already has the tree is **reused in place**, and one that has not gets
+    the tree **cloned from the sibling app** — ~6 s either way — with the
+    install-name rewrite taken from a binary the bundler already did (dropping in
+    a raw binary instead loads the *system* GTK and the system gdk-pixbuf, whose
+    loader list is empty, and GTK aborts on the first SVG icon). A signature of
+    the GTK inputs keeps a `brew upgrade` honest, and `BUNDLE_FULL=1` forces a
+    complete run.
+    **And it will not do it over a network mount**: the stage's filesystem is
+    checked, and on SMB/NFS/AFP the work happens in
+    `~/Library/Caches/putty-beter/bundle-stage-<arch>` with the finished `.app`s
+    copied back afterwards. Measured on the Intel Mac over SMB: 85 files in 75
+    minutes (so hours in total) against ~70 s on a local disk. While the bundler
+    runs the script reports progress every 15 s — files (with the peak, because
+    the count dips as it works), size, elapsed, and the install-name rewrites,
+    which is where ~2400 calls go — and warns once if nothing moves for 3 min.
+    The copy back has the same "already there" rule (a marker records the GTK
+    inputs the copy was made from) and reports its own progress; it is ~273 files,
+    so on that share it took ~13 minutes for both apps — where bundling *there*
+    had been taking hours. The GTK-input signature is now computed once per run
+    (it was per app) and with a single `stat` call rather than one forked `stat`
+    per dylib: that walk was ~174 s of the Intel run and ~3 s of the arm64 one.
+11. **A replaced key is released properly.** Generating a second key, or loading
+    a key over a generated one, used to overwrite `st->ssh2key.key` and leak
+    whatever was there. `release_current_key()` now lets go of the old key
+    first, freeing it only when it was a heap key from `ppk_load_f()` /
+    `import_ssh2()` — a *generated* key lives in the `keys` union and only its
+    internals are heap allocated (`st->key_in_union` records which is which).
+12. **Button labels carry no underscore.** `gtk_button_new_with_label()` takes
+    its text literally (only `..._with_mnemonic()` parses `_`), so `"_Generate"`
+    was drawn as `_Generate` on macOS. The buttons in this window say `Generate`
+    and `Cancel`; the file chooser's `_Cancel`/`_Open` are fine because those go
+    through `gtk_dialog_add_button()`, which does parse mnemonics.
+
+**Verified 2026-11-21**, `scripts/test-puttygen-gui.sh` — **33 checks, all
+passing**, against the command-line `puttygen` on this machine:
+
+* generation for Ed25519, Ed448, ECDSA 256/384/521, RSA 2048 and DSA 1024, each
+  compared with the CLI: the GUI's fingerprint equals `puttygen -l`'s and the
+  GUI's public-key line equals `puttygen -L`'s, on the `.ppk` the GUI itself
+  wrote;
+* loading a CLI-made `.ppk` (with the comment carried over) and CLI-made
+  OpenSSH private keys in both formats, each compared with `puttygen -l`;
+* re-saving a loaded key and re-reading it with the CLI (same fingerprint);
+* Cancel of a running 4096-bit RSA generation: reports `cancelled` and returns
+  in about a second;
+* **three generations in one process** (`PUTTYGEN_SELFTEST_REPEAT=3`): all three
+  complete, each is a different key, exit status 0 — the regression test for the
+  once-only PRNG
+* the chooser: `puttygen.c` calls `our_file_chooser_run()` for every file
+  request and constructs no `GtkFileChooserDialog`.
+
+Then by hand: the message dialog's title bar is opaque (screenshot), the Generate
+button reads `Generate` and not `_Generate` (screenshot), the About and Licence
+windows are normal windows, and the bundled
+`build-arm64/bundle-stage/unix/PuTTYGen.app` launches through its launcher, shows
+the menu bar as **PuTTYGen**, generates three keys in a row without crashing, and
+writes a `.ppk` that the CLI reads back with the same fingerprint. Both bundles
+in the stage pass `codesign --verify --deep --strict`, and every Mach-O in
+`PuTTYGen.app` is arm64.
+
+**Merge and packaging — done (arm Mac, 2026-11-21).**
+`scripts/make-universal.sh` (§1c, M8e) merges the two per-arch bundles into two
+universal apps and then writes `build-universal/PuTTY-universal.dmg`. Run here:
+both apps came out **275 files / 75 Mach-O, all `x86_64 arm64`**, `codesign
+--verify --deep --strict` clean, no absolute Homebrew path in the binary; the
+mounted image holds `PuTTY.app`, `PuTTYGen.app` and an `Applications ->
+/Applications` symlink, and the universal `PuTTYGen` generates three keys from
+inside the image. One remaining gap: `bundle-macos.sh` should get the same
+`PATH`/`PKG_CONFIG_PATH` export `build-macos.sh` has for x86_64 (it calls the
+host-arch `pkg-config` for the gdk-pixbuf version).
+
+### As run on the arm Mac (2026-11-21) — the universal apps and the disk image
+
+Four bundles in, two universal apps plus one installer image out:
+
+```
+$ ./scripts/make-universal.sh
+[make-universal] [PuTTY]    slices: arm64 + x86_64
+[make-universal] [PuTTY]    OK: 275 files, 75 Mach-O all arm64+x86_64, signed and verified
+[make-universal] [PuTTYGen] OK: 275 files, 75 Mach-O all arm64+x86_64, signed and verified
+[make-universal] merged: PuTTY.app PuTTYGen.app
+[make-universal] [dmg] creating PuTTY-universal.dmg (volume 'PuTTY')
+[make-universal] [dmg] OK: PuTTY.app PuTTYGen.app + Applications/
+```
+
+Whole run about 18 s. The merge is `lipo -create` per Mach-O (75 per app) with
+arm64 as the structural authority; the notes it prints are the expected ones —
+`intel_arm_merge.md` §4's six differing non-Mach-O files, and the two
+`hicolor/256x256/apps/*.png` that exist only in the x86_64 bundle (other Homebrew
+packages' icons; not Mach-O, so copied through). The disk image is a plain UDZO
+built with `diskutil image create from` (macOS 27 deprecates `hdiutil create`;
+the script prefers the new verb and falls back), holding `PuTTY.app`,
+`PuTTYGen.app` and an `/Applications` symlink so both apps are dragged into place
+in one gesture. Verified by mounting: both apps 275 files with a clean root and a
+valid seal, and the universal `PuTTYGen` generates three keys from the mounted
+volume. `MAKE_DMG=0` merges without packaging; the one-app form writes
+`<app>-universal.dmg` rather than the suite image.
+
+### As built on Intel (2026-11-21) — the x86_64 slice, and two bundling bugs
+
+`scripts/build-macos.sh x86_64` + `scripts/bundle-macos.sh x86_64` produce
+**both** apps on the Intel Mac: `PuTTY.app` and `PuTTYGen.app`, each **275 files,
+75 Mach-O**, all `x86_64`, bundle root clean, seal valid — and both launch
+natively there. This closes the "x86_64 slice of `puttygenapp` has not been
+built" gap above.
+
+On the Intel Mac `/Volumes/Backup` is SMB, so the run takes the **local stage +
+copy-back** path — the one the arm side never exercises, since there the
+repository is on local disk. Two bugs came out of that path, both of which let a
+broken bundle be reported as a successful build. Both are fixed
+(`scripts/bundle-macos.sh-05.old`, `-06.old`):
+
+1. **A rebuild that did not replace the previous app nested it inside the new
+   one** — literally `PuTTY.app/.PuTTY.app`. That entry sits in the bundle root,
+   outside the code signature's seal, so `codesign --verify` reported *"unsealed
+   contents present in the bundle root"* and the app **would not open at all**,
+   while the build logged `done`. The mechanism: the bundler builds into
+   `.$name.app` and `shutil.move()`s it into place, and `shutil.move()` *nests*
+   when the destination already exists as a directory; a `rm -rf` that partly
+   fails over SMB is what leaves one there. `clear_app()` now insists the old app
+   is gone before rebuilding, `app_complete()` rejects a bundle with a stray root
+   entry (so reuse, cloning and the copy-back can no longer bless one — that is
+   how the broken bundle survived a rebuild), and `verify()` names the offender
+   and fails the build.
+2. **A failed `codesign --verify --deep --strict` was only a `WARNING`.** It is
+   now fatal and prints codesign's own message.
+
+**A quarantine note, so it is not re-discovered.** This repository's files were
+downloaded through a browser, so several hundred of them — including
+`unix/putty.plist` and `unix/puttygen.plist` — carry `com.apple.quarantine`, and
+`cp` propagates it into `Contents/Info.plist` of every bundle built from them.
+**It does not stop the app launching**: measured on the Intel Mac, a bundle with
+a valid seal and a quarantined `Info.plist` opens normally. So it was *not* the
+cause of the unopenable app above — that was the nested entry. It is still not
+something to ship (a download marker, which is what makes a *fetched* copy look
+"damaged" to Gatekeeper), so both `bundle-macos.sh` and `make-universal.sh` now
+clear extended attributes on the bundle they produce.
 
 ---
 
@@ -2243,14 +2528,23 @@ crates*, not a port of PuTTY:
       - [ ] **M6e** — `open_session`, fleet runs, ZMODEM tools (4e)
 - [ ] **M7** *(optional)* — native macOS UI evaluation (Phase 5, O3)
 - [ ] **M8** — GTK PuTTYgen front end, shipped as a `PuTTYGen.app` beside `PuTTY.app`
-      and universal with it (O4, §4m) — design only
-      - [ ] **M8a** — settle the open decisions (SSH-1 and certificates), split
-            `puttygen-common`, add the `puttygenapp` target: it starts, empty
-      - [ ] **M8b** — main window: key type/bits, Generate, progress, Cancel,
-            the key box — verified against the CLI
-      - [ ] **M8c** — Open Key / Save private / Save public through
-            `our_file_chooser_run`, plus the passphrase and `.ppk` v3 dialogs
-      - [ ] **M8d** — bundle `PuTTYGen.app` (two bundler runs; `bundle-macos.sh`
-            looped over apps, per §4m)
-      - [ ] **M8e** — four bundles → two universal `.app`s (`make-universal.sh`
-            per app)
+      and universal with it (O4, §4m) — **built 2026-11-21**: arm64 on the arm Mac,
+      x86_64 on the Intel Mac (275 files / 75 Mach-O / all `x86_64`, launches
+      natively; §4m "As built on Intel"). Remaining work is the merge (M8e).
+      - [x] **M8a** — settle the open decisions (SSH-1 and certificates dropped),
+            `puttygen-common` split (the `no-gtk.c` move), the `puttygenapp`
+            target: it starts, empty
+      - [x] **M8b** — main window: key type/bits/curve, prime policy, Generate,
+            progress, Cancel, the key box — verified against the CLI
+      - [x] **M8c** — Open Key / Save private / Save public / Export OpenSSH /
+            Export ssh.com through `our_file_chooser_run`, plus the passphrase
+            and `.ppk` v3 parameter dialogs
+      - [x] **M8d** — bundle `PuTTYGen.app` (`unix/puttygen.bundle` + plist +
+            icon; `bundle-macos.sh` looped over apps, per §4m) — on both arches
+      - [x] **M8e** — four bundles → two universal `.app`s, and the installer disk
+            image: `scripts/make-universal.sh` **run end to end on the arm Mac
+            2026-11-21** — both apps 275 files / 75 Mach-O, all `x86_64 arm64`,
+            seal valid, universal `PuTTYGen` generates three keys — then packaged
+            as `build-universal/PuTTY-universal.dmg` (both apps + `/Applications`
+            symlink, drag-install; mounted and verified). See PLAN §1c and §4m
+            "As run on the arm Mac".

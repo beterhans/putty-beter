@@ -52,8 +52,10 @@ fixes, so `git log` alone shows only the later work.
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
 | MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. |
-| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh`, `scripts/make-icns.sh`, `CMakePresets.json`, a self-contained `PuTTY.app` with this fork's own icon, and GSettings schemas compiled into the bundle. |
-| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1`, `PUTTY_SESS_SEARCH_DEBUG=1` and `PUTTY_SESSPASS_DEBUG=1` runtime traces. |
+| PuTTYGen GUI | `puttygen` gains a **GTK front end** — `unix/puttygen.c`, a port of the Windows-only `windows/puttygen.c` — built as `puttygenapp` and shipped as `PuTTYGen.app` beside `PuTTY.app`. Generate, inspect, load, convert and save keys by clicking, on a worker thread with a working Cancel. The command-line `puttygen` is unchanged and is the oracle the GUI is tested against. |
+| Version and identity | The fork's own version string — **0.85-beter.1** — in `version.h`, `LATEST.VER` and both `Info.plist`s, a clickable link to <https://github.com/beterhans/putty-beter> at the foot of every About box, and a second copyright line (`This fork: Copyright 2026 beterhans.`) below the preserved upstream notice. See section 18. |
+| Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh` (now building **both** apps), `scripts/make-universal.sh` (universal apps + the `PuTTY-universal.dmg` installer), `scripts/make-icns.sh`, `scripts/test-puttygen-gui.sh`, `CMakePresets.json`, self-contained `PuTTY.app` and `PuTTYGen.app` with this fork's own icons, and GSettings schemas compiled into each bundle. |
+| Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1`, `PUTTY_SESS_SEARCH_DEBUG=1`, `PUTTY_SESSPASS_DEBUG=1` and `PUTTYGEN_DEBUG=1` runtime traces. |
 
 ---
 
@@ -74,13 +76,14 @@ tool will give slightly different numbers for the same change.
 | `terminal/terminal.c` | +179 / -2 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server; `term_set_input_tap()`, which reports what a human typed or pasted |
 | `putty.h` | +29 / -0 | Declares `term_get_screen_text()` and `term_set_input_tap()`; `from_proxy` on `struct prompts_t`, so the SSH-to-SSH proxy's forwarded password prompt is not answered with the session's saved password |
 | `test/test_conf.c` | +7 / -7 | Expected defaults updated to match the seven changed ones |
-| `unix/CMakeLists.txt` | +20 / -1 | Build `unix/config-location.c`, `unix/mcp.c` and `unix/mcp-buffer.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets |
+| `unix/CMakeLists.txt` | +25 / -1 | Build `unix/config-location.c`, `unix/mcp.c` and `unix/mcp-buffer.c` into `guiterminal`; link `ApplicationServices` on Apple; build the ZMODEM test targets; `no-gtk.c` moved out of `puttygen-common` into the CLI targets, and the `puttygenapp` target added (section 17) |
+| `icons/Makefile` | +24 / -2 | `PuTTYgen.icns` added to `ICNS` and its rule (the `mkicon.py puttygen_icon` drawing + `macicon.py`), as the fallback for when `icons/puttygen-icon.png` is absent; `clean` no longer deletes the two checked-in icon sources |
 | `unix/columns.c` | +57 / -1 | Optional "content-sized last column": a column of natural-width buttons no longer keeps its percentage of the width |
 | `unix/columns.h` | +11 / -0 | The flag and the last-column width it needs |
 | `unix/config-location.c` | new | See the new-files table |
-| `unix/dialog.c` | +983 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; the edit box's placeholder text; every file selector routed through the shared chooser; the configuration box reports its monitor, so a session opened from it opens on the same screen (section 16) |
+| `unix/dialog.c` | +995 / -39 | `dialog_clipboard_key()`: Command/Ctrl + C/V/X/A and Ctrl+Ins/Shift+Ins in dialog text fields; resizable configuration box whose size is remembered in `gui-state`; `vexpand` / `force_left` support in the layout; tree list boxes with drag and drop; the multi-line edit box; the edit box's placeholder text; every file selector routed through the shared chooser; the configuration box reports its monitor, so a session opened from it opens on the same screen (section 16); the About box links to the fork's GitHub and shows the two labelled copyright lines (section 18) |
 | `unix/gtkcompat.h` | +26 / -0 | `gtk_dialog_fix_macos_titlebar()` — gives a `GtkDialog` an opaque title bar on macOS |
-| `unix/gtkmisc.h` | +10 / -0 | Declares `our_file_chooser_run()` |
+| `unix/gtkmisc.h` | +21 / -0 | Declares `our_file_chooser_run()`, and the fork-identity macros for the About box: the homepage link and the fork's copyright holder (section 18) |
 | `unix/main-gtk-application.c` | +9 / -0 | Call `config_location_init()` on application activation |
 | `unix/main-gtk-simple.c` | +10 / -0 | Same, before `conf_new()` so the default log file name lands in the right folder |
 | `unix/osxlaunch.c` | +17 / -0 | Set `GDK_PIXBUF_MODULE_FILE` and `GTK_IM_MODULE_FILE` to the bundled caches |
@@ -97,7 +100,10 @@ tool will give slightly different numbers for the same change.
 | `CMakeLists.txt` | +48 / -1 | `test_sessions`, `test_sesssearch`, `test_sesspass`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
 | `proxy/sshproxy.c` | +6 / -0 | Marks a prompt it forwards to the client seat as the proxy's own (`p->from_proxy`), so the seat declines it rather than answering the *proxy's* password with the *session's* |
 | `utils/prompts.c` | +1 / -0 | Initialise `from_proxy` — `new_prompts()` does not zero the structure |
-| `.gitignore` | +21 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep `icons/putty-beter-icon.png` |
+| `.gitignore` | +23 / -0 | Ignore build trees, `*.old` backups, `_agent/`, `issue/`, `tools/gtk-mac-bundler/`, `.DS_Store`; keep the two icon sources, `icons/putty-beter-icon.png` and `icons/puttygen-icon.png` |
+| `version.h` | — | This fork's version: `RELEASE` / `TEXTVER` / `SSHVER` are `0.85-beter.1`, and `BINARY_VERSION`'s build field is `1` (section 18) |
+| `LATEST.VER` | — | `0.85-beter.1` |
+| `unix/putty.plist` | +4 / -5 | `CFBundleVersion` / `CFBundleShortVersionString` are `0.85-beter.1` (was `Unidentified build`), and `NSHumanReadableCopyright` is now two lines — the preserved upstream notice plus the fork's own (section 18) |
 | `README` → `README.md` | — | Replaced the generic upstream README with one about this macOS build; renamed so GitHub renders Markdown |
 
 ## New files
@@ -142,6 +148,14 @@ tool will give slightly different numbers for the same change.
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 | `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
 | `scripts/make-icns.sh` | PNG → `.icns` using only `sips` and `iconutil` |
+| `unix/puttygen.c` | **The GTK PuTTYgen window**: key type/size/curve, prime policy, Generate on a worker thread with progress and a real Cancel, the key box (comment, passphrase, fingerprint, `authorized_keys` line), Open Key / Save private / Save public / the two export formats, the passphrase prompt, the `.ppk` v3 parameters dialog, About (with the fork's GitHub link and its own copyright line) and Licence. A port of `windows/puttygen.c`, with the file chooser, the opaque-title-bar fix and the threading being this fork's own — see section 17 |
+| `unix/main-gtk-puttygen.c` | The `GtkApplication` main for it: the menu bar (File / Edit / Key / Help), the app id, and the dropped launcher argument |
+| `unix/puttygen.bundle` | The gtk-mac-bundler description for `PuTTYGen.app` |
+| `unix/puttygen.plist` | Its `Info.plist`: `CFBundleName`/`CFBundleExecutable` `PuTTYGen`, `CFBundleIconFile PuTTYgen.icns`, and its own bundle identifier |
+| `scripts/test-puttygen-gui.sh` | The GUI checked against the command-line `puttygen` (33 checks): every key type, every loadable format, a save/reload round trip, a cancelled 4096-bit RSA generation, and that the file chooser is the application's own |
+| `scripts/make-universal.sh` | Merges the per-architecture `.app` bundles into universal ones (`lipo -create` per Mach-O, re-signed, verified) and packages them as a drag-install `PuTTY-universal.dmg` with an `/Applications` symlink |
+| `icons/puttygen-icon.png` | The `PuTTYGen.app` icon source (1024x1024, artwork cropped to the canvas), converted to `icons/PuTTYgen.icns` at bundle time |
+| `icons/PuTTYgen.icns` | Generated (gitignored) from `icons/puttygen-icon.png`; what `unix/puttygen.plist` asks for |
 
 ---
 
@@ -339,6 +353,12 @@ window that stays the size you made it, the list is the natural thing to grow.
 * Intel (x86_64) needs an Intel Homebrew in `/usr/local`; the arm64 Homebrew in
   `/opt/homebrew` cannot produce an x86_64 GTK. **Not yet verified.** Note that
   Apple is retiring Rosetta (macOS 27 is the last release with it).
+* `scripts/make-universal.sh` merges the two per-arch bundles into universal apps
+  (`lipo -create` per Mach-O, then every Mach-O — `Contents/MacOS` included — and
+  the bundle re-signed and verified) and packages them as a drag-install
+  `build-universal/PuTTY-universal.dmg` with an `/Applications` symlink. The image
+  is built with `diskutil image create from` (macOS 27 deprecates `hdiutil
+  create`), falling back to `hdiutil` where that verb is absent.
 
 ## 8. Diagnostics
 
@@ -1050,6 +1070,167 @@ still wins.
 The measurements behind that, what does *not* change where a window lands, and
 the recipes for checking it are in
 [`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
+
+## 17. PuTTYGen got a GTK front end (and a second `.app`)
+
+Upstream's GUI PuTTYgen is Windows-only (`windows/puttygen.c`); on Unix
+`puttygen` is the command-line tool in `cmdgen.c`, and no GTK keygen target was
+ever written. This fork ports the GUI, so macOS now gets a **`PuTTYGen.app`**
+beside `PuTTY.app`.
+
+### New code
+
+| File | What |
+|---|---|
+| `unix/puttygen.c` | The window. Key type (Ed25519, Ed448, ECDSA P-256/384/521, RSA, DSA), bit count or curve, prime-generation policy and "strong RSA primes"; Generate on a `GThread` with a progress bar and a Cancel that really stops the generator; the key box (comment, passphrase, fingerprint SHA-256/MD5, the `authorized_keys` line); Open Key; Save private key; Save public key; Export OpenSSH key; Export ssh.com key; the passphrase prompt; the `.ppk` v3 parameters dialog (Argon2 flavour, memory, time or passes, parallelism); About and Licence |
+| `unix/main-gtk-puttygen.c` | The `GtkApplication` wrapper: the menu bar (File / Edit / Key / Help), the app id `org.tartarus.projects.putty.macputtygen`, and the `$HOME` chdir |
+
+Nothing cryptographic is re-implemented: `sshkeygen.h`'s generators, `import.c`,
+the `ppk_*` reader/writer in `sshpubk.c`, Argon2 and `licence.h` are used as they
+are. The command-line `puttygen` is untouched, and it is the oracle the GUI is
+tested against (`scripts/test-puttygen-gui.sh`, 33 checks).
+
+### The build split
+
+`puttygen-common` used to contain `no-gtk.c` — the file whose entire purpose is
+to tell `buildinfo()` that the program has no GTK. The GUI has GTK, so that file
+moved out into the CLI targets (`puttygen`, `cgtest`) and `puttygenapp` is a new
+target beside them, gated on `GTK_VERSION GREATER_EQUAL 3`. It links `keygen`
+(which is where `import.c` lives), `crypto`, `utils` and the `puttygen-common`
+objects — deliberately **not** `guiterminal`, because the one thing it wanted
+from the terminal front ends, `our_file_chooser_run()`, actually lives in the
+`utils` library (`unix/utils/filechooser.c`). Three symbols the terminal front
+ends pick up from `console.c`/`dialog.c` have GUI versions here instead:
+`modalfatalbox`, `nonfatal` and `old_keyfile_warning`.
+
+### Six things that only show up when you run it
+
+1. **`osxlaunch` appends an argument.** It is the unused environment-variable
+   prefix the terminal front ends use to restore a clean environment for their
+   shell subprocesses (`pty_osx_envrestore_prefix` in
+   `main-gtk-application.c`). PuTTYGen has no subprocesses; but the argument has
+   to be consumed all the same, or `GtkApplication` reads it as a file name and
+   refuses to start: *"This application can not open files."*
+2. **The random number generator is created once, at startup.** Two crashes
+   with the same root cause. `random_setup_special()` ends in `random_create()`,
+   which asserts that no PRNG exists yet — so calling it before *every* key
+   generation aborted the process on the **second key**. And with the PRNG
+   created only by generation, saving a key that had been *loaded* (rather than
+   generated) tripped `assert(random_active > 0)` for the opposite reason. It is
+   now created once in `puttygen_window_new()`, which is where
+   `windows/puttygen.c` does it (`WinMain`); generation only calls
+   `random_reseed()` with fresh `/dev/urandom` bytes, and saving a key just
+   draws from it. No `random_ref()` anywhere. `PUTTYGEN_SELFTEST_REPEAT=<n>`
+   generates n keys in one process so this stays fixed, and
+   `scripts/test-puttygen-gui.sh` runs it as a check.
+3. **`import_possible()` is not "can we open this file".** It answers only "is
+   this a foreign format the import machinery converts", so it is false for
+   PuTTY's own `.ppk` and for public-key-only files. Using it as the guard
+   rejected every native `.ppk` with *"Couldn't load private key (PuTTY SSH-2
+   private key)"*. The natively-loadable types are listed explicitly now.
+4. **`gtk_widget_show_all()` unhides the controls you just hid.** It makes every
+   child visible, including the controls belonging to other key types (bit
+   count, curve picker, prime policy) and the widgets that belong to the
+   "generating" state. The state is applied *after* `show_all()`; before that
+   fix an Ed25519 window still displayed a bit count and a prime policy.
+5. **Every dialog needs the opaque-title-bar fix.** Same macOS behaviour as
+   section 12: a real `GtkDialog` gets an RGBA visual and a see-through title
+   bar. The message boxes, the passphrase prompt and the parameters dialog all
+   call `gtk_dialog_fix_macos_titlebar()`; About and Licence are built as plain
+   `GtkWindow`s with `our_dialog_new()`, exactly as `unix/dialog.c` builds them.
+6. **A replaced key has to be let go of, and a button label is literal.**
+   Generating a second key, or loading a key over a generated one, used to
+   overwrite `st->ssh2key.key` and leak whatever was there;
+   `release_current_key()` now frees the old key first — but only when it is a
+   heap key from `ppk_load_f()`/`import_ssh2()`, because a *generated* key lives
+   in the `keys` union and only its internals are heap allocated (recorded in
+   `st->key_in_union`). And `gtk_button_new_with_label()` takes its text
+   literally — only `..._with_mnemonic()` parses `_` — so the button read
+   `_Generate` until the underscore was dropped; `Generate` and `Cancel` are
+   plain labels now. (The chooser's `_Cancel`/`_Open` are fine: those go through
+   `gtk_dialog_add_button()`, which does parse mnemonics.)
+
+### Packaging
+
+`unix/puttygen.bundle` + `unix/puttygen.plist` are the second bundle
+(`CFBundleName`/`CFBundleExecutable` `PuTTYGen`, its own icon and identifier),
+and `scripts/bundle-macos.sh` was rewritten to loop over an app list —
+`<app>:<bundle>:<binary>:<icon>`, overridable with `APPS=` — with every repair
+pass (Cellar→opt, dangling references, `loaders.cache`, GSettings schemas,
+re-sign, verify) turned into a function taking the app path. `BUILD_DIR` and
+`STAGE` can now be overridden, which is how a bundle gets assembled on local
+disk instead of over a network mount. The launcher needed no change:
+`osxlaunch` derives everything from its own path and execs `<own path>-bin`, so
+the same binary serves `Contents/MacOS/PuTTY` and `Contents/MacOS/PuTTYGen`.
+
+The icon comes from a PNG, like PuTTY.app's: `icons/puttygen-icon.png` is
+converted to `icons/PuTTYgen.icns` by `scripts/make-icns.sh` (`sips` +
+`iconutil`), exactly as `icons/putty-beter-icon.png` produces `icons/PuTTY.icns`.
+The upstream drawing route — `icons/mkicon.py`'s `puttygen_icon()` wrapped by
+`icons/macicon.py` — stays in `icons/Makefile` as the fallback for when the PNG
+is absent, and `bundle-macos.sh` overwrites its output whenever the PNG is
+present, so a stale `mkicon`-derived `.icns` cannot reach a bundle.
+
+**The source PNG must be square, with the artwork to the edges.** macOS scales
+the whole canvas to draw a Dock icon, so a transparent margin makes the finished
+icon smaller than its neighbours — and the artwork's own light background then
+reads as an extra frame that the application never drew. Measured with a
+full-bleed test icon (which macOS renders with no frame at all): the first
+version of `icons/puttygen-icon.png` had an 11–13% transparent margin and came
+out visibly undersized. `scripts/make-icns.sh` now refuses a non-square source,
+because `sips -z N N` would otherwise stretch it silently.
+
+### Deliberately not ported
+
+`SSH-1` keys, and OpenSSH certificates (add / remove / cert-info). Both are
+whole dialogs' worth of UI for things that are dead or rare on macOS, and the
+command line keeps them — `cmdgen.c` still has `-t rsa1`, `--certificate`,
+`--remove-certificate` and `--cert-info`.
+
+## 18. The fork has its own version, and every About box links home
+
+A build of the vanilla tree announces itself as `Release 0.85` or, in a bundle,
+as `Unidentified build`, which tells you nothing about which fork you have.
+Both are now `0.85-beter.1`.
+
+* `version.h` — `RELEASE`, `TEXTVER` (`Release 0.85-beter.1`) and `SSHVER`
+  (`-Release-0.85-beter.1`) carry the fork version, and `BINARY_VERSION`'s build
+  field is `1`. `TEXTVER` is what the About box and every `--version` prints
+  (`utils/version.c`).
+* `LATEST.VER` is `0.85-beter.1`. (Upstream's own release tooling, `release.pl`,
+  rewrites this file only when it matches `^\d+\.\d+$`, so it will not touch the
+  fork string; that tooling is not used here in any case.)
+* The two `Info.plist`s set `CFBundleVersion` and `CFBundleShortVersionString` to
+  `0.85-beter.1`, so Finder and `mdls` show it too. Strictly, Apple wants
+  `CFBundleShortVersionString` to be no more than three integers, which this is
+  not; the only effect is an App Store / notarisation validation warning, and
+  neither applies to an ad-hoc-signed DMG.
+* **`SSHVER` changes the wire banner.** `ssh/verstring.c` builds
+  `SSH-2.0-PuTTY…` from the prefix, the implementation name and `SSHVER`, and
+  turns `-` into `_`, so servers now log `SSH-2.0-PuTTY_Release_0.85_beter.1`
+  instead of `…_0.85`. (The 40-character banner limit in `utils/version.c` still
+  holds: 33 characters.)
+* **Every About box links home.** `About PuTTY` (`unix/dialog.c`) and
+  `About PuTTYgen` (`unix/puttygen.c`) both gain a `GtkLinkButton` reading
+  `github.com/beterhans/putty-beter`, opening
+  `https://github.com/beterhans/putty-beter` (the URI and its label are the two
+  macros in `unix/gtkmisc.h`). Nothing in either box named the fork before — the
+  version and `buildinfo` text were plain and non-clickable, and GTK markup is
+  off on that label, so the URL could not simply be added to it.
+* **The copyright is now two labelled lines.** Each About box reads
+  `Original author: Copyright 1997-2026 Simon Tatham. All rights reserved`, and
+  directly below it `This fork: Copyright 2026 beterhans. All rights reserved`.
+  The first line is still the string generated from `LICENCE` by
+  `cmake/licence.cmake` (`SHORT_COPYRIGHT_DETAILS`), so the upstream MIT notice
+  is preserved verbatim and in place; the second is
+  `PUTTY_BETER_COPYRIGHT_HOLDER` in `unix/gtkmisc.h`. Both plists'
+  `NSHumanReadableCopyright` carries the same two lines (separated by `&#10;`),
+  which also replaces the old `1997-2015` year.
+
+PuTTYGen's About box also picked up a small fix while it was being touched: it
+now clears the selectable label's initial select-all
+(`gtk_label_select_region(label, 0, 0)`, exactly as `unix/dialog.c` already did),
+so it no longer opens as a solid blue highlight.
 
 ## Worth reporting upstream
 
