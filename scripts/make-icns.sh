@@ -66,7 +66,8 @@ if [ "$SRC_W" -lt 1024 ]; then
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/make-icns.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+TMP_DST=""
+trap 'rm -rf "$WORK"; if [ -n "${TMP_DST:-}" ]; then rm -f "$TMP_DST"; fi' EXIT
 
 ICONSET="$WORK/icon.iconset"
 mkdir -p "$ICONSET"
@@ -94,6 +95,18 @@ resize 1024 icon_512x512@2x.png
 
 log "assembling $DST"
 mkdir -p "$(dirname "$DST")"
-iconutil -c icns "$ICONSET" -o "$DST"
+# Write to a temporary name in the same directory, then rename it into place, so a
+# reader sees either the previous icon or the complete new one and never a
+# half-written file. Two machines can be bundling at once - bundle-macos.sh
+# regenerates this icon on every run, deliberately, so that a stale .icns cannot
+# beat it - and an interrupted run would otherwise leave a truncated .icns behind
+# for the next build to copy into the app.
+#
+# The temporary name keeps the .icns extension and is dot-prefixed: iconutil
+# refuses any other extension ("The file extension must equal icns"), and a dot
+# file cannot be picked up by the icons/*.icns glob if one is ever left behind.
+TMP_DST="$(dirname "$DST")/.$(basename "$DST").tmp.$$.icns"
+iconutil -c icns "$ICONSET" -o "$TMP_DST"
+mv -f "$TMP_DST" "$DST"
 
 log "done: $DST ($(wc -c <"$DST" | tr -d ' ') bytes)"
