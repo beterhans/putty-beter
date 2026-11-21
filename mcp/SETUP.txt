@@ -1,0 +1,91 @@
+putty-mcp - the MCP bridge that ships inside PuTTY.app
+=====================================================
+
+PuTTY is a session; this folder is the other end of it. An MCP client (OpenCode,
+Claude Desktop, ...) runs the program below, which speaks MCP on stdio and talks
+to a *running* PuTTY window over a Unix socket - so the agent works in the window
+you are looking at, and you can watch it, take over, and answer what it cannot.
+
+    the program:  bin/putty-mcp.mjs          (run it with node)
+
+
+1. What you need
+-------------------------------------------------------------------------------
+Node.js 20 or newer, which also brings npm:
+
+    node --version        # want v20 or newer
+    command -v node       # note the full path for step 3
+
+The bridge's two npm packages are NOT in this folder. Copy the bridge somewhere
+writable and install them there - installing in place would break PuTTY.app's
+code signature:
+
+    cp -R "/Applications/PuTTY.app/Contents/Resources/putty-mcp" ~/putty-mcp
+    cd ~/putty-mcp && npm install
+
+Keep using that copy, not the one inside the app. (If you have the putty-beter
+source, `cd mcp && npm install` there works too; point step 3 at that path
+instead.)
+
+The copy command uses the Resources path because that is where the real files
+are. A .../Contents/MacOS/putty-mcp of the same name is the same folder through a
+symlink, so either path works in step 3 - as long as `npm install` has run beside
+it.
+
+
+2. Offer a session to it (in PuTTY)
+-------------------------------------------------------------------------------
+The socket only exists while at least one session is offered:
+
+  a. Load the session in PuTTY.
+  b. Session -> Automation (MCP) -> "Offer this session to an MCP client".
+     "Also allow an MCP client to type into this session" lets the agent drive
+     it as well; leave it off for read-only.
+  c. Save, then reopen the session - the settings are read when the window opens.
+
+
+3. Point the client at it
+-------------------------------------------------------------------------------
+For OpenCode, add this to ~/.config/opencode/opencode.json, inside the "mcp"
+object, with your own two paths (the node from step 1, and the copy):
+
+    {
+      "mcp": {
+        "putty-mcp": {
+          "type": "local",
+          "command": [
+            "/opt/homebrew/bin/node",
+            "/Users/YOU/putty-mcp/bin/putty-mcp.mjs",
+            "mcp"
+          ]
+        }
+      }
+    }
+
+Then restart OpenCode. Any other MCP client works the same way: it runs
+`<node> <...>/bin/putty-mcp.mjs mcp` and speaks MCP on stdio.
+
+
+4. Checking it without an agent
+-------------------------------------------------------------------------------
+The same program is a plain command-line client - the first thing to reach for
+when something is wrong:
+
+    node ~/putty-mcp/bin/putty-mcp.mjs list       # sessions PuTTY is offering
+    node ~/putty-mcp/bin/putty-mcp.mjs read 1     # a session's output
+    node ~/putty-mcp/bin/putty-mcp.mjs screen 1   # the visible screen
+    node ~/putty-mcp/bin/putty-mcp.mjs help
+
+`list` printing nothing means no session is offered (step 2), or PuTTY is not
+running.
+
+
+More
+-------------------------------------------------------------------------------
+  * README.md       - the same setup in more depth: where the socket lives, its
+                      permissions, and how to debug both ends.
+  * USER-MANUAL.md  - what the agent is told to read before it acts.
+  * In the source: PLAN.md section 7 (the design), docs/mcp.md (internals).
+
+Rebuilding PuTTY.app refreshes this folder; a copy you made will not change, so
+re-copy it after an upgrade.

@@ -12,6 +12,10 @@
 #   BUNDLER_DIR=...         path to the gtk-mac-bundler checkout
 #   PYTHON=...              python interpreter for gtk-mac-bundler (default python3)
 #   APPS="..."              override the app list (see APPS below)
+#   MCP_APP=<name>          which app carries the MCP bridge, at
+#                           Contents/Resources/putty-mcp with a symlink from
+#                           Contents/MacOS/putty-mcp (default PuTTY); MCP_APP=
+#                           skips installing it
 #   BUILD_DIR=...           build tree to take the binaries from (default
 #                           build-<arch>); STAGE=... where the bundles are made
 #   PUTTY_BUNDLE_LOCAL_STAGE=<dir>
@@ -88,6 +92,15 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # launcher, because osxlaunch execs "<own path>-bin" and so serves both apps.
 # ---------------------------------------------------------------------------
 APPS="${APPS:-PuTTY:putty.bundle:puttyapp:PuTTY.icns PuTTYGen:puttygen.bundle:puttygenapp:PuTTYgen.icns}"
+
+# The MCP bridge (mcp/bin/putty-mcp.mjs) is a Node program that talks to a
+# running PuTTY over a Unix socket; it is copied into this app's
+# Contents/Resources/putty-mcp on every bundle run, with a symlink from
+# Contents/MacOS/putty-mcp (see install_mcp_bridge). Only the app with the MCP
+# server compiled in needs it, and PuTTYGen has none - so it goes in PuTTY.app.
+# `-` and not `:-`: an *unset* MCP_APP means PuTTY, while MCP_APP= (empty) means
+# do not install it at all.
+MCP_APP="${MCP_APP-PuTTY}"
 
 # ---------------------------------------------------------------------------
 # gtk-mac-bundler  (REQUIRED - not part of this project)
@@ -809,6 +822,60 @@ install_schemas() {                     # install_schemas <name> <app>
       fi )
 }
 
+# The MCP bridge (PLAN.md section 7): the Node program an agent runs to speak MCP
+# over stdio to a *live* PuTTY window.
+#
+# It is installed at Contents/Resources/putty-mcp, with a SYMLINK to it from
+# Contents/MacOS/putty-mcp - so the path a human configures is the obvious
+# ".../Contents/MacOS/putty-mcp/bin/putty-mcp.mjs". The symlink is not a
+# decoration: codesign treats everything under Contents/MacOS as *code*, so a
+# bundle with unsigned non-code files there does not seal ("code object is not
+# signed at all", measured), while the files under Resources are covered by the
+# bundle seal and need no individual signature. A symlink in MacOS is ignored by
+# codesign and survives ditto and the merge.
+#
+# Source only, deliberately: the two npm packages it imports are not bundled, and
+# SETUP.txt - copied in beside it - tells the human to copy the folder somewhere
+# writable and `npm install` there, because installing in place would change the
+# bundle and break its signature.
+#
+# This runs on every bundle run, including a reused tree, so the folder tracks
+# the source: a file deleted from mcp/ disappears from the bundle too.
+install_mcp_bridge() {                  # install_mcp_bridge <name> <app>
+    local name="$1" APP="$2"
+    local SRC="$SRC_DIR/mcp"
+    local DEST="Contents/Resources/putty-mcp"       # the real files
+    local LINK="Contents/MacOS/putty-mcp"           # the path to configure
+
+    if [ ! -f "$SRC/bin/putty-mcp.mjs" ]; then
+        log "[$name] WARNING: no MCP bridge at $SRC/bin/putty-mcp.mjs; skipping it"
+        return 0
+    fi
+    if [ ! -f "$SRC/SETUP.txt" ]; then
+        log "[$name] WARNING: $SRC/SETUP.txt is missing; the bundled bridge will"
+        log "[$name]          have no note on how to configure it"
+    fi
+
+    log "[$name] installing the MCP bridge (${LINK#Contents/})"
+    # rm -rf/rm -f first, so this is the source tree's contents and not a merge
+    # of the two, and so a real directory left by an older layout is gone before
+    # ln -s (which would otherwise create the link *inside* it). ${APP:?} so a
+    # bug cannot reduce this to "rm -rf /".
+    rm -rf "${APP:?}/$DEST" "${APP:?}/$LINK"
+    mkdir -p "$APP/$DEST/bin" "$APP/$DEST/src"
+    cp "$SRC/bin/putty-mcp.mjs" "$APP/$DEST/bin/"
+    cp "$SRC"/src/*.mjs "$APP/$DEST/src/"
+    # package.json/package-lock.json are what `npm install` in SETUP.txt needs;
+    # USER-MANUAL.md is read at runtime (src/manual.mjs, via ../USER-MANUAL.md),
+    # so it must sit next to src/, not deeper.
+    cp "$SRC/package.json" "$SRC/package-lock.json" "$APP/$DEST/"
+    cp "$SRC/USER-MANUAL.md" "$SRC/README.md" "$APP/$DEST/"
+    cp "$SRC/SETUP.txt" "$APP/$DEST/SETUP.txt"
+    chmod +x "$APP/$DEST/bin/putty-mcp.mjs"
+    ( cd "$APP" && ln -s "../Resources/putty-mcp" "$LINK" )
+    dbg "[$name] MCP bridge: $(find "$APP/$DEST" -type f | wc -l | tr -d ' ') files + ${LINK#Contents/} -> ../Resources/putty-mcp"
+}
+
 # ------------------------------------------------------------------ re-sign
 resign() {                              # resign <name> <app> <macho-list>
     local name="$1" APP="$2" macho="$3"
@@ -972,6 +1039,11 @@ for app in $APPS; do
         timed "[$name] loaders.cache" fix_loaders_cache "$name" "$APP"
     fi
     timed "[$name] schemas" install_schemas "$name" "$APP"
+    # Before re-sign, so the bridge files are sealed by the bundle-level codesign
+    # and not added outside it. See install_mcp_bridge.
+    if [ -n "$MCP_APP" ] && [ "$name" = "$MCP_APP" ]; then
+        timed "[$name] MCP bridge" install_mcp_bridge "$name" "$APP"
+    fi
     timed "[$name] re-sign" resign "$name" "$APP" "$macho"
     timed "[$name] verify"  verify "$name" "$APP" "$macho" || exit 1
 
@@ -999,14 +1071,18 @@ if [ "$COPY_BACK" = 1 ]; then
             2>/dev/null || true
 
         # Is it already there and up to date? The marker says which GTK inputs the
-        # copy in $DEST was made from, and this app's own files (its plist and its
-        # binary) are compared byte for byte. That is a few reads, against ~275
-        # files of round trips for a full recopy - which over SMB is minutes.
-        # (The checks run cheapest-first: the marker test usually settles it, and
-        # a marker that does not match skips the two slow ones entirely.)
+        # copy in $DEST was made from; the file count catches a copy that is
+        # missing part of the app (the MCP bridge, say); and this app's own files
+        # are compared byte for byte. That is a few reads, against ~280 files of
+        # round trips for a full recopy - which over SMB is minutes.
+        # (Cheapest first: the marker test usually settles it and skips the rest,
+        # and the count is checked before the byte compares because those read the
+        # whole binary over the network.)
         fresh=1
         if [ "$(cat "$DEST/.gtk-signature" 2>/dev/null || true)" = "$bundle_sig" ] \
            && app_complete "$DEST/$name.app" \
+           && [ "$(find "$DEST/$name.app" -type f 2>/dev/null | wc -l | tr -d ' ')" \
+                = "$want" ] \
            && cmp -s "$src/Contents/Info.plist" \
                      "$DEST/$name.app/Contents/Info.plist" \
            && cmp -s "$src/Contents/MacOS/$exe-bin" \
