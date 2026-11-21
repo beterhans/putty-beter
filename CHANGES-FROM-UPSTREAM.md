@@ -1257,11 +1257,23 @@ copy, so it is not used.)
 **Source only, deliberately.** The two npm packages
 (`@modelcontextprotocol/sdk`, `zod`) are not bundled: they are 23 MB and ~3400
 files, and `npm install` inside the .app would change the bundle and invalidate
-its signature. `mcp/SETUP.txt` is installed beside the code instead, and tells the
-human to copy the folder somewhere writable, `npm install` there, and point the
-MCP client at the copy — with the OpenCode configuration written out, and the
-Node requirement (20 or newer) stated. `MCP_APP=` (default `PuTTY`) chooses which
-app gets the bridge; `PuTTYGen.app` has no MCP server, so it gets none.
+its signature. They are installed **globally** instead, plus one symlink, because
+Node resolves a bare import by walking up from the file's own directory and the
+app's copy sits under `/Applications`:
+
+```sh
+npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
+ln -s "$(npm root -g)" /Applications/node_modules
+```
+
+Nothing is written inside the app, so its seal stays valid and re-installing it
+does not undo the setup; the MCP client then points at the app's own script
+(`.../Contents/Resources/putty-mcp/bin/putty-mcp.mjs`). `mcp/SETUP.txt`, installed
+beside the code, spells that out — with the Node requirement (20 or newer) — and
+gives the alternative that pins the exact versions this bridge was tested with:
+copy the folder out and `npm install` there, which uses the shipped
+`package-lock.json`. `MCP_APP=` (default `PuTTY`) chooses which app gets the
+bridge; `PuTTYGen.app` has no MCP server, so it gets none.
 
 ## Worth reporting upstream
 

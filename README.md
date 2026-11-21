@@ -419,11 +419,31 @@ then add to `~/.config/opencode/opencode.json`:
 `bundle-macos.sh` installs it at `Contents/Resources/putty-mcp`, reachable as
 `Contents/MacOS/putty-mcp` through a symlink. It is **source only** — the npm
 packages are not bundled, because `npm install` inside the .app would change the
-bundle and break its signature — so it ships with a `SETUP.txt` that says to copy
-the folder out, install there, and point the client at the copy. (The symlink is
-not decoration: macOS treats everything under `Contents/MacOS` as code, and a
-bundle with unsigned non-code files there does not seal; the files themselves are
-under `Resources`, where the seal covers them.)
+bundle and break its signature — so they are installed globally instead, with one
+symlink that lets Node find them from the app's copy:
+
+```sh
+npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
+ln -s "$(npm root -g)" /Applications/node_modules
+```
+
+(the symlink is outside every app — nothing is written inside `PuTTY.app` — and
+it survives re-installing the app). The client then points straight at the app's
+own script:
+
+```json
+"putty-mcp": {
+  "type": "local",
+  "command": ["node", "/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs", "mcp"]
+}
+```
+
+`SETUP.txt` in the app spells this out, and also gives the alternative that pins
+the exact versions the bridge was tested with: copy the folder out and
+`npm install` there, which uses the shipped `package-lock.json`. (The in-app
+symlink is not decoration: macOS treats everything under `Contents/MacOS` as code,
+and a bundle with unsigned non-code files there does not seal; the files
+themselves are under `Resources`, where the seal covers them.)
 
 It is also a plain command-line client, which is the first thing to reach for
 when something is wrong — no LLM involved:

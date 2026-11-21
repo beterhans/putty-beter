@@ -16,21 +16,34 @@ Node.js 20 or newer, which also brings npm:
     node --version        # want v20 or newer
     command -v node       # note the full path for step 3
 
-The bridge's two npm packages are NOT in this folder. Copy the bridge somewhere
-writable and install them there - installing in place would break PuTTY.app's
-code signature:
+The bridge's two npm packages are not in this folder - installing them in place
+would change PuTTY.app and break its code signature. Install them globally, once:
+
+    npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
+
+Node will not look in the global place by itself: it searches for `node_modules`
+in every directory *above* the file it runs, and this folder is under
+/Applications. So point that search at the global one:
+
+    ln -s "$(npm root -g)" /Applications/node_modules
+
+(Skip that if /Applications/node_modules already exists.) It is one symlink
+outside every app - nothing is written inside PuTTY.app - and it is what makes
+the path in step 3 work. Reinstalling or updating PuTTY.app does not undo it, so
+the bridge always runs the app's own copy, at whatever version you installed.
+
+Prefer the exact versions this bridge was tested with? Then copy the folder out
+and install there instead, which uses the shipped package-lock.json:
 
     cp -R "/Applications/PuTTY.app/Contents/Resources/putty-mcp" ~/putty-mcp
     cd ~/putty-mcp && npm install
 
-Keep using that copy, not the one inside the app. (If you have the putty-beter
-source, `cd mcp && npm install` there works too; point step 3 at that path
-instead.)
+and point step 3 at ~/putty-mcp/bin/putty-mcp.mjs. (If you have the putty-beter
+source, `cd mcp && npm install` there does the same.)
 
-The copy command uses the Resources path because that is where the real files
-are. A .../Contents/MacOS/putty-mcp of the same name is the same folder through a
-symlink, so either path works in step 3 - as long as `npm install` has run beside
-it.
+Copy from the Resources path - it holds the real files. The
+.../Contents/MacOS/putty-mcp of the same name is the same folder through a
+symlink, so either path works in step 3.
 
 
 2. Offer a session to it (in PuTTY)

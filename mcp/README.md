@@ -61,11 +61,24 @@ every PuTTY.app it builds, at `Contents/Resources/putty-mcp` — reachable at th
 same path under `Contents/MacOS/putty-mcp`, through a symlink, because that is
 where a runnable helper is expected. It is **source only**: the npm packages are
 not bundled, because `npm install` inside the .app would change the bundle and
-break its code signature. That copy carries `SETUP.txt`, which is steps 1–4 above
-with the in-bundle paths filled in, so someone who has only the app can still set
-the bridge up (copy the folder somewhere writable, `npm install` there, point the
-client at the copy). You do not need it if you have the source — but it is what
-makes the app self-describing.
+break its code signature. Install them once, globally, and let the app's copy see
+them:
+
+```sh
+npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
+ln -s "$(npm root -g)" /Applications/node_modules
+```
+
+Node does not consult a global location by itself — it looks for `node_modules` in
+every directory *above* the file it runs — so that one symlink is what makes the
+in-app path work; nothing is written inside the app, and re-installing the app
+does not undo it. A client can then point straight at
+`/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs`. That
+copy carries `SETUP.txt`, which is steps 1–4 above with the in-bundle paths
+filled in, including the alternative that pins the exact tested versions (copy
+the folder out and `npm install` there, using the shipped `package-lock.json`).
+You do not need any of it if you have the source — but it is what makes the app
+self-describing.
 
 ## Using it without an agent
 
