@@ -230,6 +230,12 @@ log "build dir  : $BUILD_DIR"
 log "brew prefix: $BREW_PREFIX"
 log "bundler dir: $BUNDLER_DIR"
 log "apps       : $APPS"
+# Identify the file that is actually running. On a network mount a stale read is
+# otherwise invisible - a run has already used the *previous* script and quietly
+# done the old thing, costing a ten-minute copy-back - so this line is the first
+# thing to compare against the server: `shasum -a 256 scripts/bundle-macos.sh`. A
+# mismatch means the mount served cached bytes; remounting the share is the fix.
+log "script     : $(shasum -a 256 "$0" 2>/dev/null | cut -c1-12)  $(wc -c < "$0" | tr -d ' ') bytes  $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$0" 2>/dev/null)"
 
 # ------------------------------------------------------------------- preflight
 for f in "$BUILD_DIR/osxlaunch"; do
@@ -901,6 +907,24 @@ install_mcp_bridge() {                  # install_mcp_bridge <name> <app>
     dbg "[$name] MCP bridge: $(find "$APP/$DEST" -type f | wc -l | tr -d ' ') files + ${LINK#Contents/} -> ../Resources/putty-mcp"
 }
 
+# Only one app carries the bridge (MCP_APP). This is not a formality: when an app
+# has no GTK tree of its own, bundle_one CLONES its sibling's - PuTTYGen.app is
+# cloned from PuTTY.app - and the clone brings the whole payload with it, bridge
+# and all. Left alone, PuTTYGen.app would ship a second copy of the bridge, and the
+# merge would then add 23 MB of dependencies to go with it. So the payload step is
+# authoritative in both directions: install it for MCP_APP, remove it for the rest.
+remove_mcp_bridge() {                   # remove_mcp_bridge <name> <app>
+    local name="$1" APP="$2"
+    local DEST="Contents/Resources/putty-mcp"
+    local LINK="Contents/MacOS/putty-mcp"
+
+    if [ ! -e "${APP:?}/$DEST" ] && [ ! -L "${APP:?}/$LINK" ]; then
+        return 0
+    fi
+    log "[$name] removing the MCP bridge (it belongs to ${MCP_APP:-no app})"
+    rm -rf "${APP:?}/$DEST" "${APP:?}/$LINK"
+}
+
 # ------------------------------------------------------------------ re-sign
 resign() {                              # resign <name> <app> <macho-list>
     local name="$1" APP="$2" macho="$3"
@@ -1065,9 +1089,11 @@ for app in $APPS; do
     fi
     timed "[$name] schemas" install_schemas "$name" "$APP"
     # Before re-sign, so the bridge files are sealed by the bundle-level codesign
-    # and not added outside it. See install_mcp_bridge.
+    # and not added outside it. See install_mcp_bridge / remove_mcp_bridge.
     if [ -n "$MCP_APP" ] && [ "$name" = "$MCP_APP" ]; then
         timed "[$name] MCP bridge" install_mcp_bridge "$name" "$APP"
+    else
+        timed "[$name] MCP bridge" remove_mcp_bridge "$name" "$APP"
     fi
     timed "[$name] re-sign" resign "$name" "$APP" "$macho"
     timed "[$name] verify"  verify "$name" "$APP" "$macho" || exit 1
