@@ -798,7 +798,15 @@ static void listbox_folder_weight(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                                   gpointer data)
 {
     int folder_col = GPOINTER_TO_INT(data);
-    bool is_folder = false;
+    /*
+     * gboolean, not bool: the column is G_TYPE_BOOLEAN, which GLib reads and
+     * writes as a 4-byte gboolean. A 1-byte bool here made
+     * gtk_tree_model_get() write three bytes past the variable - which, with
+     * the wrong stack layout, zeroes the low three bytes of an adjacent
+     * pointer, giving an address like 0x7f1234000000. That is what crashed
+     * GTK's cell-attribute code (see CONFIG_BOX_CRASH.md).
+     */
+    gboolean is_folder = false;
 
     gtk_tree_model_get(model, iter, folder_col, &is_folder, -1);
     g_object_set(G_OBJECT(cell), "weight",
@@ -1085,7 +1093,7 @@ static void listbox_drag_received(GtkWidget *widget, GdkDragContext *ctx,
     if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view), tx, ty, &path,
                                       NULL, NULL, NULL)) {
         GtkTreeIter iter, parent;
-        bool is_folder = false;
+        gboolean is_folder = false;    /* gboolean, not bool - see above */
         int folder_col = 1 + (ctrl->listbox.ncols ? ctrl->listbox.ncols : 1);
 
         gtk_tree_model_get_iter(model, &iter, path);
