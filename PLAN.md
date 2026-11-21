@@ -121,7 +121,10 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
   `x86_64 arm64`, and `PuTTYGen` generates three keys. (The file counts grew as
   things were bundled into `PuTTY.app`: 275 → 287 when the MCP bridge went in, then
   **3703 arm64 / 3705 x86_64, 3707 merged** when its dependencies did. `PuTTYGen`
-  stays at 275.) It also packages the result:
+  stays at 275. **Note:** those x86_64 figures are from that arm-Mac build; the
+   Intel build now carries **no** bridge at all — 275 files — and the merge still
+   produces the same app, since arm64 is its structural authority. See §7, "The
+   x86_64 bundle carries no bridge at all".) It also packages the result:
   **`build-universal/PuTTY-universal.dmg`**, a compressed image whose volume holds
   both apps and an `/Applications` symlink for drag-install (verified by mounting:
   both apps present, seal valid, universal PuTTYGen runs from the mounted image).
@@ -490,7 +493,7 @@ Implemented (M2, part 1):
 |---|---|
 | `unix/storage.c`, `storage.h` | `/` in a session name separates folder names, and folders are real directories; recursive enumeration reporting folders as `Name/`; `session_mkdir()`, `session_move()` (sessions and folders, refusing to move a folder into itself), `session_rmdir()` (empty only), `session_move_target_name()`, `session_name_is_valid()` |
 | `dialog.h`, `dialog.c` | `listbox.tree` flag, `listbox.drag_handler` hook, `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` |
-| `unix/dialog.c` | `GtkTreeStore` (a tree store with top-level rows behaves exactly like the old list store), hierarchy built from `/`, folder flag in an extra undisplayed column, bold folder rows, expand as a folder gains children, drag source + drop target calling `drag_handler` |
+| `unix/dialog.c` | `GtkTreeStore` (a tree store with top-level rows behaves exactly like the old list store), hierarchy built from `/`, folder flag in an extra undisplayed column, bold folder rows, expand as a folder gains children, drag source + drop target calling `drag_handler`. **The folder flag must be read into a `gboolean`, not a `bool`** — the column is `G_TYPE_BOOLEAN` and GLib writes 4 bytes, so a 1-byte `bool` had 3 bytes written past it and crashed the configuration box on ~1 launch in 3; see `CONFIG_BOX_CRASH.md` (fixed 2026-11-22) |
 | `config.c` | list filled with ids, selection by id, **New Folder** button, Delete = session or empty folder, Load on a folder = beep, drag handler |
 | `unix/window.c` | the right-click saved-session menu skips folder entries |
 | `windows/*` | flat fallback so that front end still builds |
@@ -1780,6 +1783,104 @@ something to ship (a download marker, which is what makes a *fetched* copy look
 "damaged" to Gatekeeper), so both `bundle-macos.sh` and `make-universal.sh` now
 clear extended attributes on the bundle they produce.
 
+**No MCP bridge in the Intel bundle.** `bundle-macos.sh` skips
+`install_mcp_bridge` entirely when `ARCH=x86_64`: `mcp/node_modules` contains a
+symlink (npm's `.bin/node-which` shim), and the Intel Mac reads this tree over SMB,
+where symlinks cannot be read at all — `readlink`, `stat -L`, `open` and `cp -L`
+all fail with `EINVAL`; only `lstat` works — so `ditto` aborted the whole bundle
+run (`ditto: …/.bin/node-which: Invalid argument`, which is what prompted the
+change). The x86_64 bundle is a merge input only, so this costs nothing: the
+merged app takes the bridge and its `node_modules` from the arm64 slice, which is
+`make-universal.sh`'s structural authority. Measured after the change: `PuTTY.app`
+and `PuTTYGen.app` are 275 files each, seal valid, both launch. See §7, "The
+x86_64 bundle carries no bridge at all".
+
+---
+
+## 4n. A readable exit: hold the window open for two seconds  *(design 2026-11-22)*
+
+**Goal:** when PuTTY ends a session because the connection went away, the last
+thing on the screen is usually the reason — and it disappears together with the
+window. Hold the window for a short, visible countdown (two seconds by default)
+so that the reason can be read before it closes.
+
+**The case that prompted it (2026-11-22).** A saved session to a Synology NAS
+(`S-D220.local`): the password is **correct**, but the account has no
+interactive access, so the server accepts the password, prints its banner, drops
+the connection at once — and the window is gone before any of it can be read.
+The text is still in the session log file; the window is not. (It looked like a
+crash at first. It is not one, and it is not architecture-specific: the same
+session is fine on the arm Mac, where the account *does* have access.)
+
+**Why it closes instantly.** Two upstream behaviours, neither a bug:
+
+* the **session-exit** path. `exit_callback()` (`unix/window.c:3600`) destroys
+  the window whenever `close_on_exit` is `FORCE_ON`, or `AUTO` with a clean exit
+  — and `FORCE_ON` (**Always**) is the *platform default* on Unix, not the
+  user's choice: `platform_default_i()` (`unix/window.c:483`) returns 2 for
+  `CloseOnExit`, "maps to FORCE_ON after painful rearrangement".
+* the **connection-fatal** path is different: `gtk_seat_connection_fatal()`
+  (`unix/window.c:376`) shows a message box first, then destroys. It is the
+  session-exit path above, not this one, that swallows the message.
+
+**Proposal.**
+
+* A new setting `CONF_close_on_exit_delay` — `SAVE_KEYWORD("CloseOnExitDelay")`,
+  an integer in **seconds, default 2**, where **0 means "close at once, exactly
+  as today"**.
+* In `exit_callback()`, when the window is about to be destroyed, do not destroy
+  it yet: draw a countdown on the terminal's last line (or on a status line),
+  `window closes in 2 ... 1 ...`, and destroy it when the count reaches zero.
+* A keystroke or a click **cancels** the countdown and leaves the window open,
+  so the message can be read and copied; the window's close button (or a second
+  attempt) still closes it.
+* Drive the countdown from the GTK main loop (`g_timeout_add`), never a blocking
+  sleep — otherwise the window freezes instead of updating, which is the one
+  thing this feature must not do.
+* With the delay at 0 the behaviour is byte-for-byte today's, so nothing
+  scripted and nothing headless (pterm, plink) changes.
+
+**Open decisions.**
+
+* Whether the countdown applies to *every* close the setting drives (a clean
+  `exit` included) or only to a **non-clean** exit. The request reads as "every
+  time the window is about to close because of this setting"; the per-session
+  setting makes either choice liveable.
+* Where to draw it: the terminal's own last line (careful not to disturb the
+  scrollback, the cursor or a full-screen application) or a GTK status line.
+  A status line is simpler and cannot corrupt the screen; it is also the less
+  PuTTY-like.
+* Whether the delay is per-session only, or also honoured as a global default.
+
+**Files.** `conf.h` (the key), `config.c` (a spin box beside the existing
+"Close window on exit" radio buttons in the Session panel), `unix/window.c`
+(`exit_callback()` and the countdown's cancel path), `unix/gtkcompat.h` if a
+timeout helper is wanted.
+
+**Steps.**
+
+1. `conf.h` + `config.c`: the key, its control, default 2.
+2. `unix/window.c`: divert `exit_callback()`'s `gtk_widget_destroy()` through the
+   countdown when the setting is non-zero.
+3. Cancel-on-input, plus the debug switch below.
+4. Test on the Intel Mac against `S-D220.local`, and on the arm Mac against a
+   session whose account has no access.
+
+**Debug switch.** `PUTTY_BETER_DEBUG=exit` (or the fork's existing debug
+mechanism), so stderr carries the close decision: which path fired, the exit
+code, the delay, and whether a keystroke cancelled it.
+
+**Verification.** With the Synology session: the banner and the reason stay on
+screen for two seconds, counting down, then the window closes; a keypress inside
+those two seconds leaves the window open. A clean `exit` under "Only on clean
+exit" still closes. `CloseOnExit=Never` is unchanged. Delay 0 reproduces today's
+behaviour exactly.
+
+**Risks.** A delay on *every* close irritates on a machine that drops sessions
+often — hence 0 must mean "as today" and the setting must be settable per
+session. The countdown must not run while the process is being torn down by a
+signal, and must not hold up another window that is closing.
+
 ---
 
 ## 5. Phase 2 — O1: Session records (folders / comments / password)
@@ -2224,10 +2325,24 @@ non-code files there stop the bundle sealing (`"code object is not signed at
 all"`, measured). Its dependencies are bundled with it (`Contents/Resources/putty-mcp/node_modules`),
 so an installed app needs only Node 20+. They are pure JavaScript — no `.node`, no
 Mach-O, no `os`/`cpu`-constrained packages — so a single copy serves both
-architectures. `MCP_NODE_MODULES=0` omits them, which is how the Intel build keeps
-its copy-back small; `make-universal.sh` then supplies them from the shared
-`mcp/node_modules` if no slice carried them. `MCP_APP=` picks the app (default
-`PuTTY`; `PuTTYGen` has no MCP server). This is `CHANGES-FROM-UPSTREAM.md` §19.
+architectures. `MCP_NODE_MODULES=0` omits them; `make-universal.sh` then supplies
+them from the shared `mcp/node_modules` if no slice carried them. `MCP_APP=` picks
+the app (default `PuTTY`; `PuTTYGen` has no MCP server). This is
+`CHANGES-FROM-UPSTREAM.md` §19.
+
+**The x86_64 bundle carries no bridge at all (2026-11-21).** `bundle-macos.sh`
+skips `install_mcp_bridge` when `ARCH=x86_64` — measured, its `PuTTY.app` is 275
+files against arm64's 3703. The reason is not size: `mcp/node_modules` contains a
+symlink (npm's `.bin/node-which` shim), and **the Intel Mac reads this tree over
+SMB, where symlinks cannot be read at all** — `readlink`, `stat -L`, `open` and
+`cp -L` all fail with `EINVAL`, and only `lstat` works, so no copy tool can
+reproduce one and `ditto` aborted the whole bundle run
+(`ditto: …/.bin/node-which: Invalid argument`). Special-casing that one link was
+not worth it, because the x86_64 bundle is only a merge input: `make-universal.sh`
+takes the **arm64** bundle as its structural authority, so the merged app gets the
+bridge and its `node_modules` from the arm64 slice. Consequence: the merge must run
+where symlinks are readable — the **arm Mac** — since it copies
+`Contents/MacOS/putty-mcp` (a symlink) with `cp -P`.
 
 **The wire protocol**, which the sketch left open. Both directions are
 `u32 nfields`, then `nfields × (u32 length, length bytes)`, big-endian. A field
@@ -2565,3 +2680,5 @@ crates*, not a port of PuTTY:
             as `build-universal/PuTTY-universal.dmg` (both apps + `/Applications`
             symlink, drag-install; mounted and verified). See PLAN §1c and §4m
             "As run on the arm Mac".
+- [ ] **M9** — a readable exit: hold the window open for a two-second countdown
+      before closing, so the reason a session dropped can be read (§4n)
