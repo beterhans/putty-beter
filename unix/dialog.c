@@ -4898,9 +4898,12 @@ void about_box(void *window)
     {
         char *buildinfo_text = buildinfo("\n");
         char *label_text = dupprintf(
-            "%s\n\n%s\n\n%s\n\n%s",
+            "%s\n\n%s\n\n%s\n\n%s\n%s",
             appname, ver, buildinfo_text,
-            "Copyright " SHORT_COPYRIGHT_DETAILS ". All rights reserved");
+            "Original author: Copyright " SHORT_COPYRIGHT_DETAILS
+            ". All rights reserved",
+            "This fork: Copyright " PUTTY_BETER_COPYRIGHT_HOLDER
+            ". All rights reserved");
         w = gtk_label_new(label_text);
         gtk_label_set_justify(GTK_LABEL(w), GTK_JUSTIFY_CENTER);
 #if GTK_CHECK_VERSION(2,0,0)
@@ -4918,6 +4921,17 @@ void about_box(void *window)
     gtk_label_select_region(GTK_LABEL(w), 0, 0);
 #endif
     gtk_widget_show(w);
+
+    /*
+     * PuTTY-beter's home, as a real link. The label above is plain text (GTK
+     * markup is off, so a URL in it would not be clickable), and nothing else
+     * in this box names the fork at all.
+     */
+    w = gtk_link_button_new_with_label(PUTTY_BETER_HOMEPAGE,
+                                       PUTTY_BETER_HOMEPAGE_TEXT);
+    gtk_widget_set_halign(w, GTK_ALIGN_CENTER);
+    gtk_widget_show(w);
+    our_dialog_add_to_content_area(GTK_WINDOW(aboutbox), w, false, false, 0);
 
     g_signal_connect(G_OBJECT(aboutbox), "key_press_event",
                      G_CALLBACK(about_key_press), NULL);

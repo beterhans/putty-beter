@@ -11,9 +11,9 @@
     <key>CFBundleExecutable</key>
     <string>PuTTY</string>
     <key>CFBundleVersion</key>
-    <string>Unidentified build</string>
+    <string>0.85-beter.1</string>
     <key>CFBundleShortVersionString</key>
-    <string>Unidentified build</string>
+    <string>0.85-beter.1</string>
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleIdentifier</key>
@@ -25,6 +25,6 @@
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>NSHumanReadableCopyright</key>
-    <string>© 1997-2015 Simon Tatham. All rights reserved.</string>
+    <string>Original author: © 1997-2026 Simon Tatham. All rights reserved.&#10;This fork: © 2026 beterhans. All rights reserved.</string>
 </dict>
 </plist>
