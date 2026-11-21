@@ -236,6 +236,32 @@ merge_one() {                           # merge_one <name> <arm64.app> <x86_64.a
         cp -P "$src_x" "$dst"
     done <<<"$list"
 
+    # --- 2b. the MCP bridge's dependencies ---------------------------------
+    # The bridge in the merged app has to be able to run, and it will not without
+    # its packages beside it. Either slice may have left them out - the Intel side
+    # is expected to, because pushing 3400 small files across an SMB mount takes
+    # minutes where one local copy takes a second - and the arm64 authority above
+    # copies them through when only it has them. This is the case where neither
+    # did: put them in from the one shared tree, so the merged app is never
+    # shipped with a bridge that cannot load. (The packages are pure JavaScript,
+    # so one copy is right for both architectures.)
+    if [ -f "$OUT/Contents/Resources/putty-mcp/bin/putty-mcp.mjs" ] \
+       && [ ! -d "$OUT/Contents/Resources/putty-mcp/node_modules" ] \
+       && [ -d "$SRC_DIR/mcp/node_modules" ]; then
+        log "[$name] neither slice carried the bridge's dependencies; adding them"
+        if ! ditto "$SRC_DIR/mcp/node_modules" \
+                "$OUT/Contents/Resources/putty-mcp/node_modules"; then
+            log "[$name] ERROR: could not copy $SRC_DIR/mcp/node_modules"
+            return 1
+        fi
+    fi
+    if [ -f "$OUT/Contents/Resources/putty-mcp/bin/putty-mcp.mjs" ] \
+       && [ ! -d "$OUT/Contents/Resources/putty-mcp/node_modules" ]; then
+        log "[$name] WARNING: the bridge has no node_modules and $SRC_DIR/mcp"
+        log "[$name]          has none either, so the bundled bridge will need"
+        log "[$name]          its packages installed (see SETUP.txt)"
+    fi
+
     # --- 3. re-sign, inside-out --------------------------------------------
     # lipo invalidated every signature it touched, and the Mach-O files in
     # Contents/MacOS are the trap this project has already fallen into once: they

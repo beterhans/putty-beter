@@ -1254,26 +1254,22 @@ own, and `codesign` ignores a symlink in `MacOS`. (The alternative — signing e
 bridge file individually — survives neither the merge's `xattr -cr` nor a plain
 copy, so it is not used.)
 
-**Source only, deliberately.** The two npm packages
-(`@modelcontextprotocol/sdk`, `zod`) are not bundled: they are 23 MB and ~3400
-files, and `npm install` inside the .app would change the bundle and invalidate
-its signature. They are installed **globally** instead, plus one symlink, because
-Node resolves a bare import by walking up from the file's own directory and the
-app's copy sits under `/Applications`:
+**Its dependencies are bundled with it**, so the app needs nothing installed:
+`import '@modelcontextprotocol/sdk'` resolves by the ordinary walk-up into
+`Contents/Resources/putty-mcp/node_modules`, with no absolute paths and no global
+packages. That is ~3400 files and 23 MB, and it is acceptable precisely because
+they are pure JavaScript — measured: 0 `.node` files, 0 Mach-O anywhere in the
+tree, no `os`/`cpu`-constrained packages — so the arm64 and x86_64 copies are
+identical and one copy serves both architectures in the universal build.
 
-```sh
-npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
-ln -s "$(npm root -g)" /Applications/node_modules
-```
-
-Nothing is written inside the app, so its seal stays valid and re-installing it
-does not undo the setup; the MCP client then points at the app's own script
-(`.../Contents/Resources/putty-mcp/bin/putty-mcp.mjs`). `mcp/SETUP.txt`, installed
-beside the code, spells that out — with the Node requirement (20 or newer) — and
-gives the alternative that pins the exact versions this bridge was tested with:
-copy the folder out and `npm install` there, which uses the shipped
-`package-lock.json`. `MCP_APP=` (default `PuTTY`) chooses which app gets the
-bridge; `PuTTYGen.app` has no MCP server, so it gets none.
+`MCP_NODE_MODULES=0` builds an app *without* them; `make-universal.sh` then adds
+them to the merged app from the shared `mcp/node_modules` if no slice carried them
+(it says so, rather than shipping a bridge that cannot load). That is how the Intel
+side avoids pushing 3400 small files across its SMB mount — minutes — in the common
+case where its own copy is only a merge input. `mcp/SETUP.txt`, installed beside
+the code, states the result: Node 20 or newer is all a user needs. `MCP_APP=`
+(default `PuTTY`) chooses which app gets the bridge; `PuTTYGen.app` has no MCP
+server, so it gets none.
 
 ## Worth reporting upstream
 

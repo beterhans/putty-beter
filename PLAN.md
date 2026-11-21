@@ -2218,15 +2218,13 @@ into every `PuTTY.app` it builds — on every run, reused tree or not — at
 the configured path is the obvious one. The symlink is required, not cosmetic:
 macOS treats everything under `Contents/MacOS` as nested code, so unsigned
 non-code files there stop the bundle sealing (`"code object is not signed at
-all"`, measured). Source only — the packages go in globally (`npm install -g
-'@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'`) plus one symlink,
-`ln -s "$(npm root -g)" /Applications/node_modules`, because Node resolves a bare
-import by walking up from the importing file and the app's copy is under
-/Applications. Nothing is written inside the app, so its seal stays valid and an
-app update does not break the setup. `SETUP.txt` documents that, and the copy-out
-alternative that pins the exact versions the bridge was tested with. `MCP_APP=`
-picks the app (default `PuTTY`; `PuTTYGen` has no MCP server). This is
-`CHANGES-FROM-UPSTREAM.md` §19.
+all"`, measured). Its dependencies are bundled with it (`Contents/Resources/putty-mcp/node_modules`),
+so an installed app needs only Node 20+. They are pure JavaScript — no `.node`, no
+Mach-O, no `os`/`cpu`-constrained packages — so a single copy serves both
+architectures. `MCP_NODE_MODULES=0` omits them, which is how the Intel build keeps
+its copy-back small; `make-universal.sh` then supplies them from the shared
+`mcp/node_modules` if no slice carried them. `MCP_APP=` picks the app (default
+`PuTTY`; `PuTTYGen` has no MCP server). This is `CHANGES-FROM-UPSTREAM.md` §19.
 
 **The wire protocol**, which the sketch left open. Both directions are
 `u32 nfields`, then `nfields × (u32 length, length bytes)`, big-endian. A field

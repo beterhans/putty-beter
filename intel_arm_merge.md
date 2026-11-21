@@ -142,6 +142,21 @@ bundle several apps in one run. Two things follow, and both are now handled:
   (`unix/osxlaunch.c` execs `<its own path>-bin`), so `Contents/MacOS/PuTTY` and
   `Contents/MacOS/PuTTYGen` are byte-identical launchers and merge cleanly.
 
+* **The MCP bridge, and its dependencies (2026-11-21).** `bundle-macos.sh` copies
+  `mcp/` into `PuTTY.app` at `Contents/Resources/putty-mcp` — with a symlink from
+  `Contents/MacOS/putty-mcp`, because macOS will not seal non-code files under
+  `MacOS` — *together with the bridge's `node_modules`*. Those are pure JavaScript
+  (0 `.node`, 0 Mach-O), so they are identical on both arches and one copy serves
+  both in the merged app; the merge supplies them from the shared
+  `mcp/node_modules` if no slice carried any, and says so if it has to.
+
+  The x86_64 bundle **may be built with `MCP_NODE_MODULES=0`**: pushing ~3400 small
+  files across this share takes minutes, and its bundle is only a merge input, so
+  skipping them keeps the copy-back at ~275 files. An app built that way runs PuTTY
+  normally; only its in-app MCP bridge would need the packages installed (see the
+  `SETUP.txt` inside the bundle). Either way, what gets installed and shipped is the
+  **universal** app, and that one is complete.
+
 ---
 
 ## 1. What the Intel side produced

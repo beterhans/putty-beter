@@ -16,6 +16,12 @@
 #                           Contents/Resources/putty-mcp with a symlink from
 #                           Contents/MacOS/putty-mcp (default PuTTY); MCP_APP=
 #                           skips installing it
+#   MCP_NODE_MODULES=0      do not bundle the bridge's node_modules with it. The
+#                           app then needs its packages installed (see SETUP.txt
+#                           in the bundle); make-universal.sh puts them into the
+#                           universal app from the shared mcp/node_modules if a
+#                           slice left them out. This is what keeps an Intel
+#                           copy-back to ~275 files instead of ~3700.
 #   BUILD_DIR=...           build tree to take the binaries from (default
 #                           build-<arch>); STAGE=... where the bundles are made
 #   PUTTY_BUNDLE_LOCAL_STAGE=<dir>
@@ -834,10 +840,14 @@ install_schemas() {                     # install_schemas <name> <app>
 # bundle seal and need no individual signature. A symlink in MacOS is ignored by
 # codesign and survives ditto and the merge.
 #
-# Source only, deliberately: the two npm packages it imports are not bundled, and
-# SETUP.txt - copied in beside it - tells the human to copy the folder somewhere
-# writable and `npm install` there, because installing in place would change the
-# bundle and break its signature.
+# The dependencies are bundled with it (mcp/node_modules), so the app needs
+# nothing installed: `import '@modelcontextprotocol/sdk'` then resolves by the
+# ordinary walk-up into this same folder - no absolute paths, no global packages,
+# nothing to set up. They are pure JavaScript (measured: 0 .node files, 0 Mach-O
+# anywhere in the tree, no os/cpu-constrained packages), so the arm64 and x86_64
+# copies are byte-identical and the merge copies them through like any other text
+# file. MCP_NODE_MODULES=0 leaves them out instead, and the bundle's SETUP.txt
+# then has to tell the user to install them.
 #
 # This runs on every bundle run, including a reused tree, so the folder tracks
 # the source: a file deleted from mcp/ disappears from the bundle too.
@@ -865,12 +875,27 @@ install_mcp_bridge() {                  # install_mcp_bridge <name> <app>
     mkdir -p "$APP/$DEST/bin" "$APP/$DEST/src"
     cp "$SRC/bin/putty-mcp.mjs" "$APP/$DEST/bin/"
     cp "$SRC"/src/*.mjs "$APP/$DEST/src/"
-    # package.json/package-lock.json are what `npm install` in SETUP.txt needs;
+    # package.json/package-lock.json document what the deps are and pin them;
     # USER-MANUAL.md is read at runtime (src/manual.mjs, via ../USER-MANUAL.md),
     # so it must sit next to src/, not deeper.
     cp "$SRC/package.json" "$SRC/package-lock.json" "$APP/$DEST/"
     cp "$SRC/USER-MANUAL.md" "$SRC/README.md" "$APP/$DEST/"
     cp "$SRC/SETUP.txt" "$APP/$DEST/SETUP.txt"
+    # The dependencies, so the app needs nothing installed (see the note above).
+    # ditto, not cp: it keeps the symlinks in node_modules/.bin as symlinks.
+    if [ "${MCP_NODE_MODULES:-1}" = "1" ]; then
+        if [ -d "$SRC/node_modules" ]; then
+            log "[$name]   + its dependencies ($(find "$SRC/node_modules" \
+                -type f | wc -l | tr -d ' ') files)"
+            if ! ditto "$SRC/node_modules" "$APP/$DEST/node_modules"; then
+                log "[$name] ERROR: could not copy $SRC/node_modules"
+                return 1
+            fi
+        else
+            log "[$name] WARNING: $SRC/node_modules is missing, so the bundled"
+            log "[$name]          bridge will need its packages installed"
+        fi
+    fi
     chmod +x "$APP/$DEST/bin/putty-mcp.mjs"
     ( cd "$APP" && ln -s "../Resources/putty-mcp" "$LINK" )
     dbg "[$name] MCP bridge: $(find "$APP/$DEST" -type f | wc -l | tr -d ' ') files + ${LINK#Contents/} -> ../Resources/putty-mcp"

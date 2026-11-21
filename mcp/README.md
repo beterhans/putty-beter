@@ -56,29 +56,24 @@ for.
    }
    ```
 
-**PuTTY.app carries a copy too.** `bundle-macos.sh` installs this directory into
-every PuTTY.app it builds, at `Contents/Resources/putty-mcp` — reachable at the
-same path under `Contents/MacOS/putty-mcp`, through a symlink, because that is
-where a runnable helper is expected. It is **source only**: the npm packages are
-not bundled, because `npm install` inside the .app would change the bundle and
-break its code signature. Install them once, globally, and let the app's copy see
-them:
+**PuTTY.app carries a copy too — with its dependencies.** `bundle-macos.sh`
+installs this directory into every PuTTY.app it builds, at
+`Contents/Resources/putty-mcp` (reachable at the same path under
+`Contents/MacOS/putty-mcp`, through a symlink, because that is where a runnable
+helper is expected), together with this package's `node_modules`. So a client can
+point straight at
+`/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs`, and the
+only thing the machine needs is **Node 20 or newer**: no `npm install`, no global
+packages, no symlink to arrange. The dependencies are pure JavaScript — measured:
+0 `.node` files, 0 Mach-O, no `os`/`cpu`-constrained packages — so the copy in a
+universal build is the same for both architectures.
 
-```sh
-npm install -g '@modelcontextprotocol/sdk@^1.32.2' 'zod@^3.25.76'
-ln -s "$(npm root -g)" /Applications/node_modules
-```
-
-Node does not consult a global location by itself — it looks for `node_modules` in
-every directory *above* the file it runs — so that one symlink is what makes the
-in-app path work; nothing is written inside the app, and re-installing the app
-does not undo it. A client can then point straight at
-`/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs`. That
-copy carries `SETUP.txt`, which is steps 1–4 above with the in-bundle paths
-filled in, including the alternative that pins the exact tested versions (copy
-the folder out and `npm install` there, using the shipped `package-lock.json`).
-You do not need any of it if you have the source — but it is what makes the app
-self-describing.
+That copy carries `SETUP.txt`, which is steps 1–4 above with the in-bundle paths
+filled in. You need none of it if you have the source; it is what makes the app
+self-describing. (`MCP_NODE_MODULES=0` builds an app *without* the dependencies,
+for a machine that would rather install them itself — see SETUP.txt — and the
+merge puts them into the universal app from the shared `mcp/node_modules` if a
+slice left them out.)
 
 ## Using it without an agent
 
