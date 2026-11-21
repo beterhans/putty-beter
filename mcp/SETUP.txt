@@ -48,8 +48,13 @@ The socket only exists while at least one session is offered:
 
 3. Point the client at it
 -------------------------------------------------------------------------------
+The shortest path is this app's own copy - the script that sits next to this
+note:
+
+    /Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs
+
 For OpenCode, add this to ~/.config/opencode/opencode.json, inside the "mcp"
-object, with your own two paths (the node from step 1, and the copy):
+object, with your own node path from step 1:
 
     {
       "mcp": {
@@ -57,7 +62,7 @@ object, with your own two paths (the node from step 1, and the copy):
           "type": "local",
           "command": [
             "/opt/homebrew/bin/node",
-            "/Users/YOU/putty-mcp/bin/putty-mcp.mjs",
+            "/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs",
             "mcp"
           ]
         }
@@ -67,19 +72,22 @@ object, with your own two paths (the node from step 1, and the copy):
 Then restart OpenCode. Any other MCP client works the same way: it runs
 `<node> <...>/bin/putty-mcp.mjs mcp` and speaks MCP on stdio.
 
+Only if you made the ~/putty-mcp copy of step 1 - to update the packages
+yourself - point the client at ~/putty-mcp/bin/putty-mcp.mjs instead.
+
 
 4. Checking it without an agent
 -------------------------------------------------------------------------------
 The same program is a plain command-line client - the first thing to reach for
 when something is wrong:
 
-    node ~/putty-mcp/bin/putty-mcp.mjs list       # sessions PuTTY is offering
-    node ~/putty-mcp/bin/putty-mcp.mjs read 1     # a session's output
-    node ~/putty-mcp/bin/putty-mcp.mjs screen 1   # the visible screen
-    node ~/putty-mcp/bin/putty-mcp.mjs help
+    node /Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs list       # sessions PuTTY is offering
+    node /Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs read 1     # a session's output
+    node /Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs screen 1   # the visible screen
+    node /Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs help
 
 `list` printing nothing means no session is offered (step 2), or PuTTY is not
-running.
+running. (Or use ~/putty-mcp/bin/putty-mcp.mjs, if you made the copy above.)
 
 
 More

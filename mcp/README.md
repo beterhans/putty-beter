@@ -35,7 +35,9 @@ for.
 
 ## Setting it up
 
-1. **Build.** `scripts/build-macos.sh arm64` (or `cmake --build build-arm64`).
+1. **Get the app.** Install `PuTTY.app` — it carries the bridge — or build it
+   from a checkout: `scripts/build-macos.sh arm64` (or
+   `cmake --build build-arm64`).
 2. **Turn MCP on for a session.** In PuTTY: *Session → Automation (MCP) → Offer
    this session to an MCP client*, then Save. Tick *Also allow an MCP client to
    type into this session* as well if the agent should be able to drive it.
@@ -43,12 +45,27 @@ for.
    to anything that can reach the socket, and the second one lets it be driven.
    The settings are read when the window is created, so **reopen the session**
    after changing them.
-3. **Install the bridge's dependencies** (once):
+3. **Point your MCP client at the app's copy.** The bridge travels inside
+   `PuTTY.app`, with its dependencies, so nothing has to be installed first. For
+   OpenCode, add to `~/.config/opencode/opencode.json`:
+   ```json
+   "putty-mcp": {
+     "type": "local",
+     "command": ["node",
+                 "/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs",
+                 "mcp"]
+   }
+   ```
+   The only thing the machine needs is **Node 20 or newer** (`command -v node`
+   for its full path). Nothing else: the packages sit in `node_modules` next to
+   that script, so Node finds them by itself — no `npm install`, no global
+   packages, no symlink to arrange.
+4. **Only when running it from a source checkout** — developing the bridge, or a
+   machine with no app installed — install the dependencies once and point the
+   client at the checkout instead:
    ```sh
    cd mcp && npm install
    ```
-4. **Point your MCP client at it.** For OpenCode, add to
-   `~/.config/opencode/opencode.json`:
    ```json
    "putty-mcp": {
      "type": "local",
@@ -56,17 +73,14 @@ for.
    }
    ```
 
-**PuTTY.app carries a copy too — with its dependencies.** `bundle-macos.sh`
-installs this directory into every PuTTY.app it builds, at
+**PuTTY.app carries a copy of this directory — with its dependencies.**
+`bundle-macos.sh` installs it into every PuTTY.app it builds, at
 `Contents/Resources/putty-mcp` (reachable at the same path under
 `Contents/MacOS/putty-mcp`, through a symlink, because that is where a runnable
-helper is expected), together with this package's `node_modules`. So a client can
-point straight at
-`/Applications/PuTTY.app/Contents/Resources/putty-mcp/bin/putty-mcp.mjs`, and the
-only thing the machine needs is **Node 20 or newer**: no `npm install`, no global
-packages, no symlink to arrange. The dependencies are pure JavaScript — measured:
-0 `.node` files, 0 Mach-O, no `os`/`cpu`-constrained packages — so the copy in a
-universal build is the same for both architectures.
+helper is expected), together with this package's `node_modules`. That is why
+step 3 is the whole setup, and why the dependencies are pure JavaScript —
+measured: 0 `.node` files, 0 Mach-O, no `os`/`cpu`-constrained packages — so the
+copy in a universal build is the same for both architectures.
 
 That copy carries `SETUP.txt`, which is steps 1–4 above with the in-bundle paths
 filled in. You need none of it if you have the source; it is what makes the app
