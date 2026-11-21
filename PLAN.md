@@ -117,12 +117,15 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
   `Contents/MacOS`**, the trap in `intel_arm_merge.md` §3 — is re-signed with no
   `|| true`, and the result is checked (both slices everywhere, seal, no absolute
   Homebrew path). Run end to end on the arm Mac: `PuTTY.app` and `PuTTYGen.app`
-  each 275 files / 75 Mach-O, all `x86_64 arm64`, seal valid, `lipo -archs` on the
-  launcher `x86_64 arm64`, and `PuTTYGen` generates three keys. It also packages
-  the result: **`build-universal/PuTTY-universal.dmg`**, a compressed image whose
-  volume holds both apps and an `/Applications` symlink for drag-install (verified
-  by mounting: both apps present, seal valid, universal PuTTYGen runs from the
-  mounted image). See §4m "As run on the arm Mac".
+  each 75 Mach-O, all `x86_64 arm64`, seal valid, `lipo -archs` on the launcher
+  `x86_64 arm64`, and `PuTTYGen` generates three keys. (The file counts grew as
+  things were bundled into `PuTTY.app`: 275 → 287 when the MCP bridge went in, then
+  **3703 arm64 / 3705 x86_64, 3707 merged** when its dependencies did. `PuTTYGen`
+  stays at 275.) It also packages the result:
+  **`build-universal/PuTTY-universal.dmg`**, a compressed image whose volume holds
+  both apps and an `/Applications` symlink for drag-install (verified by mounting:
+  both apps present, seal valid, universal PuTTYGen runs from the mounted image).
+  See §4m "As run on the arm Mac".
 - **Signing / notarisation — not started.** Needs an Apple Developer account, a
   hardened runtime and `notarytool`.
 

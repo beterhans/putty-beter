@@ -152,7 +152,7 @@ bundle several apps in one run. Two things follow, and both are now handled:
 
   The x86_64 bundle **may be built with `MCP_NODE_MODULES=0`**: pushing ~3400 small
   files across this share takes minutes, and its bundle is only a merge input, so
-  skipping them keeps the copy-back at ~275 files. An app built that way runs PuTTY
+  skipping them keeps the copy-back at ~287 files. An app built that way runs PuTTY
   normally; only its in-app MCP bridge would need the packages installed (see the
   `SETUP.txt` inside the bundle). Either way, what gets installed and shipped is the
   **universal** app, and that one is complete.

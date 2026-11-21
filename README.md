@@ -651,10 +651,13 @@ APPS="PuTTYGen:puttygen.bundle:puttygenapp:PuTTYGen.icns" ./scripts/bundle-macos
 mount and you did not set `STAGE=` yourself, the script stages locally instead
 (`~/Library/Caches/putty-beter/bundle-stage-<arch>`), says so, and copies the
 finished `.app`s back to `build-<arch>/bundle-stage/unix/` at the end. The copy
-back is still ~273 files per app, so it pays the mount's per-file latency too —
-measured on the Intel Mac, about **13 minutes for both apps**, against the hours
-of small *rewrites* that bundling there would take. Set `STAGE=` to choose where
-the work happens, or `PUTTY_BUNDLE_LOCAL_STAGE=` to change the cache directory.
+back is per-file either way, so it pays the mount's latency: ~275 files per app for
+the GTK closure **plus the MCP bridge's ~3400 dependency files**, which measured on
+the Intel Mac's share is about **10 minutes per app** — or ~1 minute with
+`MCP_NODE_MODULES=0`, since the merge adds the bridge's dependencies to the
+universal app from the shared `mcp/node_modules` anyway (see "Universal apps", and
+the note in `intel_arm_merge.md` §0). Set `STAGE=` to choose where the work
+happens, or `PUTTY_BUNDLE_LOCAL_STAGE=` to change the cache directory.
 
 **How long bundling takes, and why.** Bundling is not building: nothing is
 compiled. gtk-mac-bundler copies the whole GTK closure into each `.app` — about
@@ -721,11 +724,14 @@ The copy back to a network stage reports itself too, since it is the other slow
 part:
 
 ```
-[PuTTY] copying 273 files there (over a network mount this is many
+[PuTTY] copying 3705 files there (over a network mount this is many
 [PuTTY]   small round trips, not one big write)
-[PuTTY]   copy back: 172/273 files, 3m5s elapsed
-[PuTTY] copied back in 6m18s: 273 files,  41M, signature checked in the stage
+[PuTTY]   copy back: 1204/3705 files, 3m5s elapsed
+[PuTTY] copied back in 9m38s: 3705 files,  65M, signature checked in the stage
 ```
+
+(`MCP_NODE_MODULES=0` makes it ~287 files and about a minute instead — the
+universal merge supplies the dependencies.)
 
 Four things to read off it: the file count (`n/total` once a previous run has
 recorded the total, plus the peak, because gtk-mac-bundler's count *dips* as it
