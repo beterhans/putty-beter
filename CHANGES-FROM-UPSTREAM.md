@@ -1364,6 +1364,16 @@ this connection: it is triggered by `notify_session_started`, which fires when t
 main channel opens — before the server refuses the session. See §4n's "As built"
 for that, and for what the code should do about it.
 
+**In the shipped app** (built and merged on the arm Mac, 2026-11-22). Both slices of
+the universal `PuTTY.app` contain the countdown, so it is there whichever Mac runs
+it: `lipo -thin` each slice of `Contents/MacOS/PuTTY-bin` and `strings` finds the
+line in both, and the installed `/Applications/PuTTY.app` (3705 files, seal valid)
+shows the new Session box with its value of 2. The bundled app takes no session on
+the command line — it is the single-instance `puttyapp` front end, which rejects
+`-load`/`-raw` — so the countdown itself was driven from the same arm64 binary
+through `build-arm64/`, and the image is verified by mounting (`PLAN.md` §4m, "As
+run again on the arm Mac (2026-11-22)").
+
 ## Worth reporting upstream
 
 1. **`OSX_GTK` is never defined by the CMake build**, so every macOS-specific

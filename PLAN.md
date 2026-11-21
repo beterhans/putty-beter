@@ -125,10 +125,12 @@ MCP IPC) come after cheap wins (universal build, sessions) so there is always a 
    Intel build now carries **no** bridge at all — 275 files — and the merge still
    produces the same app, since arm64 is its structural authority. See §7, "The
    x86_64 bundle carries no bridge at all".) It also packages the result:
-  **`build-universal/PuTTY-universal.dmg`**, a compressed image whose volume holds
+  **`build-universal/PuTTY-mac-universal.dmg`** (`DMG_NAME=`; the script's default is
+  `PuTTY-universal.dmg`), a compressed image whose volume holds
   both apps and an `/Applications` symlink for drag-install (verified by mounting:
   both apps present, seal valid, universal PuTTYGen runs from the mounted image).
-  See §4m "As run on the arm Mac".
+  See §4m "As run on the arm Mac" — the 2026-11-22 entry has the counts as they are
+  now that the MCP bridge and the readable exit are inside the app.
 - **Signing / notarisation — not started.** Needs an Apple Developer account, a
   hardened runtime and `notarytool`.
 
@@ -1743,6 +1745,36 @@ valid seal, and the universal `PuTTYGen` generates three keys from the mounted
 volume. `MAKE_DMG=0` merges without packaging; the one-app form writes
 `<app>-universal.dmg` rather than the suite image.
 
+### As run again on the arm Mac (2026-11-22) — with the bridge and the readable exit
+
+Re-run after M9, from the per-arch bundles built the same morning (arm64 here,
+x86_64 on the Intel Mac). The merge still runs **here**, where
+`mcp/node_modules/.bin/node-which` is readable — §7's consequence. Measured from
+the image and from the two slices:
+
+```
+PuTTY.app      3705 files   75 Mach-O, every one `x86_64 arm64`   seal valid
+PuTTYGen.app    275 files   75 Mach-O, every one `x86_64 arm64`   seal valid
+               bridge in PuTTY.app only; PuTTYGen.app has none
+               the readable-exit countdown line is in BOTH slices of PuTTY-bin
+
+build-universal/PuTTY-mac-universal.dmg   65.9 MB
+$ hdiutil verify …  hdiutil: verify: checksum of "…/PuTTY-mac-universal.dmg" is VALID
+$ hdiutil attach … -nobrowse -readonly
+/Volumes/PuTTY:  PuTTY.app  PuTTYGen.app  Applications -> /Applications
+```
+
+The counts line up with §7's arithmetic exactly: the merged `PuTTY.app` is the
+arm64 slice's 3703 plus the two `hicolor/256x256/apps/*.png` that exist only in the
+x86_64 bundle (`disconnected.png`, `scrcpy.png`), and the merged `PuTTYGen.app` is
+273 + 2 the same way. `file` prints three lines for a universal binary — one
+summary and one per slice — so "225 Mach-O" is 75 binaries, not 225 files.
+`/Applications/PuTTY.app` is that same 3705-file bundle, seal valid, the countdown
+line present in both slices.
+
+`PuTTY-mac-universal.dmg` is the name `DMG_NAME` gives it in these builds; the
+script's own default is `PuTTY-universal.dmg`.
+
 ### As built on Intel (2026-11-21) — the x86_64 slice, and two bundling bugs
 
 `scripts/build-macos.sh x86_64` + `scripts/bundle-macos.sh x86_64` produce
@@ -2723,9 +2755,12 @@ crates*, not a port of PuTTY:
             image: `scripts/make-universal.sh` **run end to end on the arm Mac
             2026-11-21** — both apps 275 files / 75 Mach-O, all `x86_64 arm64`,
             seal valid, universal `PuTTYGen` generates three keys — then packaged
-            as `build-universal/PuTTY-universal.dmg` (both apps + `/Applications`
-            symlink, drag-install; mounted and verified). See PLAN §1c and §4m
-            "As run on the arm Mac".
+            as `build-universal/PuTTY-mac-universal.dmg` (`DMG_NAME=`, the name
+            these builds use; both apps + `/Applications` symlink, drag-install;
+            mounted and verified). **Re-run 2026-11-22** to pick up the MCP bridge
+            and M9: `PuTTY.app` 3705 files, `PuTTYGen.app` 275, both `x86_64
+            arm64`, seal valid, the countdown line present in *both* slices. See
+            PLAN §1c and §4m "As run on the arm Mac".
 - [x] **M9** — a readable exit: hold the window open for a two-second countdown
       before closing, so the reason a session dropped can be read (§4n, and
       "4n as built" for the decisions, the tests and what the SSH log showed)

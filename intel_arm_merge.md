@@ -112,7 +112,8 @@ bundle several apps in one run. Two things follow, and both are now handled:
   ```
 
   Defaults: `build-arm64/bundle-stage/unix` + `build-x86_64/bundle-stage/unix` →
-  `build-universal/<name>.app`, then `build-universal/PuTTY-universal.dmg`. It
+  `build-universal/<name>.app`, then the disk image (`PuTTY-mac-universal.dmg` in
+  these builds, via `DMG_NAME=`; the script's default is `PuTTY-universal.dmg`). It
   walks the arm64 bundle as the structural authority, `lipo -create`s every Mach-O
   that has a counterpart, copies non-Mach-O through (noting the ones that differ —
   §4's six), **fails loudly** on a Mach-O that exists in only one slice, re-signs
@@ -612,8 +613,8 @@ any fails; this section is what you run by hand to see the evidence.)
 For the disk image, the by-hand check is to mount it and look:
 
 ```sh
-hdiutil verify build-universal/PuTTY-universal.dmg
-MP=$(hdiutil attach build-universal/PuTTY-universal.dmg -nobrowse -readonly \
+hdiutil verify build-universal/PuTTY-mac-universal.dmg
+MP=$(hdiutil attach build-universal/PuTTY-mac-universal.dmg -nobrowse -readonly \
         | grep -o '/Volumes/.*' | head -1)
 ls -la "$MP"                 # PuTTY.app  PuTTYGen.app  Applications -> /Applications
 codesign --verify --deep --strict "$MP/PuTTYGen.app"
@@ -716,15 +717,25 @@ need rebuilding anyway because the version strings changed after they were built
       crash fix is in — that is the check that it landed.
 - [ ] Record `lipo -archs` of each slice's `Contents/MacOS/<exe>-bin`:
       `build-arm64/…` → `arm64`, `build-x86_64/…` → `x86_64`, for **both** apps.
-- [x] `build-universal/PuTTY-universal.dmg` exists from 2026-11-21, and §7 was run
+- [x] `build-universal/PuTTY-mac-universal.dmg` exists from 2026-11-21, and §7 was run
       clean (image mounted, both apps present, seal valid, universal `PuTTYGen`
       runs from the mounted volume). **Both slices must be rebuilt and the merge
       re-run** so the result is one version (`0.85-beter.1`, §8) *and* carries the
       crash fix. The Intel Mac's current x86_64 bundles already have the fix.
-- [ ] Run `./scripts/make-universal.sh` **on the arm Mac**: the merged app's
+- [x] **Done 2026-11-22**: both slices rebuilt with the MCP bridge and M9 in them,
+      the merge re-run on the arm Mac, and the image re-verified — `PuTTY.app` 3705
+      files / `PuTTYGen.app` 275, 75 Mach-O each, all `x86_64 arm64`, seal valid,
+      the readable-exit countdown line in **both** slices. Measurements in
+      `PLAN.md` §4m, "As run again on the arm Mac (2026-11-22)".
+- [x] Run `./scripts/make-universal.sh` **on the arm Mac**: the merged app's
       `Contents/MacOS/putty-mcp` is a symlink that comes from the arm64 bundle
       (x86_64 carries no bridge), and this SMB mount cannot read symlinks at all.
-- [ ] Work through §7 for each app, then re-make the `.dmg`.
+      **Done 2026-11-22** — the merged app has that symlink, and the same one
+      inside `Resources/putty-mcp/node_modules/.bin/`.
+- [ ] Work through §7 for each app, then re-make the `.dmg`. **The arm-Mac half is
+      done**: the image was re-made and re-verified, and the *installed* universal
+      `PuTTY.app` was launched here natively (`lipo -archs` = `x86_64 arm64`,
+      config box photographed with the readable-exit box in it).
 - [ ] Launch both results on the arm Mac **and** hand them back to the Intel Mac to
       launch — the universal `PuTTYGen` was launched on the arm Mac (generates
       three keys); **the Intel-side launch is still to do**, and it is the only

@@ -812,14 +812,17 @@ result:
 
 It pairs every Mach-O in an app with its counterpart in the other arch and
 `lipo -create`s them, so `PuTTY.app` and `PuTTYGen.app` each come out universal
-(`x86_64 arm64`) and run natively on either Mac. It then writes
-`build-universal/PuTTY-universal.dmg`, a disk image whose volume holds both apps
-and a symlink to `/Applications` — open it, drag both apps across, done.
+(`x86_64 arm64`) and run natively on either Mac. It then writes a disk image whose
+volume holds both apps and a symlink to `/Applications` — open it, drag both apps
+across, done. The name is `DMG_NAME`'s business: these builds make
+**`build-universal/PuTTY-mac-universal.dmg`** (on the command line,
+`DMG_NAME=PuTTY-mac-universal.dmg`), where the script's own default is
+`PuTTY-universal.dmg`.
 
 | What | Where |
 |---|---|
 | Universal apps | `build-universal/PuTTY.app`, `build-universal/PuTTYGen.app` |
-| Disk image | `build-universal/PuTTY-universal.dmg` |
+| Disk image | `build-universal/PuTTY-mac-universal.dmg` |
 
 The image is a plain compressed (`UDZO`) image — no background picture and no
 icon layout, which would need a mounted, Finder-arranged volume and buy nothing
@@ -914,7 +917,7 @@ Notes for the Intel path, since it is the one with the moving parts:
 * Merging the two architectures into universal apps and building the installer
   disk image is one command — `scripts/make-universal.sh` (PLAN §1c / M8e). It
   merges **four** bundles into two universal apps and packages them as
-  `build-universal/PuTTY-universal.dmg`; see "Universal apps, and the disk
+  `build-universal/PuTTY-mac-universal.dmg`; see "Universal apps, and the disk
   image" above.
 * Cross-building on Apple Silicon depends on Rosetta being present, and Apple has
   been retiring it; the native arm64 build does not.
