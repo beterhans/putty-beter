@@ -114,6 +114,11 @@ typedef struct XpmHolder XpmHolder;    /* only used for GTK 1 */
 
 struct GtkFrontend {
     GtkWidget *window, *area, *sbar;
+    /*
+     * PuTTY-beter: the readable-exit countdown line, below the terminal (PLAN.md
+     * section 4n). Hidden until a session ends and the window is about to close.
+     */
+    GtkWidget *exit_status;
     gboolean sbar_visible;
     gboolean drawing_area_got_size, drawing_area_realised;
     gboolean drawing_area_setup_needed;
@@ -249,6 +254,17 @@ struct GtkFrontend {
     bool sesspass_offered;             /* the "remember it?" dialog has run */
     LogContext *logctx;
     bool exited;
+    /*
+     * PuTTY-beter: the readable exit (PLAN.md section 4n). When a session ends
+     * and close_on_exit says the window goes, the window is held for a short
+     * countdown first, so that the last thing the session printed - the server's
+     * banner and its reason for dropping the connection - can be read before it
+     * disappears. exit_countdown_source is the GLib timeout driving the
+     * countdown, 0 when none is running; exit_countdown_secs is what is left of
+     * it. Both are only ever touched from the GTK main loop.
+     */
+    guint exit_countdown_source;
+    int exit_countdown_secs;
     struct unicode_data ucsdata;
     Conf *conf;
     eventlog_stuff *eventlogstuff;
@@ -328,6 +344,8 @@ static void cache_conf_values(GtkFrontend *inst)
 
 static void start_backend(GtkFrontend *inst);
 static void exit_callback(void *vinst);
+static void exit_countdown_start(GtkFrontend *inst, int secs);
+static void exit_countdown_cancel(GtkFrontend *inst);
 static void destroy_inst_connection(GtkFrontend *inst);
 static void delete_inst(GtkFrontend *inst);
 
@@ -484,6 +502,14 @@ int platform_default_i(const char *name, int def)
 {
     if (!strcmp(name, "CloseOnExit"))
         return 2;  /* maps to FORCE_ON after painful rearrangement :-( */
+    /*
+     * PuTTY-beter: the readable exit (PLAN.md section 4n). pterm has no
+     * configuration panel and no saved sessions, so its user could never turn
+     * the hold off again; it keeps upstream's behaviour and closes at once.
+     * PuTTY itself gets the two seconds conf.h asks for.
+     */
+    if (!strcmp(name, "CloseOnExitDelay") && !saved_sessions)
+        return 0;
     return def;
 }
 
@@ -3413,6 +3439,15 @@ static gboolean button_internal(GtkFrontend *inst, GdkEventButton *event)
     bool shift, ctrl, alt, raw_mouse_mode;
     int x, y, button, act;
 
+    /*
+     * PuTTY-beter: the readable exit (PLAN.md section 4n). A click during the
+     * countdown keeps the window open, like a keypress does. Checked before
+     * anything else so that a click meant for the terminal cannot be eaten by
+     * the countdown's own bookkeeping.
+     */
+    if (event->type == GDK_BUTTON_PRESS)
+        exit_countdown_cancel(inst);
+
     /* Remember the timestamp. */
     inst->input_event_time = event->time;
 
@@ -3581,6 +3616,18 @@ gint motion_event(GtkWidget *widget, GdkEventMotion *event, gpointer data)
 static void key_pressed(GtkFrontend *inst)
 {
     /*
+     * PuTTY-beter: the readable exit (PLAN.md section 4n). While the window is
+     * being held open by the countdown, the first keypress cancels it and leaves
+     * the window - that is the point of the hold, so the message can be read and
+     * copied. A later keypress closes the window as it always did, so the
+     * "terminate on any keypress" feature below is only delayed, not lost.
+     */
+    if (inst->exit_countdown_source) {
+        exit_countdown_cancel(inst);
+        return;
+    }
+
+    /*
      * If our child process has exited but not closed, terminate on
      * any keypress.
      *
@@ -3597,6 +3644,120 @@ static void key_pressed(GtkFrontend *inst)
         gtk_widget_destroy(inst->window);
 }
 
+/*
+ * PuTTY-beter: runtime trace for the readable exit (PLAN.md section 4n). Set
+ * PUTTY_BETER_DEBUG=exit in PuTTY's environment for the close decision on
+ * stderr: which path fired, the exit code, the delay, whether a keystroke
+ * cancelled the countdown. The fork's other traces follow the same pattern
+ * (PUTTY_DIAG, PUTTY_MCP_DEBUG, ...).
+ */
+static int exit_debug_flag = -1;
+static bool exit_debug(void)
+{
+    if (exit_debug_flag < 0) {
+        const char *p = getenv("PUTTY_BETER_DEBUG");
+        exit_debug_flag = (p != NULL && strstr(p, "exit") != NULL);
+    }
+    return exit_debug_flag;
+}
+#define EXIT_TRACE(...) do {                                    \
+        if (exit_debug()) {                                     \
+            fprintf(stderr, "putty-exit: " __VA_ARGS__);        \
+            fputc('\n', stderr);                                \
+            fflush(stderr);                                     \
+        }                                                       \
+    } while (0)
+
+static void exit_countdown_draw(GtkFrontend *inst)
+{
+    char buf[128];
+
+    if (!inst->exit_status)
+        return;
+
+    sprintf(buf, "The session has ended.  This window closes in %d second%s."
+            "  Press any key to keep it open.",
+            inst->exit_countdown_secs,
+            inst->exit_countdown_secs == 1 ? "" : "s");
+    gtk_label_set_text(GTK_LABEL(inst->exit_status), buf);
+}
+
+static gboolean exit_countdown_tick(void *vctx)
+{
+    GtkFrontend *inst = (GtkFrontend *)vctx;
+
+    if (--inst->exit_countdown_secs <= 0) {
+        EXIT_TRACE("countdown reached zero: destroying the window");
+        /*
+         * Clear the id first: gtk_widget_destroy runs the window's "destroy"
+         * handler synchronously, and that must not try to remove a source that
+         * has already returned false.
+         */
+        inst->exit_countdown_source = 0;
+        gtk_widget_destroy(inst->window);
+        return false;
+    }
+
+    exit_countdown_draw(inst);
+    return true;                       /* keep the countdown running */
+}
+
+static void exit_countdown_start(GtkFrontend *inst, int secs)
+{
+    if (!inst->window || !inst->exit_status) {
+        /* Nothing to hold the window with; close as upstream would. */
+        gtk_widget_destroy(inst->window);
+        return;
+    }
+
+    inst->exit_countdown_secs = secs;
+    exit_countdown_draw(inst);
+    gtk_widget_show(inst->exit_status);
+    inst->exit_countdown_source = g_timeout_add(1000, exit_countdown_tick, inst);
+    EXIT_TRACE("holding the window for %d second%s (source %u)",
+               secs, secs == 1 ? "" : "s", inst->exit_countdown_source);
+}
+
+static void exit_countdown_cancel(GtkFrontend *inst)
+{
+    if (!inst->exit_countdown_source)
+        return;
+
+    EXIT_TRACE("a keystroke or click cancelled the countdown: the window stays "
+               "open (%d second%s were left)",
+               inst->exit_countdown_secs,
+               inst->exit_countdown_secs == 1 ? "" : "s");
+    g_source_remove(inst->exit_countdown_source);
+    inst->exit_countdown_source = 0;
+
+    if (inst->exit_status) {
+        /*
+         * Say what happened rather than going blank: the line is the only sign
+         * that the hold was cancelled and the window is now staying.
+         */
+        gtk_label_set_text(GTK_LABEL(inst->exit_status),
+                           "The session has ended.  The window has been kept"
+                           " open; press any key to close it.");
+    }
+}
+
+/*
+ * Drop the countdown and hide its line, for a window that is being restarted
+ * rather than closed.
+ */
+static void exit_countdown_clear(GtkFrontend *inst)
+{
+    if (inst->exit_countdown_source) {
+        g_source_remove(inst->exit_countdown_source);
+        inst->exit_countdown_source = 0;
+    }
+    inst->exit_countdown_secs = 0;
+    if (inst->exit_status) {
+        gtk_label_set_text(GTK_LABEL(inst->exit_status), "");
+        gtk_widget_hide(inst->exit_status);
+    }
+}
+
 static void exit_callback(void *vctx)
 {
     GtkFrontend *inst = (GtkFrontend *)vctx;
@@ -3609,7 +3770,26 @@ static void exit_callback(void *vctx)
         close_on_exit = conf_get_int(inst->conf, CONF_close_on_exit);
         if (close_on_exit == FORCE_ON ||
             (close_on_exit == AUTO && exitcode == 0)) {
-            gtk_widget_destroy(inst->window);
+            /*
+             * PuTTY-beter: the readable exit (PLAN.md section 4n). Rather than
+             * destroying the window at once, hold it for a short countdown, so
+             * that whatever the session printed as it went - a banner, the
+             * server's reason for dropping the connection - stays on screen long
+             * enough to be read. Any keystroke or click cancels the countdown
+             * and leaves the window open. A delay of 0 destroys the window
+             * immediately, exactly as upstream does.
+             */
+            int delay = conf_get_int(inst->conf, CONF_close_on_exit_delay);
+
+            EXIT_TRACE("session ended: exit code %d, CloseOnExit %d, delay %d",
+                       exitcode, close_on_exit, delay);
+
+            if (delay > 0) {
+                exit_countdown_start(inst, delay);
+            } else {
+                EXIT_TRACE("no delay: destroying the window now");
+                gtk_widget_destroy(inst->window);
+            }
         }
     }
 }
@@ -3642,6 +3822,19 @@ static void destroy_inst_connection(GtkFrontend *inst)
 static void delete_inst(GtkFrontend *inst)
 {
     int dialog_slot;
+
+    /*
+     * PuTTY-beter: stop the readable-exit countdown first (PLAN.md section 4n).
+     * Its timeout holds this GtkFrontend as its user data, so a source left
+     * running past this point would fire on freed memory. Clearing the id
+     * before removing means a tick that is destroying the window from inside
+     * the callback does not try to remove a source that has already gone.
+     */
+    if (inst->exit_countdown_source) {
+        g_source_remove(inst->exit_countdown_source);
+        inst->exit_countdown_source = 0;
+    }
+
     for (dialog_slot = 0; dialog_slot < DIALOG_SLOT_LIMIT; dialog_slot++) {
         if (inst->dialogs[dialog_slot]) {
             gtk_widget_destroy(inst->dialogs[dialog_slot]);
@@ -6372,6 +6565,12 @@ void restart_session_menuitem(GtkMenuItem *item, gpointer data)
 
     if (!inst->backend) {
         logevent(inst->logctx, "----- Session restarted -----");
+        /*
+         * PuTTY-beter: a session that ended and was held open by the readable
+         * exit countdown is being started again, so take the countdown line back
+         * down (PLAN.md section 4n).
+         */
+        exit_countdown_clear(inst);
         term_pwron(inst->term, false);
         start_backend(inst);
         inst->exited = false;
@@ -7042,7 +7241,20 @@ void new_session_window(Conf *conf, const char *geometry_string)
     if (!conf_get_bool(inst->conf, CONF_scrollbar_on_left))
         gtk_box_pack_start(inst->hbox, inst->sbar, false, false, 0);
 
-    gtk_container_add(GTK_CONTAINER(inst->window), GTK_WIDGET(inst->hbox));
+    /*
+     * PuTTY-beter: the readable-exit countdown line (PLAN.md section 4n) sits
+     * below the terminal, so the hold does not have to write into the terminal
+     * itself and disturb what it printed. It stays hidden until a session ends.
+     */
+    {
+        GtkWidget *vbox = gtk_vbox_new(false, 0);
+        inst->exit_status = gtk_label_new(NULL);
+        gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(inst->hbox), true, true, 0);
+        gtk_box_pack_start(GTK_BOX(vbox), inst->exit_status, false, false, 2);
+        gtk_container_add(GTK_CONTAINER(inst->window), vbox);
+        gtk_widget_show(vbox);
+        /* inst->exit_status itself is shown only when it has something to say */
+    }
 
     gtk_widget_show(inst->area);
     show_scrollbar(inst, conf_get_bool(inst->conf, CONF_scrollbar));

@@ -2336,6 +2336,19 @@ void setup_config_box(struct controlbox *b, bool midsession,
                       "Always", I(FORCE_ON),
                       "Never", I(FORCE_OFF),
                       "Only on clean exit", I(AUTO));
+    /*
+     * PuTTY-beter: the readable exit (PLAN.md section 4n). When those radio
+     * buttons say to close the window, hold it for a short countdown first, so
+     * that the reason a session dropped - a banner, a server's message - can be
+     * read before it goes. 0 means "close at once", exactly as upstream does.
+     */
+    ctrl_editbox(s, "Seconds to hold the window open first (0 = close at once):",
+                 NO_SHORTCUT, 20, HELPCTX(session_coe),
+                 conf_editbox_handler, I(CONF_close_on_exit_delay), ED_INT);
+    ctrl_text(s, "(How long the window stays on screen after the session ends,"
+              " so you can read the last thing it printed. Any keystroke or"
+              " click during that time keeps the window open instead.)",
+              HELPCTX(no_help));
 
     /*
      * The Load/Save panel is available even in mid-session.

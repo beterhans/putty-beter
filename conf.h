@@ -59,6 +59,17 @@ CONF_OPTION(close_on_exit,
     SAVE_KEYWORD("CloseOnExit"),
     STORAGE_ENUM(off_auto_on),
 )
+CONF_OPTION(close_on_exit_delay,
+    VALUE_TYPE(INT), /* in seconds */
+    /*
+     * PuTTY-beter: hold the window open for this many seconds when
+     * close_on_exit says to close it, so that whatever the session printed on
+     * its way out can be read. 0 closes at once, exactly as upstream does.
+     * See PLAN.md section 4n, "A readable exit".
+     */
+    DEFAULT_INT(2),
+    SAVE_KEYWORD("CloseOnExitDelay"),
+)
 CONF_OPTION(warn_on_close,
     VALUE_TYPE(BOOL),
     DEFAULT_BOOL(true),
