@@ -397,29 +397,9 @@ explicitly rather than losing output silently.
 
 **Setting it up:**
 
-```sh
-# once, for the bridge's dependencies
-cd mcp && npm install
-
-# and rebuild the app: the server is compiled into the front end, so a
-# PuTTY.app built before this change will not have it
-scripts/build-macos.sh arm64 && scripts/bundle-macos.sh arm64
-```
-
-then add to `~/.config/opencode/opencode.json`:
-
-```json
-"putty-mcp": {
-  "type": "local",
-  "command": ["node", "/path/to/putty-beter/mcp/bin/putty-mcp.mjs", "mcp"]
-}
-```
-
-`PuTTY.app` also carries a copy of the bridge — **with its dependencies**, so the
-app is self-sufficient: `bundle-macos.sh` installs it at
-`Contents/Resources/putty-mcp`, reachable as `Contents/MacOS/putty-mcp` through a
-symlink, together with the bridge's `node_modules`. The client then points
-straight at the app's own script:
+Install the app — the bridge and its dependencies travel inside `PuTTY.app`, so
+there is nothing else to install — then add to
+`~/.config/opencode/opencode.json`:
 
 ```json
 "putty-mcp": {
@@ -428,14 +408,39 @@ straight at the app's own script:
 }
 ```
 
-and the only thing the machine needs is **Node 20 or newer** — no `npm install`,
-no global packages, no paths to arrange. (The dependencies are pure JavaScript —
-0 `.node` files, 0 Mach-O, no `os`/`cpu`-constrained packages — so one copy serves
-both architectures, and the universal build carries a single copy.) `SETUP.txt` in
-the app spells this out. `MCP_NODE_MODULES=0` builds an app *without* them, which
-is how the Intel side keeps its copy-back at minutes instead of an hour; the merge
-then adds them to the universal app from the shared `mcp/node_modules`, and says so
-if neither slice had them.
+`PuTTY.app` is self-sufficient because `bundle-macos.sh` installs a copy of the
+bridge — **with its dependencies** — at `Contents/Resources/putty-mcp`, reachable
+as `Contents/MacOS/putty-mcp` through a symlink, together with the bridge's
+`node_modules`. So the only thing the machine needs is **Node 20 or newer** — no
+`npm install`, no global packages, no paths to arrange. (The dependencies are pure
+JavaScript — 0 `.node` files, 0 Mach-O, no `os`/`cpu`-constrained packages — so one
+copy serves both architectures, and the universal build carries a single copy.)
+`SETUP.txt` in the app spells this out. `MCP_NODE_MODULES=0` builds an app
+*without* them, which is how the Intel side keeps its copy-back at minutes
+instead of an hour; the merge then adds them to the universal app from the shared
+`mcp/node_modules`, and says so if neither slice had them.
+
+Working from a source checkout instead, the client points at the checkout's own
+script, and there are two more steps — the bridge's dependencies, and a rebuild,
+because the server is compiled into the front end, so a `PuTTY.app` built before
+this change will not have it:
+
+```sh
+# once, for the bridge's dependencies
+cd mcp && npm install
+
+# the server is compiled into the front end, so an older PuTTY.app has none
+scripts/build-macos.sh arm64 && scripts/bundle-macos.sh arm64
+```
+
+and point the client at the checkout's script instead:
+
+```json
+"putty-mcp": {
+  "type": "local",
+  "command": ["node", "/path/to/putty-beter/mcp/bin/putty-mcp.mjs", "mcp"]
+}
+```
 
 The in-app symlink is not decoration: macOS treats everything under
 `Contents/MacOS` as code, and a bundle with unsigned non-code files there does not
@@ -846,6 +851,17 @@ Notes for the Intel path, since it is the one with the moving parts:
   verification list, and `bundle-macos.sh` signs *and* verifies each app.
 * **Each machine needs its own `tools/gtk-mac-bundler`** — it is not in the
   repository (GPL, gitignored). See [`tools/README.md`](tools/README.md).
+* **The Intel bundle carries no MCP bridge.** `bundle-macos.sh` skips it when
+  `ARCH=x86_64`: `mcp/node_modules` contains a symlink (npm's `.bin/node-which`
+  shim), and from the Intel Mac this tree is on an SMB share, where a symlink
+  **cannot be read at all** — `readlink`, `stat -L` and `cp -L` all fail with
+  `EINVAL`, and only `lstat` works — so no copy tool can reproduce one, and
+  `ditto` aborted the whole bundle run. The x86_64 bundle is a merge input only
+  (measured: 275 files per app, against arm64's 3703), so this costs the shippable
+  app nothing: the merged app gets the bridge and its dependencies from the arm64
+  slice, which `make-universal.sh` treats as its structural authority. One
+  consequence — the merge must run where symlinks are readable, i.e. on the arm
+  Mac. [`PLAN.md`](PLAN.md) §7 has the detail.
 * **A build directory cannot be moved between machines** that hold the repo at
   different paths (CMake records the source path). Both scripts detect that and
   tell you to re-run with `--clean`. `BUILD_DIR=`/`STAGE=` let you put the build

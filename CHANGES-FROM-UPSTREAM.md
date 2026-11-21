@@ -1264,12 +1264,24 @@ identical and one copy serves both architectures in the universal build.
 
 `MCP_NODE_MODULES=0` builds an app *without* them; `make-universal.sh` then adds
 them to the merged app from the shared `mcp/node_modules` if no slice carried them
-(it says so, rather than shipping a bridge that cannot load). That is how the Intel
-side avoids pushing 3400 small files across its SMB mount — minutes — in the common
-case where its own copy is only a merge input. `mcp/SETUP.txt`, installed beside
-the code, states the result: Node 20 or newer is all a user needs. `MCP_APP=`
-(default `PuTTY`) chooses which app gets the bridge; `PuTTYGen.app` has no MCP
-server, so it gets none.
+(it says so, rather than shipping a bridge that cannot load).
+
+**The x86_64 build carries no bridge at all** (2026-11-21). `bundle-macos.sh` skips
+it when `ARCH=x86_64`, so that bundle is 275 files per app, against arm64's 3703.
+The reason is not size: `mcp/node_modules` contains a symlink (npm's
+`.bin/node-which` shim), and the Intel Mac reads this tree over SMB, where **a
+symlink cannot be read at all** — `readlink`, `stat -L`, `open` and `cp -L` all
+fail with `EINVAL`, and only `lstat` works — so no copy tool can reproduce one, and
+`ditto` aborted the whole bundle run
+(`ditto: …/.bin/node-which: Invalid argument`). Special-casing that one link was not
+worth it, because the x86_64 bundle is a merge input only: `make-universal.sh` takes
+the **arm64** bundle as its structural authority, so the merged app still gets the
+bridge and its dependencies, from the arm64 slice. One consequence: the merge must
+run where symlinks are readable — the **arm Mac**.
+
+`mcp/SETUP.txt`, installed beside the code, states the result: Node 20 or newer is
+all a user needs. `MCP_APP=` (default `PuTTY`) chooses which app gets the bridge;
+`PuTTYGen.app` has no MCP server, so it gets none.
 
 ## Worth reporting upstream
 

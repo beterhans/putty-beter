@@ -38,6 +38,57 @@ in §1 and §7 of this document grow a second app.
 
 ## 0. Update — 2026-11-21, Intel Mac: two apps, and the merge script exists
 
+> ### ⚠️ 2026-11-22 — read this first: `unix/dialog.c` must be fixed before you rebuild arm64
+>
+> **The arm64 app crashes on ~1 launch in 3, for the same reason the Intel app
+> did, and the fix is not committed.** Full write-up: **`CONFIG_BOX_CRASH.md`**
+> in the project root.
+>
+> **What it was.** `unix/dialog.c` read a `G_TYPE_BOOLEAN` model column into a
+> `bool` — which in PuTTY is C99 `_Bool`, **1 byte**, while GLib's `gboolean` is
+> **4**. `gtk_tree_model_get()` therefore wrote 4 bytes into a 1-byte object,
+> smashing 3 bytes past it; with the wrong stack layout that zeroed the low three
+> bytes of an adjacent pointer (every crash showed a key like
+> `0x7fXXXXXX000000`), and GTK's cell-attribute code then dereferenced it while
+> the configuration box was measured. Two sites: `listbox_folder_weight()`
+> (`dialog.c:801`, called for **every session-list row**) and the drag-and-drop
+> hit test (`dialog.c:1088`). Fixed by making both `gboolean`; pre-fix backup
+> `unix/dialog.c-12.old`.
+>
+> **It fired on every launch, not one in three** — it either died at once or
+> survived printing exactly 5 `GLib-GObject-CRITICAL`s. Only the outcome was
+> random, so it looked intermittent. Verified after the fix, on the Intel Mac:
+> plain binary 8/8 clean, bundled `PuTTY.app` 8/8 clean with **0 new crash
+> reports**, Finder `open` 4/4 running (before: 3 of 8 crashed).
+>
+> **So, on the arm Mac, in this order:**
+>
+> 1. get `unix/dialog.c` (it is **uncommitted** in the shared tree — see below);
+> 2. `./scripts/build-macos.sh arm64`, then `./scripts/bundle-macos.sh arm64`.
+>    **Expect the fix**: a clean run should print no `GLib-GObject-CRITICAL`
+>    from the config box at all. If it still prints them, the arm build has not
+>    picked the change up.
+> 3. `./scripts/make-universal.sh` **on the arm Mac** — see the MCP bullet below
+>    for why it cannot be run here.
+>
+> **Uncommitted in the shared working tree, as of 2026-11-22 (HEAD is `ec9b70d`)**
+> — `git status` before committing, so the two sides' work does not land in one
+> unexplained commit:
+>
+> | File | State | What it is |
+> |---|---|---|
+> | `unix/dialog.c` | modified | **the crash fix** — `bool is_folder` → `gboolean is_folder`, two sites |
+> | `scripts/bundle-macos.sh` | modified | MCP is never bundled on x86_64 (3 hunks; see below) |
+> | `intel_arm_merge.md` | modified | this document |
+> | `PLAN.md` | modified | phase 1b/1c status, §4m "As built on Intel", M8/M8e |
+> | `CONFIG_BOX_CRASH.md` | **new** | the crash post-mortem |
+> | `scripts/bundle-macos-fresh.sh` | **new, stray** | byte-identical to the arm side's `bundle-macos.sh` at 19:40, referenced nowhere — a leftover snapshot, not mine; delete it if it is not wanted |
+>
+> Backups made while working (`*.old`) are not tracked: `scripts/bundle-macos.sh-05..07.old`,
+> `unix/dialog.c-12.old`.
+>
+> ---
+
 **Everything below §0 was written for one app.** Since then the arm side built the
 GTK PuTTYgen front end (`PLAN.md` §4m) and rewrote `scripts/bundle-macos.sh` to
 bundle several apps in one run. Two things follow, and both are now handled:
@@ -142,20 +193,33 @@ bundle several apps in one run. Two things follow, and both are now handled:
   (`unix/osxlaunch.c` execs `<its own path>-bin`), so `Contents/MacOS/PuTTY` and
   `Contents/MacOS/PuTTYGen` are byte-identical launchers and merge cleanly.
 
-* **The MCP bridge, and its dependencies (2026-11-21).** `bundle-macos.sh` copies
-  `mcp/` into `PuTTY.app` at `Contents/Resources/putty-mcp` — with a symlink from
+* **The MCP bridge: arm64 only (2026-11-21).** `bundle-macos.sh` copies `mcp/`
+  into `PuTTY.app` at `Contents/Resources/putty-mcp` — with a symlink from
   `Contents/MacOS/putty-mcp`, because macOS will not seal non-code files under
   `MacOS` — *together with the bridge's `node_modules`*. Those are pure JavaScript
-  (0 `.node`, 0 Mach-O), so they are identical on both arches and one copy serves
-  both in the merged app; the merge supplies them from the shared
-  `mcp/node_modules` if no slice carried any, and says so if it has to.
+  (0 `.node`, 0 Mach-O), so they are identical on both arches, and the merged app
+  **takes them from the arm64 slice**: `make-universal.sh` walks the arm64 bundle
+  as its structural authority, so anything only arm64 has is carried over.
 
-  The x86_64 bundle **may be built with `MCP_NODE_MODULES=0`**: pushing ~3400 small
-  files across this share takes minutes, and its bundle is only a merge input, so
-  skipping them keeps the copy-back at ~287 files. An app built that way runs PuTTY
-  normally; only its in-app MCP bridge would need the packages installed (see the
-  `SETUP.txt` inside the bundle). Either way, what gets installed and shipped is the
-  **universal** app, and that one is complete.
+  The **x86_64 bundle does not contain the bridge at all** — measured 275 files,
+  against 287 + ~3400 `node_modules` files on arm64. Two reasons, the second
+  decisive:
+
+  1. pushing ~3400 small files across this share takes minutes, and the x86_64
+     bundle is only a merge input;
+  2. `mcp/node_modules` contains a symlink (npm's `.bin/node-which` CLI shim), and
+     **this SMB mount cannot read symlinks at all**: `readlink`, `stat -L`, `open`
+     and `cp -L` all fail with `EINVAL`, only `lstat` works, so *no* copy tool can
+     reproduce one. `ditto` therefore aborted the whole bundle run on the Intel
+     Mac (`ditto: …/.bin/node-which: Invalid argument`). Rather than special-case
+     that one link, the Intel build leaves the bridge out.
+
+  `MCP_APP=` still means "no app carries it", but on x86_64 the bridge is never
+  installed whatever `MCP_APP` says. **Consequence for the merge:** the merged
+  app's `Contents/MacOS/putty-mcp` is a symlink that comes from the arm64 bundle,
+  and the merge copies it with `cp -P` — so the merge must run **where symlinks are
+  readable, i.e. on the arm Mac**, not on the Intel Mac against the share. An
+  `EINVAL` on a symlink under `putty-mcp` during a merge is that, exactly.
 
 ---
 
@@ -222,6 +286,7 @@ and both Intel slices, before any merging:
 ```sh
 git log -1 --format='%h %s'                 # expect a 2026-11-21 commit or later
 grep -n 'stray_root_entries\|clear_app' scripts/bundle-macos.sh   # the §0 fixes
+grep -n 'gboolean is_folder' unix/dialog.c  # the 2026-11-22 crash fix: expect TWO hits
 for n in PuTTY PuTTYGen; do
     a="build-x86_64/bundle-stage/unix/$n.app"
     test -d "$a" && echo "$n slice: present"
@@ -306,6 +371,14 @@ are both 275 files / 75 Mach-O — and is unchanged. The arm64 column is the
 after the rebuild in §2. The per-app file sets differ only in the three
 app-specific paths — launcher, `-bin`, `.icns` — so these totals apply to either
 app.)*
+
+**These totals are the GTK closure only — they predate the MCP bridge.** With the
+bridge bundled (§0), arm64 is ~3703 files and x86_64 stays at 275 (the bridge is
+not installed there at all). So the totals are no longer a useful comparison:
+what the merge actually requires is that the **Mach-O sets match one to one — 75
+each, same relative paths** — which is what `make-universal.sh` checks. Everything
+the bridge adds is non-Mach-O and exists on one side only, which is the case the
+merge copies through.
 
 | | arm64 | x86_64 |
 |---|---|---|
@@ -628,31 +701,40 @@ slice, which is the end-to-end check that the Intel side is real.
 
 ## 9. Checklist for the arm Mac side
 
-- [ ] Confirm you have the fixes and both Intel slices — run the check in §1a.
-      **See §0 first**: the x86_64 slices were rebuilt 2026-11-21 and
-      `bundle-macos.sh` changed again.
-- [ ] `./scripts/build-macos.sh arm64` — record the revision and toolchain.
-- [ ] `./scripts/bundle-macos.sh arm64` — **there is no arm64 bundle at all right
-      now** (`build-arm64/` was deleted, §2); on the arm Mac the repo is on local
-      disk, so this takes minutes, not hours.
+Order matters now: item 1 is a **bug fix the arm64 build needs**, and both slices
+need rebuilding anyway because the version strings changed after they were built.
+
+- [ ] **Take the `unix/dialog.c` crash fix** (uncommitted: `bool is_folder` →
+      `gboolean is_folder`, two sites) — §0's 2026-11-22 block and
+      `CONFIG_BOX_CRASH.md`. Without it the app crashes on ~1 launch in 3, on
+      **both** architectures.
+- [ ] Run the §1a sanity check — it greps for that fix, so you can see at once
+      whether you have it.
+- [ ] `./scripts/build-macos.sh arm64`, then `./scripts/bundle-macos.sh arm64`
+      (there is no arm64 bundle at all, §2; on the arm Mac this is minutes, not
+      hours). **Expect no `GLib-GObject-CRITICAL` from the config box** once the
+      crash fix is in — that is the check that it landed.
 - [ ] Record `lipo -archs` of each slice's `Contents/MacOS/<exe>-bin`:
       `build-arm64/…` → `arm64`, `build-x86_64/…` → `x86_64`, for **both** apps.
-- [x] `scripts/make-universal.sh` is **written** (Intel side, 2026-11-21) — §6 —
-      and **run end to end** (arm Mac, 2026-11-21, §0): two universal apps plus
-      `build-universal/PuTTY-universal.dmg`. Nothing left to write or run here
-      unless a slice is rebuilt.
-- [x] Work through §7 until clean — done for the merged apps, and the disk image
-      additionally mounted and inspected (both apps present, seal valid, universal
-      `PuTTYGen` runs from the mounted volume).
+- [x] `build-universal/PuTTY-universal.dmg` exists from 2026-11-21, and §7 was run
+      clean (image mounted, both apps present, seal valid, universal `PuTTYGen`
+      runs from the mounted volume). **Both slices must be rebuilt and the merge
+      re-run** so the result is one version (`0.85-beter.1`, §8) *and* carries the
+      crash fix. The Intel Mac's current x86_64 bundles already have the fix.
+- [ ] Run `./scripts/make-universal.sh` **on the arm Mac**: the merged app's
+      `Contents/MacOS/putty-mcp` is a symlink that comes from the arm64 bundle
+      (x86_64 carries no bridge), and this SMB mount cannot read symlinks at all.
+- [ ] Work through §7 for each app, then re-make the `.dmg`.
 - [ ] Launch both results on the arm Mac **and** hand them back to the Intel Mac to
       launch — the universal `PuTTYGen` was launched on the arm Mac (generates
-      three keys); the Intel-side launch is still to do.
-- [ ] **Push.** The Intel Mac has no credentials, so its commits are local only until
-      you run `git push origin main`.
-- [ ] Only then: signing identity, hardened runtime, notarization. (The version
-      strings are **done** — `0.85-beter.1` in `version.h`, `LATEST.VER` and both
-      plists, with an About link home; see §8. Rebuild both slices so the merged
-      app is one version, not two.)
-- [ ] Decide whether `PLAN.md` §4's phase status lines and `README.md`'s "This
-      path is not yet verified" need further updating — the phase 1b/1c lines were
-      refreshed 2026-11-21 but `README.md` was not.
+      three keys); **the Intel-side launch is still to do**, and it is the only
+      end-to-end check that the x86_64 half is real.
+- [ ] **Push.** The Intel Mac has no credentials, so its commits are local only
+      until you run `git push origin main`. `git status` first: the tree holds both
+      sides' work (§0's table).
+- [ ] Only then: signing identity, hardened runtime, notarization. (Version
+      strings are done — `0.85-beter.1` in `version.h`, `LATEST.VER` and both
+      plists; see §8.)
+- [ ] Decide whether `PLAN.md`'s phase status lines and `README.md`'s "This path is
+      not yet verified" need further updating — the phase 1b/1c lines were refreshed
+      2026-11-21 but `README.md` was not.

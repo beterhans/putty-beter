@@ -15,7 +15,13 @@
 #   MCP_APP=<name>          which app carries the MCP bridge, at
 #                           Contents/Resources/putty-mcp with a symlink from
 #                           Contents/MacOS/putty-mcp (default PuTTY); MCP_APP=
-#                           skips installing it
+#                           skips installing it. It is NEVER installed on
+#                           x86_64: mcp/node_modules contains a symlink, and from
+#                           the Intel Mac this tree is on SMB, where symlinks
+#                           cannot be read at all (see the note in the main loop).
+#                           The arm64 slice carries the bridge, and
+#                           make-universal.sh takes arm64 as its structural
+#                           authority, so the merged app still has it.
 #   MCP_NODE_MODULES=0      do not bundle the bridge's node_modules with it. The
 #                           app then needs its packages installed (see SETUP.txt
 #                           in the bundle); make-universal.sh puts them into the
@@ -895,6 +901,13 @@ install_mcp_bridge() {                  # install_mcp_bridge <name> <app>
                 -type f | wc -l | tr -d ' ') files)"
             if ! ditto "$SRC/node_modules" "$APP/$DEST/node_modules"; then
                 log "[$name] ERROR: could not copy $SRC/node_modules"
+                # Usually a symlink: ditto has to read every link's target to
+                # reproduce it, and this tree is reached over SMB from the Intel
+                # Mac, where readlink fails with EINVAL. Name the links, so the
+                # failure is not a bare ditto message. (x86_64 does not get here:
+                # the bridge is not installed on that arch - see the main loop.)
+                find "$SRC/node_modules" -type l 2>/dev/null \
+                    | sed "s/^/[$name]   symlink: /"
                 return 1
             fi
         else
@@ -1088,11 +1101,28 @@ for app in $APPS; do
         timed "[$name] loaders.cache" fix_loaders_cache "$name" "$APP"
     fi
     timed "[$name] schemas" install_schemas "$name" "$APP"
+    # MCP is not bundled on x86_64. install_mcp_bridge copies mcp/node_modules,
+    # and node_modules contains a symlink (npm's .bin/node-which shim). The Intel
+    # Mac reaches this tree over SMB, where a symlink cannot be read at all -
+    # readlink, stat -L, open and cp -L all fail with EINVAL; only lstat works -
+    # so no copy tool can reproduce one, and ditto aborts the whole run there.
+    # Rather than special-case that one link, the Intel build leaves the bridge
+    # out entirely: the arm64 slice carries it, and make-universal.sh takes the
+    # arm64 bundle as its structural authority, so the merged app still has it.
+    mcp_installed_here=0
+    if [ -n "$MCP_APP" ] && [ "$name" = "$MCP_APP" ] && [ "$ARCH" != "x86_64" ]; then
+        mcp_installed_here=1
+    fi
     # Before re-sign, so the bridge files are sealed by the bundle-level codesign
-    # and not added outside it. See install_mcp_bridge / remove_mcp_bridge.
-    if [ -n "$MCP_APP" ] && [ "$name" = "$MCP_APP" ]; then
+    # and not added outside it. See install_mcp_bridge / remove_mcp_bridge. The
+    # remove branch is authoritative: it takes the bridge back out of a tree that
+    # a previous run (or the other arch) left it in.
+    if [ "$mcp_installed_here" = 1 ]; then
         timed "[$name] MCP bridge" install_mcp_bridge "$name" "$APP"
     else
+        if [ "$name" = "$MCP_APP" ] && [ "$ARCH" = "x86_64" ]; then
+            log "[$name] MCP bridge: not bundled on x86_64 (see the note above)"
+        fi
         timed "[$name] MCP bridge" remove_mcp_bridge "$name" "$APP"
     fi
     timed "[$name] re-sign" resign "$name" "$APP" "$macho"
