@@ -997,10 +997,17 @@ See `tech_detail.md` §7.14.
    Pinned by `test_sent_not_merged` — 119 checks pass, and 4 fail with the guard
    disabled, so the test is not vacuous.
 
-One cosmetic leftover remains, in `tech_detail.md` §7.14: a repaint *mid-line*
-reprints the prompt inside the human's line. The echo of a wrapped line is a
-rendering of terminal rows, not a logical line, so fixing it means emulating the
-terminal's wrapping in the buffer; it only bites on lines wider than the window.
+Two cosmetic leftovers remain, in `tech_detail.md` §7.14, and both were left
+deliberately:
+
+* a repaint *mid-line* reprints the prompt inside the human's line. The echo of a
+  wrapped line is a rendering of terminal rows, not a logical line, so fixing it
+  means emulating the terminal's wrapping in the buffer; it only bites on lines
+  wider than the window. The robust alternative is to record what the **tap** sees
+  and suppress the device's echo of it, with a guard for when PuTTY itself is
+  prompting — a design change, not a tweak.
+* an MCP-sent command is still followed by an empty `d ""` line: the shell's own
+  terminator arrives as a second line ending. Nothing is hidden or misattributed.
 
 **The window's own prompts are reported, not guessed (phase 4c, 2026-11-24).**
 PuTTY asks for a login password, a key passphrase or a login name by drawing the

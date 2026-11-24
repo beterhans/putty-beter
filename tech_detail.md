@@ -3509,26 +3509,34 @@ is in it.
 | verification | `test_mcp_buffer` **115 passed / 0 failed** (1 failed before the second fix, 3 before the first); C sweep and cryptsuite (90 tests) green; rebuilt and restaged for Windows |
 | live, 2026-11-24 | macOS zsh over SSH: `10 h "echo \"human message\""` / `11 d "human message"` / `12 d "hans@MacMini2018 ~ % "` — text kept, no phantom line. An MCP-sent command reads `13 m "echo …"` with its output after it |
 
-**One leftover, and one that is now fixed.** A repaint *mid-line* (up arrow,
-completion, a wrapped line) re-emits the prompt the tap just closed, so the
-human's line can read `h "hans@host ~ % echo …"` — right author, right text,
-prompt prefix as noise. That one **stands**, and the pty captures say why: the
-echo of a *wrapped* line is a rendering of terminal rows (`\r` + `ESC[K` at each
-row boundary), not a logical line, so reconstructing it means emulating the
+**Two cosmetic leftovers — one reduced, one unchanged.** A repaint *mid-line*
+(up arrow, completion, a wrapped line) re-emits the prompt the tap just closed,
+so the human's line can read `h "hans@host ~ % echo …"` — right author, right
+text, prompt prefix as noise. That one **stands**, and the pty captures say why:
+the echo of a *wrapped* line is a rendering of terminal rows (`\r` + `ESC[K` at
+each row boundary), not a logical line, so reconstructing it means emulating the
 terminal's wrapping inside the buffer. It is cosmetic — the text is all there —
-and only bites on lines longer than the terminal is wide.
+and it only bites on lines longer than the terminal is wide. The only robust fix
+is to record what the **tap** sees and suppress the device's echo of it, with a
+guard for when PuTTY itself is prompting (phase 4c knows when it is); that is a
+design change, and it was left documented on purpose (2026-11-24).
 
-The chunked-send one is **fixed** (2026-11-24). A client that types a command
-and *then* sends Return — the plain `send` path, not `run`, which sends the
-command and its terminator together — leaves our line open in between. The far
-end echoes the characters before that Return arrives, and the echo used to be
-appended to the line we had just written, so the transcript read
-`[m] "echo DBLecho DBL"`. `buf_put_byte()` now closes one of our own lines the
-moment the device writes, guarded by a new `in_note` flag so the bytes *we* are
-writing are not mistaken for that echo; the echo becomes the device's own line —
-the shape `run` has always produced. The session log settled it: the far end
-sends **one** echo (`echo DBL\r\n DBL\r\n`), so the doubling was one copy of our
-own text too many.
+**The doubling is fixed** (2026-11-24). A client that types a command and *then*
+sends Return — the plain `send` path, not `run`, which sends the command and its
+terminator together — leaves our line open in between. The far end echoes the
+characters before that Return arrives, and the echo used to be appended to the
+line we had just written, so the transcript read `[m] "echo DBLecho DBL"`.
+`buf_put_byte()` now closes one of our own lines the moment the device writes,
+guarded by a new `in_note` flag so the bytes *we* are writing are not mistaken
+for that echo; the echo becomes the device's own line — the shape `run` has
+always produced. The session log settled it: the far end sends **one** echo
+(`echo DBL\r\n DBL\r\n`), so the doubling was one copy of our own text too many.
+
+The empty `d ""` line that follows an MCP-sent command is **still there** — the
+smaller, pre-existing one of the same family. Live, a chunked send now reads
+`12 [m] "echo VERIFY"` / `13 [d] "echo VERIFY"` / `14 [d] ""` / `15 [d] "VERIFY"`:
+the blank is the shell's own terminator arriving as a second line ending. Nothing
+is hidden or misattributed by it.
 
 | | |
 |---|---|
