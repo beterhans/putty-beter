@@ -948,9 +948,42 @@ need neither PuTTY nor a display; `test/test_mcp_buffer.c` (110) and
 
 **Not verified against real network gear.** The `--More--` pattern is covered by
 the unit tests, by a real `more`, and by a shell stand-in that emits the real
-bytes over a real pty — but not by a router or a switch. Nor has the
-human-keystroke path been driven by an actual person at a keyboard: it is
-unit-tested at both layers (the buffer and the tap) and not end-to-end.
+bytes over a real pty — but not by a router or a switch. The human-keystroke path
+*has* since been driven by a real person at a keyboard (see below): it is
+unit-tested at both layers (the buffer and the tap) and now verified end to end.
+
+**The human's own line: what a shell's line editor does to it (2026-11-24).**
+Driving a live session at a real keyboard found what no unit test had: every line
+the person typed came back tagged `h` with **no text** — `read` could not say what
+they had typed, while `screen()` showed it plainly. Two defects in
+`unix/mcp-buffer.c`, which the Windows build compiles as the same file, so both
+front ends were affected by one file and fixed by one file.
+
+1. **zle ate the line.** A bare CR is read as "back to column 0" — a progress bar
+   redrawing one line — and the line is discarded. But a shell's line editor
+   (zsh's zle, bash's readline) *repaints* with a bare CR and steps to the end of
+   the line with one at Return, so the human's line was thrown away and then
+   finalised empty. A bare CR on the **human's** line now finalises it, text and
+   all; only an empty one is dropped, which still keeps a stray repaint from
+   adding a blank line. Device lines — progress bars — are untouched.
+2. **`CR CR LF` is one line ending, not two.** With (1) in place every command
+   was followed by a phantom blank `h ""` line: the second CR is bare again and
+   the LF then finalises an empty line with the **stale** author. The buffer now
+   remembers that a bare CR ended a line, and the CR/LF after it is swallowed as
+   the rest of that ending — attribution back to the device, because the far end
+   is writing again. Any content clears the flag, so a real blank line is never
+   lost.
+
+Both were found live and both are now pinned by `test_typed_repaint`
+(`test/test_mcp_buffer.c`), which had the byte sequence all along but only
+asserted that the text survived: it now asserts the *shape* of the transcript
+(`total_lines == 2`). 115 checks pass; before the fixes the same test failed 3
+and then 1. Verified live on macOS zsh over SSH:
+`10 h "echo \"human message\""` / `11 d "human message"` — text kept, no phantom
+line — and an MCP-sent command reads `13 m "echo …"` with its output after it.
+See `tech_detail.md` §7.14. Two cosmetic leftovers are documented there: a
+mid-line repaint reprints the prompt inside the human's line, and an MCP-sent
+command is followed by an empty `d ""` line.
 
 **The window's own prompts are reported, not guessed (phase 4c, 2026-11-24).**
 PuTTY asks for a login password, a key passphrase or a login name by drawing the

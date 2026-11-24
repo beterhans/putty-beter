@@ -3470,6 +3470,53 @@ which has the same default. Worth remembering for a *client* of this API too:
 `needs_human` going true→false means "answered, or gone", and the two are told
 apart by whether the session is still alive.
 
+##### 7.14 As built (2026-11-24) — the human's own line
+
+**What it is: `read` could not say what the person had typed.** Every line the
+human typed came back with its author (`h`) and **no text** — `24 h ""` — while
+`screen()` plainly showed the command. Two separate defects, both in
+`unix/mcp-buffer.c` (shared code: the Windows build compiles the same file, so
+one fix covers both front ends).
+
+**1. A shell's line editor eats its own line.** The buffer reads a bare CR as
+"back to column 0" — a progress bar redrawing one line — and discards the line.
+But zsh's zle (and bash's readline) *repaint* with a bare CR, and at Return they
+step to the end of the line with one before the `CR LF` that ends it. So the
+human's line was discarded and then finalised empty. What the human types is
+never a progress bar, so a bare CR on **their** line now finalises it, text and
+all; only an empty one is dropped, which is what still keeps a stray repaint from
+adding a blank line. Progress bars (device lines) are untouched.
+
+**2. `CR CR LF` is one line ending, not two.** With the first fix in, every
+command was followed by a phantom blank `h ""` line: the second CR is bare
+again, discards nothing, and the LF then finalises an empty line using the
+**stale** author — still the human's. The buffer now remembers that a bare CR
+ended a line (`cr_ended_line`), and the CR/LF that follows it is the rest of the
+same ending: swallowed, with the attribution back to the device because the far
+end is writing again. Any content clears the flag, so a real blank line in the
+output is never lost.
+
+**Found live, not in the tests** — and the unit test had the sequence all along.
+`test_typed_repaint` fed `\r` then `\r\n`, but only asserted that the text
+survived; the tightening assertion (`total_lines == 2`) is what pinned the
+phantom. Lesson: assert the *shape* of the transcript, not just that a substring
+is in it.
+
+| | |
+|---|---|
+| `unix/mcp-buffer.c` | the bare-CR rule for a human line, and `cr_ended_line` |
+| `test/test_mcp_buffer.c` | `test_typed_repaint` — the typed line survives the repaint, and the Return adds exactly one line |
+| verification | `test_mcp_buffer` **115 passed / 0 failed** (1 failed before the second fix, 3 before the first); C sweep and cryptsuite (90 tests) green; rebuilt and restaged for Windows |
+| live, 2026-11-24 | macOS zsh over SSH: `10 h "echo \"human message\""` / `11 d "human message"` / `12 d "hans@MacMini2018 ~ % "` — text kept, no phantom line. An MCP-sent command reads `13 m "echo …"` with its output after it |
+
+**Two cosmetic leftovers, left alone deliberately.** A repaint *mid-line* (up
+arrow, completion, a wrapped line) re-emits the prompt the tap just closed, so
+the human's line can read `h "hans@host ~ % echo …"` — right author, right text,
+prompt prefix as noise. And an MCP-sent command is followed by an empty `d ""`
+line, because the far end's echo of a chunked send is discarded as a repaint and
+its newline is not. Neither hides or misattributes content; both are candidates
+for a follow-up once they are seen doing harm.
+
 ---
 
 ### Windows
@@ -6313,6 +6360,13 @@ move past it.
 what a progress bar does. Only `\n`, or `\r\n`, ends a line — decided by looking
 at the byte *after* the CR. Otherwise a slow download becomes one line per
 redraw.
+
+**Except on the human's own line, where a bare CR *is* the ending** (§7.14). A
+shell's line editor repaints with CR and steps to the end of the line with one at
+Return, so discarding there threw away everything the person had typed. The
+device's lines keep the progress-bar rule; the human's is finalised instead. And
+since zle writes `CR CR LF` at Return, the CR/LF after a CR that already ended a
+line is the same ending, not a second, empty one.
 
 **Escapes are stripped before line assembly**: CSI, OSC (BEL or ST terminated),
 DCS, and the `ESC <intermediate> <final>` forms like `ESC ( B`. This is a state

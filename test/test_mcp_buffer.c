@@ -694,6 +694,88 @@ static void test_typed_lines(void)
 }
 
 /*
+ * The human's line has to survive the far end's line editor.
+ *
+ * zsh's zle (and bash's readline) repaint the line with a bare CR, and at
+ * Return they step to the end of the line with one before the CR LF that ends
+ * it. Treating that CR as "a progress bar redrew one line, throw it away" ate
+ * everything the person had typed, and the transcript showed an empty line
+ * attributed to them - so read() could not answer "who typed this?" at all.
+ * A progress bar is never the human's line, so a human line is finalised
+ * instead.
+ */
+static void test_typed_repaint(void)
+{
+    McpBuffer *b = mcp_buffer_new(0);
+    McpReadResult *r;
+    char *joined;
+
+    feed(b, "hans@host ~ % ");
+
+    /* The human types "ls -l", echoed a character at a time. */
+    const char *typed = "ls -l";
+    for (const char *p = typed; *p; p++) {
+        mcp_buffer_note_typed(b, p, 1);
+        feed_raw(b, p, 1);
+    }
+
+    /*
+     * Return. zle steps to the end of the line with a bare CR - which is what
+     * used to discard the line - and the CR LF that ends it comes after.
+     */
+    mcp_buffer_note_typed(b, "\r", 1);
+    feed_raw(b, "\r", 1);
+    feed(b, "\r\n");
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(strstr(joined, "ls -l") != NULL,
+          "a line editor's bare CR does not eat what the human typed: \"%s\"",
+          joined);
+    CHECK(r->nlines >= 2 && r->lines[1].author == MCP_AUTHOR_HUMAN &&
+          !strcmp(r->lines[1].text, "ls -l"),
+          "and the line is still the human's, in full: \"%s\"",
+          line_at(r, 1));
+    /*
+     * "CR CR LF" is one line ending, not two. The second CR and the LF are
+     * the rest of it, and finalising them again adds an empty line credited
+     * to whoever wrote last - which is the human, so every command used to
+     * be followed by a phantom blank line of theirs.
+     */
+    CHECK(mcp_buffer_total_lines(b) == 2,
+          "and the Return adds no second line: total_lines %llu, want 2",
+          (unsigned long long)mcp_buffer_total_lines(b));
+    sfree(joined);
+    mcp_read_result_free(r);
+
+    /* The command's output is the device's again. */
+    {
+        uint64_t after = mcp_buffer_total_lines(b);
+        feed(b, "file-a  file-b\r\nRouter>");
+        r = mcp_buffer_read(b, after, 0);
+    }
+    joined = join_lines(r);
+    CHECK(strstr(joined, "file-a") != NULL && r->lines[0].author == MCP_AUTHOR_DEVICE,
+          "then output resumes as the device's: \"%s\"", joined);
+    sfree(joined);
+    mcp_read_result_free(r);
+
+    /*
+     * And an empty human line is still dropped rather than added: a repaint
+     * with nothing typed yet must not put a blank line in the transcript.
+     */
+    mcp_buffer_free(b);
+    b = mcp_buffer_new(0);
+    feed(b, "Router>");
+    mcp_buffer_note_typed(b, "\r", 1);
+    feed_raw(b, "\r", 1);              /* a bare CR with nothing typed */
+    CHECK(mcp_buffer_total_lines(b) == 1,
+          "a bare CR on an empty human line adds nothing, total_lines %llu",
+          (unsigned long long)mcp_buffer_total_lines(b));
+    mcp_buffer_free(b);
+}
+
+/*
  * A device that does not echo. This is the password case, and the important
  * one: what the human typed must not end up in the transcript, because a
  * password is the one thing an agent must never be handed.
@@ -799,6 +881,7 @@ int main(void)
     printf("  [test] budget_bounded\n");    test_budget_bounded();
     printf("  [test] sent_lines\n");        test_sent_lines();
     printf("  [test] typed_lines\n");       test_typed_lines();
+    printf("  [test] typed_repaint\n");     test_typed_repaint();
     printf("  [test] typed_not_echoed\n");  test_typed_not_echoed();
     printf("  [test] typed_between\n");     test_typed_between_device_lines();
     printf("  [test] authors\n");           test_authors();

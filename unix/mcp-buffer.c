@@ -75,6 +75,12 @@ struct McpBuffer {
 
     /* A CR has been seen; the next byte says whether it was a line end. */
     bool pending_cr;
+
+    /*
+     * That CR was a *bare* one that ended a line (see buf_put_byte). A CR LF
+     * arriving now is the rest of the same line ending, not a second one.
+     */
+    bool cr_ended_line;
 };
 
 char mcp_author_tag(McpAuthor author)
@@ -150,6 +156,11 @@ static void cur_finalise(McpBuffer *b)
 static void cur_append(McpBuffer *b, const void *data, size_t len)
 {
     const char *p = data;
+
+    /*
+     * Content means the last line ending is behind us; see cr_ended_line.
+     */
+    b->cr_ended_line = false;
 
     while (len) {
         size_t space, take;
@@ -252,6 +263,20 @@ static void buf_put_byte(McpBuffer *b, unsigned char c)
     if (b->pending_cr) {
         b->pending_cr = false;
         if (c == '\n') {
+            /*
+             * A CR LF whose bare CR already ended a line is the second half
+             * of that one ending, not a line of its own: a line editor writes
+             * "CR CR LF" at Return. Finalising here would add an empty line
+             * credited to whoever wrote last - the human - so every command
+             * came with a phantom blank line of theirs. The attribution goes
+             * back to the device either way, because the far end is writing
+             * again.
+             */
+            if (b->cr_ended_line) {
+                b->cr_ended_line = false;
+                b->cur_author = MCP_AUTHOR_DEVICE;
+                return;
+            }
             cur_finalise(b);
             /*
              * A device newline ends the line, and the next one is the
@@ -262,7 +287,25 @@ static void buf_put_byte(McpBuffer *b, unsigned char c)
             b->cur_author = MCP_AUTHOR_DEVICE;
             return;
         }
-        cur_discard(b);
+        /*
+         * A bare CR is "back to column 0", and for the device that means a
+         * progress bar redrawing one line - so the line goes.
+         *
+         * For the human it means something else. A shell's line editor
+         * (zsh's zle, bash's readline) repaints with CR, and at Return it
+         * steps to the end of the line with one - so discarding here threw
+         * away everything the person had typed and left an empty line
+         * attributed to them. What the human types is never a progress bar,
+         * so their line is finalised instead, text and all; only an empty
+         * one is dropped, which is what keeps a stray repaint from adding a
+         * blank line to the transcript.
+         */
+        if (b->cur_active && b->cur.len && b->cur.author == MCP_AUTHOR_HUMAN) {
+            cur_finalise(b);
+            b->cr_ended_line = true;
+        } else {
+            cur_discard(b);
+        }
     }
 
     switch (c) {
@@ -270,6 +313,17 @@ static void buf_put_byte(McpBuffer *b, unsigned char c)
         b->pending_cr = true;
         return;
       case '\n':
+        /*
+         * Same rule as the pending-CR path above, for a LF that arrives
+         * without a pending CR in front of it (something in between cleared
+         * it): a LF just after a bare CR that ended a line is the rest of
+         * that one ending.
+         */
+        if (b->cr_ended_line) {
+            b->cr_ended_line = false;
+            b->cur_author = MCP_AUTHOR_DEVICE;
+            return;
+        }
         cur_finalise(b);
         b->cur_author = MCP_AUTHOR_DEVICE;
         return;
@@ -387,6 +441,7 @@ void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
     if (b->cur_active && b->cur.len)
         cur_finalise(b);
     b->pending_cr = false;
+    b->cr_ended_line = false;
 
     b->cur_author = author;
     for (size_t i = 0; i < len; i++) {
@@ -450,6 +505,7 @@ void mcp_buffer_note_typed(McpBuffer *b, const void *data, size_t len)
      * and leaving it set would discard the human's first character.
      */
     b->pending_cr = false;
+    b->cr_ended_line = false;
 }
 
 /* ------------------------------------------------------------------ */
