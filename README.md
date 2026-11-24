@@ -16,6 +16,7 @@ Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICEN
 |---|---|
 | **This file** | what the fork changes, how to build it, and how to use each feature |
 | [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) | every difference from the official PuTTY 0.85 tarball, file by file, with the commands to reproduce the diff |
+| [`WINDOWS-BUILD.md`](WINDOWS-BUILD.md) | **building and shipping the Windows port**: `install-toolchain-win.ps1`, `scripts/build-windows.ps1` and every switch it takes, the timings, and how to verify a build by hand |
 | [`PLAN.md`](PLAN.md) | the plan: the tools, the phases, the progress and the results, for macOS and Windows side by side - one row per feature |
 | [`tech_detail.md`](tech_detail.md) | the detail behind `PLAN.md`: the findings, the gotchas and the "as built" accounts, one section per feature with a macOS half and a Windows half |
 | [`tech_detail.md` §13 / Appendix F](tech_detail.md#appendix-f-mcp--how-it-works) | **how the MCP works**: the files, the wire protocol, the capture-buffer semantics, the socket and its permissions, the build, testing and debugging |
@@ -661,15 +662,20 @@ See [`tools/README.md`](tools/README.md) for details and the lookup order
 ## How to build
 
 ```sh
-# 1. Compile the binaries -> build-arm64/
+# 1.1 Compile the binaries Arm side -> build-arm64/
 ./scripts/build-macos.sh arm64
 
-# 2. Assemble the two app bundles (PuTTY.app and PuTTYGen.app)
+# 1.2 Compile the binaries Intel side
+./scripts/build-macos.sh x86_64
+
+# 2.1 Assemble the two app bundles arm side
 ./scripts/bundle-macos.sh arm64
 
-# 3. Run one
-open build-arm64/bundle-stage/unix/PuTTY.app
-open build-arm64/bundle-stage/unix/PuTTYGen.app
+# 2.2 Assemble the two app bundles Intel side
+./scripts/bundle-macos.sh x86_64
+
+# 3.1 Combine Arm and Intel for DMG
+./scripts/make-universal.sh
 ```
 
 **Output locations**
@@ -870,6 +876,50 @@ cmake -B build-arm64 -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build build-arm64 -j"$(sysctl -n hw.ncpu)"
 ```
+
+### Windows
+
+The Windows port is built by one script, run **on Windows** (a VM is fine — it
+cross-compiles, so the host's own architecture does not matter):
+
+```powershell
+# once: install Git, CMake, Ninja, MSYS2 x86_64 and mingw-w64 UCRT64
+.\install-toolchain-win.ps1
+
+# build and stage
+.\scripts\build-windows.ps1
+```
+
+It is a **cross build** — the native `cmake`/`ninja` driving the x86_64 UCRT64
+`gcc` — and it produces one binary for **Windows 7 SP1 → 11**
+(`-D_WIN32_WINNT=0x0601`; Windows 7 also needs KB2999226), with a staged copy of
+the MCP bridge beside it. `node --version` must answer, **Node 20+**, for the
+bridge to be staged and smoke-tested.
+
+**Output locations**
+
+| What | Where |
+|---|---|
+| Binary | `putty-beter-win64\putty.exe` |
+| Bridge | `putty-beter-win64\putty-mcp\` — mirrored from `mcp\`, with `node_modules` installed on Windows |
+| Setup notes | `putty-beter-win64\SETUP-WIN.txt` — the `opencode.json` snippet and the CLI checks |
+
+```powershell
+.\scripts\build-windows.ps1 -Clean          # delete build-win\ first: full recompile
+.\scripts\build-windows.ps1 -Reconfigure    # re-run the cmake configure step
+.\scripts\build-windows.ps1 -ReinstallDeps  # re-run npm in the staged bridge
+.\scripts\build-windows.ps1 -SkipBuild      # stage only, reuse the built putty.exe
+```
+
+`-Clean` refuses to delete anything that is not a `build-*` directory inside this
+checkout. The remaining switches are `-SkipMcp`, `-SkipSmokeTest`, `-DebugOutput`
+(also `BUILD_WIN_DEBUG=1`), and the overrides `-BuildDir`, `-ReleaseDir`,
+`-Msys2Root`, `-NodeExe`, `-Jobs`. A second run without `-Clean` reuses the build
+tree, so only changed C files are recompiled.
+
+See [`WINDOWS-BUILD.md`](WINDOWS-BUILD.md) for the step-by-step, the timings, the
+troubleshooting table and how to verify a build by hand. Debug tracing of the
+running binary and bridge is separate: `PUTTY_MCP_DEBUG=1`.
 
 ---
 
