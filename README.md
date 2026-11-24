@@ -1,4 +1,4 @@
-# PuTTY for macOS
+# PuTTY for macOS (also on windows)
 
 A macOS build of [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) 0.85
 (this fork's own version is **`0.85-beter.1`**), plus the fixes needed to make its
