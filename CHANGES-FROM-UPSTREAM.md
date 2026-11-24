@@ -981,9 +981,26 @@ asserted that the text survived: it now asserts the *shape* of the transcript
 and then 1. Verified live on macOS zsh over SSH:
 `10 h "echo \"human message\""` / `11 d "human message"` — text kept, no phantom
 line — and an MCP-sent command reads `13 m "echo …"` with its output after it.
-See `tech_detail.md` §7.14. Two cosmetic leftovers are documented there: a
-mid-line repaint reprints the prompt inside the human's line, and an MCP-sent
-command is followed by an empty `d ""` line.
+See `tech_detail.md` §7.14.
+
+3. **A chunked send was doubled by its own echo** (found and fixed 2026-11-24). A
+   client that types a command and then sends Return as a *separate* keystroke —
+   the plain `send` path, not `run`, which sends the command and its terminator
+   together — leaves our line open in between, and the far end echoes the
+   characters back before that Return arrives. The echo was appended to the line
+   we had just written, so the transcript read `[m] "echo DBLecho DBL"`. The
+   session log settled it: the far end sends **one** echo (`echo DBL\r\n DBL\r\n`),
+   so the doubling was one copy of our own text too many. `buf_put_byte()` now
+   closes one of our own lines as soon as the device writes, guarded by a new
+   `in_note` flag so the bytes *we* are writing are not mistaken for that echo;
+   the echo becomes the device's own line, the shape `run` has always produced.
+   Pinned by `test_sent_not_merged` — 119 checks pass, and 4 fail with the guard
+   disabled, so the test is not vacuous.
+
+One cosmetic leftover remains, in `tech_detail.md` §7.14: a repaint *mid-line*
+reprints the prompt inside the human's line. The echo of a wrapped line is a
+rendering of terminal rows, not a logical line, so fixing it means emulating the
+terminal's wrapping in the buffer; it only bites on lines wider than the window.
 
 **The window's own prompts are reported, not guessed (phase 4c, 2026-11-24).**
 PuTTY asks for a login password, a key passphrase or a login name by drawing the

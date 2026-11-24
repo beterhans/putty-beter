@@ -81,6 +81,13 @@ struct McpBuffer {
      * arriving now is the rest of the same line ending, not a second one.
      */
     bool cr_ended_line;
+
+    /*
+     * True only while mcp_buffer_note_sent() is writing a line. It tells
+     * buf_put_byte() that the byte in hand is ours, not the far end's echo of
+     * something we sent earlier; see the guard at the top of buf_put_byte().
+     */
+    bool in_note;
 };
 
 char mcp_author_tag(McpAuthor author)
@@ -255,6 +262,22 @@ static struct McpLine *line_by_id(McpBuffer *b, uint64_t id)
 static void buf_put_byte(McpBuffer *b, unsigned char c)
 {
     /*
+     * The far end writing while one of *our* lines is still open: it is
+     * echoing what we sent. Close our line first, so its echo lands on a line
+     * of its own instead of being appended to ours and doubling the text.
+     *
+     * A chunked send has no Return of its own to close the line - a client
+     * that types "ls -l" and then sends Enter separately used to leave
+     * "[m] ls -lls -l" in the transcript, because the echo arrived before the
+     * Return did. Our own bytes are excluded by `in_note': without that the
+     * first byte of the very line we are writing would close the empty line
+     * we are writing it into.
+     */
+    if (!b->in_note && b->cur_active && b->cur.len &&
+        b->cur.author == MCP_AUTHOR_MCP)
+        cur_finalise(b);
+
+    /*
      * A CR means "back to column 0" unless a LF follows, which makes it a
      * line ending. Deciding on the *next* byte is what lets a progress bar
      * (which redraws one line with bare CRs) not turn into one line per
@@ -424,6 +447,12 @@ void mcp_buffer_feed(McpBuffer *b, const void *vdata, size_t len)
     }
 }
 
+/*
+ * A line we sent.
+ *
+ * Read the contents of buf_put_byte() first: the guard there uses `in_note'
+ * to tell our own bytes from the far end's echo of them.
+ */
 void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
                           const void *data, size_t len)
 {
@@ -444,6 +473,7 @@ void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
     b->cr_ended_line = false;
 
     b->cur_author = author;
+    b->in_note = true;
     for (size_t i = 0; i < len; i++) {
         unsigned char c = p[i];
 
@@ -463,6 +493,7 @@ void mcp_buffer_note_sent(McpBuffer *b, McpAuthor author,
             buf_put_byte(b, c);
         }
     }
+    b->in_note = false;
     b->cur_author = MCP_AUTHOR_DEVICE;
 }
 

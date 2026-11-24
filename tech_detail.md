@@ -3509,13 +3509,32 @@ is in it.
 | verification | `test_mcp_buffer` **115 passed / 0 failed** (1 failed before the second fix, 3 before the first); C sweep and cryptsuite (90 tests) green; rebuilt and restaged for Windows |
 | live, 2026-11-24 | macOS zsh over SSH: `10 h "echo \"human message\""` / `11 d "human message"` / `12 d "hans@MacMini2018 ~ % "` — text kept, no phantom line. An MCP-sent command reads `13 m "echo …"` with its output after it |
 
-**Two cosmetic leftovers, left alone deliberately.** A repaint *mid-line* (up
-arrow, completion, a wrapped line) re-emits the prompt the tap just closed, so
-the human's line can read `h "hans@host ~ % echo …"` — right author, right text,
-prompt prefix as noise. And an MCP-sent command is followed by an empty `d ""`
-line, because the far end's echo of a chunked send is discarded as a repaint and
-its newline is not. Neither hides or misattributes content; both are candidates
-for a follow-up once they are seen doing harm.
+**One leftover, and one that is now fixed.** A repaint *mid-line* (up arrow,
+completion, a wrapped line) re-emits the prompt the tap just closed, so the
+human's line can read `h "hans@host ~ % echo …"` — right author, right text,
+prompt prefix as noise. That one **stands**, and the pty captures say why: the
+echo of a *wrapped* line is a rendering of terminal rows (`\r` + `ESC[K` at each
+row boundary), not a logical line, so reconstructing it means emulating the
+terminal's wrapping inside the buffer. It is cosmetic — the text is all there —
+and only bites on lines longer than the terminal is wide.
+
+The chunked-send one is **fixed** (2026-11-24). A client that types a command
+and *then* sends Return — the plain `send` path, not `run`, which sends the
+command and its terminator together — leaves our line open in between. The far
+end echoes the characters before that Return arrives, and the echo used to be
+appended to the line we had just written, so the transcript read
+`[m] "echo DBLecho DBL"`. `buf_put_byte()` now closes one of our own lines the
+moment the device writes, guarded by a new `in_note` flag so the bytes *we* are
+writing are not mistaken for that echo; the echo becomes the device's own line —
+the shape `run` has always produced. The session log settled it: the far end
+sends **one** echo (`echo DBL\r\n DBL\r\n`), so the doubling was one copy of our
+own text too many.
+
+| | |
+|---|---|
+| `unix/mcp-buffer.c` | `in_note`, and the close-our-line guard at the top of `buf_put_byte()` |
+| `test/test_mcp_buffer.c` | `test_sent_not_merged` — the echo does not join our line, and ours holds what we sent, once |
+| verification | `test_mcp_buffer` **119 passed / 0 failed**; **115 / 4 failed** with the guard disabled, so the test is not vacuous |
 
 ---
 

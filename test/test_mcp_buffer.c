@@ -572,6 +572,47 @@ static void test_sent_lines(void)
     mcp_buffer_free(b);
 }
 
+/*
+ * A line we sent, and the far end's echo of it, must not land on one line.
+ *
+ * A client that types a command and *then* sends Return - the plain `send'
+ * path, not `run' - leaves our line open in between, and the shell echoes the
+ * characters back before that Return arrives. The echo used to be appended to
+ * the line we had just written, so the transcript read "[m] ls -lls -l". The
+ * far end sends one echo (the session log confirms it: "echo DBL" appears
+ * once), so the doubling was one copy of our own line's text too many.
+ */
+static void test_sent_not_merged(void)
+{
+    McpBuffer *b = mcp_buffer_new(0);
+    McpReadResult *r;
+    char *joined;
+
+    /* The device prints a prompt and stops. */
+    feed(b, "hans@host ~ % ");
+
+    /* We type a command; Return follows as its own keystroke. */
+    mcp_buffer_note_sent(b, MCP_AUTHOR_MCP, "ls -l", 5);
+    feed_raw(b, "ls -l\r\n", 7);            /* the far end echoes it */
+    mcp_buffer_note_sent(b, MCP_AUTHOR_MCP, "\r", 1);
+
+    r = mcp_buffer_read(b, 0, 0);
+    joined = join_lines(r);
+    CHECK(strstr(joined, "ls -lls -l") == NULL,
+          "the echo is not merged into our own line: \"%s\"", joined);
+    CHECK(!strcmp(joined, "hans@host ~ % |ls -l|ls -l"),
+          "prompt, then our line, then the device's echo: \"%s\"", joined);
+    CHECK(r->nlines == 3 && r->lines[1].author == MCP_AUTHOR_MCP &&
+          !strcmp(r->lines[1].text, "ls -l"),
+          "our line is exactly what we sent, once: \"%s\"",
+          r->nlines == 3 ? r->lines[1].text : "<wrong count>");
+    CHECK(r->nlines == 3 && r->lines[2].author == MCP_AUTHOR_DEVICE,
+          "and the echo is the device's own line");
+    mcp_read_result_free(r);
+
+    mcp_buffer_free(b);
+}
+
 /* Each line carries who wrote it. */
 static void test_authors(void)
 {
@@ -880,6 +921,7 @@ int main(void)
     printf("  [test] truncation\n");        test_truncation();
     printf("  [test] budget_bounded\n");    test_budget_bounded();
     printf("  [test] sent_lines\n");        test_sent_lines();
+    printf("  [test] sent_not_merged\n");   test_sent_not_merged();
     printf("  [test] typed_lines\n");       test_typed_lines();
     printf("  [test] typed_repaint\n");     test_typed_repaint();
     printf("  [test] typed_not_echoed\n");  test_typed_not_echoed();
