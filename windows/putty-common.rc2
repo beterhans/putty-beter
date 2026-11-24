@@ -26,8 +26,15 @@ BEGIN
 END
 
 /* Accelerators used: aco */
-IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 252
-STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+/*
+ * PuTTY-beter: the configuration box is resizable (WS_THICKFRAME), and the
+ * size given here is only the starting point. windows/dialog.c measures the
+ * panel on display and grows the window if it needs to, so that the row of
+ * buttons along the bottom can never be covered by panel controls running off
+ * the end of their column.
+ */
+IDD_MAINBOX DIALOG DISCARDABLE 0, 0, 300, 300
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "PuTTY Configuration"
 FONT 8, "MS Shell Dlg"
 CLASS "PuTTYConfigBox"
@@ -93,6 +100,46 @@ CAPTION "PuTTY trusted host certification authorities"
 FONT 8, "MS Shell Dlg"
 CLASS "PuTTYConfigBox"
 BEGIN
+END
+
+/*
+ * PuTTY-beter: choose where the configuration folder lives.
+ *
+ * Shown on first run (when there is no configuration yet), or when Alt is held
+ * at launch, or when PUTTY_CONFIG_RELOCATE=1 - the same three triggers as the
+ * macOS front end, and the same key: Option on a Mac is Alt on a PC.
+ */
+/* Accelerators used: ksu */
+IDD_CONFIG_LOCATION DIALOG DISCARDABLE 0, 0, 300, 136
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "PuTTY configuration folder"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "", IDC_CL_MSG, 10, 8, 280, 56
+    EDITTEXT IDC_CL_PATH, 10, 68, 232, 14, ES_AUTOHSCROLL
+    PUSHBUTTON "Choose...", IDC_CL_BROWSE, 248, 68, 42, 14
+    LTEXT "", IDC_CL_HINT, 10, 88, 280, 22
+    DEFPUSHBUTTON "Use This Folder", IDOK, 160, 116, 76, 14
+    PUSHBUTTON "Keep Current", IDCANCEL, 240, 116, 50, 14
+END
+
+/*
+ * PuTTY-beter: the ZMODEM transfer progress window (tech_detail.md section 12).
+ * A modeless dialog, created with CreateDialog rather than DialogBox, because
+ * the engine is driven from the main loop and a modal dialog would block the
+ * transfer it is reporting on. On the macOS side the equivalent is built in
+ * code; here it is a template, which is how every other Windows dialog is done.
+ */
+/* Accelerators used: c */
+IDD_ZMODEM DIALOG DISCARDABLE 0, 0, 260, 76
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ZMODEM transfer"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "Starting...", IDC_ZM_STATUS, 12, 10, 236, 18
+    CONTROL "", IDC_ZM_PROGRESS, "msctls_progress32",
+            WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 12, 32, 236, 14
+    PUSHBUTTON "&Cancel", IDC_ZM_CANCEL, 200, 54, 48, 14
 END
 
 #include "version.rc2"

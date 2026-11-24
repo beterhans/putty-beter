@@ -8272,6 +8272,29 @@ SeatPromptResult term_get_userpass_input(Terminal *term, prompts_t *p)
     return SPR_INCOMPLETE;
 }
 
+/*
+ * PuTTY-beter: the prompt the terminal is asking the human right now, or NULL
+ * if it is not asking anything (PLAN.md section 7.8, phase 4c - the MCP
+ * `needs_human` state).
+ *
+ * The text is the one term_userpass_next_prompt() printed, so it is exactly
+ * what the human is looking at; a multi-prompt set reports each prompt as it
+ * is asked, not the set. A prompt that some other layer answered (a saved
+ * session password, a `-pw` on the command line) never reaches here at all,
+ * which is the distinction the MCP server needs: a prompt with no state
+ * behind it was already answered, one with a state is waiting for a person.
+ */
+const char *term_prompt_text(Terminal *term)
+{
+    struct term_userpass_state *s = term->userpass_state;
+
+    if (!s || s->prompt_state != TUS_ACTIVE)
+        return NULL;
+    if (s->curr_prompt >= s->prompts->n_prompts)
+        return NULL;
+    return s->prompts->prompts[s->curr_prompt]->prompt;
+}
+
 void term_notify_minimised(Terminal *term, bool minimised)
 {
     term->minimised = minimised;

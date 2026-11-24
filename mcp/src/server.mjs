@@ -60,9 +60,13 @@ export function buildServer(opts = {}) {
         title: 'List the PuTTY sessions offered to MCP',
         description:
             'The sessions open in PuTTY that are offered to MCP, as ' +
-            '[{id, name}]. Every other tool takes one of these ids as ' +
-            '`session`. There is no "current session": never assume an id, ' +
-            'always take one from here.',
+            '[{id, name, writable, needs_human, prompt}]. Every other tool takes ' +
+            'one of these ids as `session`. There is no "current session": ' +
+            'never assume an id, always take one from here.\n\n' +
+            '`needs_human` true means the *window* is asking the person at the ' +
+            'keyboard something right now - a password, a key passphrase, a ' +
+            'login name - and `prompt` is what it is asking. That is not yours ' +
+            'to answer: ask the human to type it in the window and wait.',
         inputSchema: {},
     }, async () => {
         try {
@@ -81,7 +85,9 @@ export function buildServer(opts = {}) {
             '"h" (human) or "m" (MCP). Pass the returned `cursor` back as the ' +
             'next `since`. The line currently being written - usually the ' +
             'prompt - is re-sent on every read and does not move the cursor. ' +
-            'Pages rather than truncates: check `omitted` and read again.',
+            'Pages rather than truncates: check `omitted` and read again. ' +
+            '`needs_human` is present when the *window* itself is asking the ' +
+            'person at the keyboard something; wait for them, do not answer.',
         inputSchema: {
             session: z.number().int().describe('Session id from sessions().'),
             since: z.number().int().optional().describe(
@@ -118,12 +124,17 @@ export function buildServer(opts = {}) {
             '              partial, and the command may still be running\n' +
             '  "needs_input" - see `needs_input`, and do NOT send the next\n' +
             '              command: answer it deliberately, or ask the human to\n' +
+            '  "needs_human" - the *window* is asking the person at the keyboard\n' +
+            '              (a password, a key passphrase, a login name), which is\n' +
+            '              not yours to answer: see `needs_human`, and wait for the\n' +
+            '              human to type it in this window before going on\n' +
             '  "cancelled" - a human typed into the window; the run stopped so\n' +
             '              the two of you do not drive the same stream at once\n' +
             '  "pager_limit" - too many pages; raise max_pager_answers or use\n' +
             '              a command that does not page\n\n' +
             'A password is never yours to give: if `needs_input` says a password ' +
-            'is wanted, ask the human to type it in the window.',
+            'is wanted, ask the human to type it in the window. If the session ' +
+            'reports `needs_human`, that is exactly what is already happening.',
         inputSchema: {
             session: z.number().int().describe('Session id from sessions().'),
             command: z.string().describe(

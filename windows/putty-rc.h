@@ -16,6 +16,19 @@
 #define IDD_HOSTKEY      114
 #define IDD_HK_MOREINFO  116
 #define IDD_CA_CONFIG    117
+#define IDD_CONFIG_LOCATION 118
+#define IDD_ZMODEM       119
+
+/* PuTTY-beter: the configuration-folder dialog. */
+#define IDC_CL_MSG      1101
+#define IDC_CL_PATH     1102
+#define IDC_CL_BROWSE   1103
+#define IDC_CL_HINT     1104
+
+/* PuTTY-beter: the ZMODEM transfer progress window (tech_detail.md section 12). */
+#define IDC_ZM_STATUS   1111
+#define IDC_ZM_PROGRESS 1112
+#define IDC_ZM_CANCEL   1113
 
 #define IDN_LIST        1001
 #define IDN_COPY        1002

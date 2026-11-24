@@ -1,6 +1,21 @@
 /*
  * storage.c: Windows-specific implementation of the interface
  * defined in storage.h.
+ *
+ * SUPERSEDED 2026-11-23 - THIS FILE IS NO LONGER BUILT.
+ *
+ * It kept PuTTY's configuration in the registry. PuTTY-beter keeps it in a
+ * folder on every platform instead, so that one configuration can be carried
+ * between a Mac and a PC and so that none of the user's settings live in the
+ * registry. The implementation is now the shared unix/storage.c, built for
+ * Windows with the small POSIX compatibility layer in
+ * windows/storage-win32-compat.h. The one Windows-specific piece that survives
+ * is the shell jump list's list of recent sessions, now in
+ * windows/jumplist-store.c.
+ *
+ * The file is left here, unbuilt, as the record of what the Windows backend
+ * used to do and of the storage format a saved session had before the move.
+ * Do not add it back to windows/CMakeLists.txt.
  */
 
 #include <stdio.h>
@@ -886,4 +901,29 @@ char *session_move(const char *oldname, const char *newname)
 char *session_rmdir(const char *name)
 {
     return dupstr("Session folders are not supported on this platform.");
+}
+
+/*
+ * PuTTY-beter / Windows port (W0): the shared configuration box (config.c)
+ * also calls these three, which unix/storage.c implements for real. Keep the
+ * same "not supported" answer so the front end links; the W4 session-folder
+ * work replaces all six with a registry-backed implementation.
+ */
+int session_folder_entries(const char *name)
+{
+    return -1;                         /* never a folder on this platform */
+}
+
+char *session_rmdir_force(const char *name)
+{
+    return dupstr("Session folders are not supported on this platform.");
+}
+
+char *session_move_target_name(const char *src, const char *dst)
+{
+    /*
+     * There are no folders to move into, so the name would be unchanged;
+     * the caller compares the result with the source and then does nothing.
+     */
+    return dupstr(src);
 }

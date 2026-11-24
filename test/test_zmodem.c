@@ -3,7 +3,7 @@
  *
  * Two kinds of check, deliberately:
  *
- *  - Known-good byte strings from docs/zmodem-protocol-notes.md, which were
+ *  - Known-good byte strings from tech_detail.md Appendix E, which were
  *    computed independently of this code. The ZRINIT header and the ZFILE
  *    subpacket are the important ones: they pin down the CRC-16 and the hex
  *    header layout, which is where the reference document's own worked

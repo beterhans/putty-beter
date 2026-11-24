@@ -95,7 +95,8 @@ More
   * README.md       - the same setup in more depth: where the socket lives, its
                       permissions, and how to debug both ends.
   * USER-MANUAL.md  - what the agent is told to read before it acts.
-  * In the source: PLAN.md section 7 (the design), docs/mcp.md (internals).
+  * In the source: tech_detail.md section 13 (the design) and Appendix F (the
+                      internals).
 
 Rebuilding PuTTY.app refreshes this folder; a copy you made will not change, so
 re-copy it after an upgrade.

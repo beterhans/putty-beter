@@ -56,15 +56,16 @@ Options:
   --no-pager          (run) report a --More-- pager instead of answering it
   --keep-prompt       (run) keep a prompt that the device ended with a newline
   --json              print the raw result instead of a human summary
-  --endpoint <file>   read the socket and token from this endpoint file
-  --socket <path>     the server's Unix socket, if not discovered
+  --endpoint <file>   read the transport and token from this endpoint file
+  --socket <path>     the server's socket, or its named pipe on Windows, if
+                      it cannot be discovered
   --token-file <path> the file holding the handshake token
-  --debug             trace the socket traffic on stderr (and, for run, why
+  --debug             trace the transport traffic on stderr (and, for run, why
                       it decided the command had finished)
   -h, --help          this text
 
-With no server running, the socket only exists while a PuTTY session has
-"Session -> Automation (MCP)" turned on.
+With no server running, the socket (or pipe) only exists while a PuTTY session
+has "Session -> Automation (MCP)" turned on.
 `;
 
 function parseArgs(argv) {
@@ -148,7 +149,11 @@ async function cmdList(opts) {
     process.stdout.write('ID'.padEnd(width) + '  MODE  NAME\n');
     for (const s of sessions) {
         process.stdout.write(String(s.id).padEnd(width) + '  ' +
-            (s.writable ? 'rw' : 'ro') + '    ' + s.name + '\n');
+            (s.writable ? 'rw' : 'ro') + '    ' + s.name +
+            /* Phase 4c: say it here too - a human is being prompted in that
+             * window, so nothing may be sent to it until they answer. */
+            (s.needs_human ? '   [waiting for you: ' + s.prompt + ']' : '') +
+            '\n');
     }
     /*
      * Ids are large and look arbitrary, so say where they come from. There can
@@ -270,6 +275,7 @@ async function cmdRun(opts, args) {
         (r.echo ? ', echo seen' : ', no echo') +
         (r.paged_answers ? `, ${r.paged_answers} page(s) answered` : '') +
         (r.needs_input ? `, wants ${r.needs_input.reason}` : '') +
+        (r.needs_human ? `, needs the human: ${r.needs_human.prompt}` : '') +
         (r.cancelled_by_human ? ', a human typed' : '') +
         (r.truncated ? ', output truncated' : '') +
         `, ${r.elapsed_ms}ms, cursor ${r.cursor})\n`);
@@ -278,6 +284,12 @@ async function cmdRun(opts, args) {
         process.stderr.write(
             `        the session is waiting: ${r.needs_input.reason}\n` +
             `        ${JSON.stringify(r.needs_input.prompt)}\n`);
+    }
+    if (r.needs_human) {
+        process.stderr.write(
+            `        the window is asking the human: ` +
+            `${JSON.stringify(r.needs_human.prompt)}\n` +
+            `        do not answer it - ask the person at the keyboard\n`);
     }
     return 0;
 }

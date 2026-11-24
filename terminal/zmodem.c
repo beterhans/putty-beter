@@ -1,7 +1,7 @@
 /*
  * ZMODEM (sz/rz) file transfer.
  *
- * See zmodem.h for the interface and docs/zmodem-protocol-notes.md for the
+ * See zmodem.h for the interface and tech_detail.md Appendix E for the
  * byte-level protocol reference. This file has no front end, display or
  * filesystem dependency: everything outside goes through ZmodemCallbacks.
  *

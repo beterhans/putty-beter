@@ -66,6 +66,14 @@ struct Filename {
     char *cpath, *utf8path;
 };
 Filename *filename_from_wstr(const wchar_t *str);
+/*
+ * PuTTY-beter: the UTF-8 constructor. It has always existed in
+ * windows/utils/filename.c - filename_deserialise() uses it - but was never
+ * declared, so the only way to reach it was from inside that file. windows/mcp.c
+ * needs it to build a path from a UTF-8 string without going through the
+ * system codepage.
+ */
+Filename *filename_from_utf8(const char *ustr);
 const wchar_t *filename_to_wstr(const Filename *fn);
 FILE *f_open(const Filename *filename, const char *mode, bool isprivate);
 
@@ -192,6 +200,38 @@ void centre_window(HWND hwnd);
 #define PUTTY_REG_PARENT_CHILD "PuTTY"
 #define PUTTY_REG_GPARENT "Software"
 #define PUTTY_REG_GPARENT_CHILD "SimonTatham"
+
+/*
+ * PuTTY-beter: the configuration folder.
+ *
+ * Windows no longer keeps its configuration in the registry: like macOS it
+ * uses a folder, so that one configuration can be carried between a Mac and a
+ * PC. The folder is $USERPROFILE/.putty unless a PUTTYDIR says otherwise, and
+ * a `config-location.conf' file in it can redirect everything elsewhere. The
+ * implementation is the shared unix/storage.c, built for Windows; these are
+ * its entry points, mirroring unix/platform.h.
+ */
+char *config_location_base(void);        /* where the redirect file lives */
+char *config_location_current(void);     /* where the config actually is */
+char *config_location_default_dir(void); /* ~/Documents/putty-beter-config */
+bool config_location_is_redirected(void);
+bool config_location_is_configured(void);
+char *config_location_set(const char *dirtext); /* NULL on success */
+void config_location_invalidate(void);
+
+/*
+ * config-location.c: show the relocation dialog if the configuration is
+ * missing, or if the user held Alt at launch, or if the environment variable
+ * PUTTY_CONFIG_RELOCATE is set. Safe to call more than once.
+ *
+ * Alt is the same physical key as the Option key that the macOS front end
+ * tests, so both front ends behave alike.
+ */
+void config_location_init(void);
+
+/* Small key=value state files in the configuration folder. */
+int config_state_get_int(const char *filename, const char *key, int defvalue);
+void config_state_set_int(const char *filename, const char *key, int value);
 
 /* Result values for the jumplist registry functions. */
 #define JUMPLISTREG_OK 0
@@ -406,6 +446,20 @@ void filereq_saved_dir_free(filereq_saved_dir *state);
 Filename *request_file(
     HWND hwnd, const char *title, Filename *initial, bool save,
     filereq_saved_dir *dir, bool preserve_cwd, FilereqFilter filter);
+/*
+ * PuTTY-beter: the folder counterpart of request_file. Some settings name a
+ * directory rather than a file (dlgcontrol.fileselect.for_directory), and the
+ * file dialog can only ever return a file name.
+ */
+Filename *request_directory(HWND hwnd, const char *title, Filename *initial);
+/*
+ * PuTTY-beter: a file chooser that opens in a given directory. request_file's
+ * `initial' is a file name, and a directory there is rejected by the common
+ * dialog (FNERR_INVALIDFILENAME); this is what the ZMODEM upload chooser
+ * needs, so that it starts in the transfer folder as the macOS side does.
+ */
+Filename *request_file_in_dir(
+    HWND hwnd, const char *title, Filename *initial_dir, FilereqFilter filter);
 struct request_multi_file_return {
     Filename **filenames;
     size_t nfilenames;
@@ -511,7 +565,15 @@ void radioline(struct ctlpos *cp, const char *text, int id, int nacross, ...);
 void bareradioline(struct ctlpos *cp, int nacross, ...);
 void radiobig(struct ctlpos *cp, const char *text, int id, ...);
 void checkbox(struct ctlpos *cp, const char *text, int id);
-void button(struct ctlpos *cp, const char *btext, int bid, bool defbtn);
+HWND button(struct ctlpos *cp, const char *btext, int bid, bool defbtn);
+/*
+ * PuTTY-beter: like button(), but honours the shared code's `force_left'
+ * flag - the control keeps its natural width and is left-aligned in its
+ * column rather than stretched to fill it (GTK does this with
+ * columns_force_left_align()).
+ */
+HWND button_force_left(struct ctlpos *cp, const char *btext, int bid,
+                       bool defbtn);
 void statictext(struct ctlpos *cp, const char *text, int lines, int id);
 void staticbtn(struct ctlpos *cp, const char *stext, int sid,
                const char *btext, int bid);
@@ -790,8 +852,26 @@ char *get_jumplist_registry_entries(void);
 #define CLIPUI_DEFAULT_AUTOCOPY true
 #define CLIPUI_DEFAULT_MOUSE CLIPUI_EXPLICIT
 #define CLIPUI_DEFAULT_INS CLIPUI_EXPLICIT
-/* Windows has historically left Ctrl+Shift+C/V with no action; keep that. */
-#define CLIPUI_DEFAULT_CV CLIPUI_NONE
+/*
+ * PuTTY-beter: upstream Windows left Ctrl+Shift+C/V with no action, on the
+ * grounds that Ctrl+Ins / Shift+Ins are the historical PuTTY-for-Windows
+ * shortcuts. This fork binds them to the system clipboard instead, matching
+ * the macOS front end (unix/platform.h), so that the shortcut people arrive
+ * with from other terminals, and from Linux PuTTY users' muscle memory, does
+ * something. Ctrl+Ins / Shift+Ins keep working exactly as before.
+ *
+ * Non-macOS Unix deliberately keeps CLIPUI_NONE: X11 has a real PRIMARY
+ * selection and a decades-old "Ctrl+Shift+C/V does nothing" convention there.
+ */
+#define CLIPUI_DEFAULT_CV CLIPUI_EXPLICIT
+
+/*
+ * PuTTY-beter: installed by the front end (windows/config-location.c) so that
+ * platform_default_filename() can put default file names inside the
+ * configuration folder without utils/ having to depend on the settings
+ * library. NULL in tools that have no configuration folder.
+ */
+extern char *(*platform_default_filename_dir)(void);
 
 /* In utils */
 HKEY open_regkey_fn(bool create, bool write, HKEY base, const char *path, ...);

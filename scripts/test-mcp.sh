@@ -118,17 +118,15 @@ echo "  build    $BUILD"
 
 
 # ------------------------------------------------------------------
-# A copy of the agent's manual lives in docs/ for humans to read. Checked
-# first, so it is reported even on a machine with no display.
+# The agent's manual is a live file: the bridge reads mcp/USER-MANUAL.md at run
+# time, so there is no docs/ copy to keep in step any more. Checked here, so a
+# missing or empty manual is reported even on a machine with no display.
 # ------------------------------------------------------------------
 
-if [ -f "$root/docs/mcp-user-manual.md" ]; then
-    if cmp -s "$root/mcp/USER-MANUAL.md" "$root/docs/mcp-user-manual.md"; then
-        check "the manual and its docs/ copy are identical" "same" "same"
-    else
-        check "the manual and its docs/ copy are identical" "same" "different"
-        echo "        cp mcp/USER-MANUAL.md docs/mcp-user-manual.md"
-    fi
+if [ -s "$root/mcp/USER-MANUAL.md" ]; then
+    check "the agent manual is present" "non-empty" "non-empty"
+else
+    check "the agent manual is present" "non-empty" "missing or empty"
 fi
 
 # ------------------------------------------------------------------
@@ -199,6 +197,31 @@ if [ -z "$sid" ]; then
 fi
 check "list finds the session by name" "$sid=mcp-smoke" \
       "$(printf '%s' "$ids" | tr ',' '\n' | grep "^$sid=")"
+
+# ------------------------------------------------------------------
+# Phase 4c: the human-prompt state. pterm has no seat prompt of its own, so
+# what is exercised here is the "nobody is being asked" case - the field has to
+# be present and empty on both replies, which is what pins the protocol shape.
+# The "somebody *is* being asked" case is PLAN.md section 7.8, and needs a real
+# prompt the saved session does not answer: an SSH login, checked by hand.
+# ------------------------------------------------------------------
+
+check "list: no human prompt when there is none (phase 4c)" \
+      "needs_human=False prompt=''" \
+      "$(run list | python3 -c '
+import sys, json
+s = json.load(sys.stdin)
+x = [y for y in s if y["name"] == "mcp-smoke"]
+print("needs_human=%s prompt=%r" % (x[0]["needs_human"], x[0]["prompt"])
+      if len(x) == 1 else "BAD-LIST")
+')"
+
+check "read: no human prompt when there is none (phase 4c)" "no needs_human" \
+      "$(run read "$sid" --since 0 | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+print("has needs_human" if "needs_human" in d else "no needs_human")
+')"
 
 # ------------------------------------------------------------------
 # The bridge's own tests. Discovery is where a relocated configuration is

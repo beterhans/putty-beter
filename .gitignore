@@ -154,6 +154,9 @@ Makefile
 # CMake build trees (binaries + the .app bundle stage)
 /build-*/
 /build/
+# Windows build/bundle output (putty.exe + a staged putty-mcp/ with
+# node_modules), written by scripts/build-windows.ps1.
+/putty-beter-win64/
 # Safety copies made before editing upstream source files
 *.old
 

@@ -2045,6 +2045,23 @@ void term_copyall(Terminal *, const int *, int);
 char *term_get_screen_text(Terminal *);
 
 /*
+ * PuTTY-beter: the prompt the terminal is putting to the human right now, or
+ * NULL if it is not asking anything (PLAN.md section 7.8, phase 4c).
+ *
+ * PuTTY asks for a password, a passphrase or a login name by drawing the
+ * prompt *in the terminal* (term_get_userpass_input -> term_userpass_state),
+ * so the text is on the screen and the human types it into the window. An
+ * agent reading the session sees the words but cannot tell "the device is
+ * waiting for me" from "the window is waiting for the person at the
+ * keyboard" - and the second is something no agent should answer. This is
+ * that distinction, as a state rather than a guess at the output text.
+ *
+ * The returned string belongs to the prompts_t and is only valid until the
+ * prompt is answered; copy it if it has to outlive the call.
+ */
+const char *term_prompt_text(Terminal *);
+
+/*
  * PuTTY-beter: a tap on the bytes a human puts into a session - typed or
  * pasted - called just before they reach the line discipline.
  *

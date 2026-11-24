@@ -18,7 +18,7 @@ Written 2026-11-20 on the Intel Mac (`MacMini2018`, macOS 15.8.2, x86_64).
 |---|---|
 | fix for `scripts/bundle-macos.sh` (§3) | **`fd49206`** — *"Sign the bundle's Contents/MacOS binaries on x86_64"* |
 | this document | **`0ca60de`** — *"Hand over the Intel slice: intel_arm_merge.md"* |
-| the GTK PuTTYgen design (§4m, M8) | **`75c87d3`** — *"PLAN.md: design the GTK PuTTYgen front end"* |
+| the GTK PuTTYgen design (tech_detail.md §4m, M8) | **`75c87d3`** — *"PLAN.md: design the GTK PuTTYgen front end"* |
 | pushed to the remote? | **no** — the Intel Mac has no git credentials; **push from the arm Mac** (see §9) |
 
 Oldest-to-newest: `fd49206` → `0ca60de` → `75c87d3`. All three are local only.
@@ -30,7 +30,7 @@ holds uncommitted work from both sides: the arm side's GTK PuTTYgen port
 Intel side's `scripts/make-universal.sh`, the `bundle-macos.sh` fixes described in
 §0, and this document. Check `git status` before committing so the two sets do not
 end up in one unexplained commit.
-Note the third: it is a *design*, not built code — §4m and M8 in `PLAN.md`
+Note the third: it is a *design*, not built code — §4m and M8 in `tech_detail.md`
 describe a `PuTTYGen.app` that does not exist yet, and when it does, the tables
 in §1 and §7 of this document grow a second app.
 
@@ -90,7 +90,7 @@ in §1 and §7 of this document grow a second app.
 > ---
 
 **Everything below §0 was written for one app.** Since then the arm side built the
-GTK PuTTYgen front end (`PLAN.md` §4m) and rewrote `scripts/bundle-macos.sh` to
+GTK PuTTYgen front end (`tech_detail.md` §4m) and rewrote `scripts/bundle-macos.sh` to
 bundle several apps in one run. Two things follow, and both are now handled:
 
 * **There are four bundles, not two.** `PuTTY.app` and `PuTTYGen.app`, each with
@@ -431,7 +431,7 @@ should still report it, so a genuine surprise is visible.
    `<run-install-name-tool/>`, so all dylib references are
    `@executable_path/../Resources/…`. Nothing embeds an absolute Homebrew path,
    which is why the two trees pair up without path surgery. (This is the
-   assumption `PLAN.md` §4 "Why B is workable here" rests on — re-verify it if
+   assumption `tech_detail.md` §1 "Why B is workable here" rests on — re-verify it if
    the merge ever produces a bundle that will not launch.)
 
 ---
@@ -481,7 +481,7 @@ switch, `log()` to stderr, an `-h/--help` that prints the header comment.
 4. **Overlay the x86_64-only entries.** For every path in the x86_64 bundle
    that has no arm64 counterpart:
    * Mach-O → **`ERROR` and exit non-zero** (a Mach-O with no pair cannot be
-     made universal; this is the "fail loudly" case `PLAN.md` §4 asks for)
+     made universal; this is the "fail loudly" case `tech_detail.md` §1 asks for)
    * otherwise → copy through (this is where the two stray PNGs land)
 5. **Re-sign inside-out.** `lipo` invalidates every signature it touches:
    * every Mach-O under `Contents/Resources` **and both executables in
@@ -648,7 +648,7 @@ Mac (this one) — **not** through Rosetta, and not with `arch -x86_64` forcing
 the arm binary. On this Intel box the universal build simply runs the x86_64
 slice, which is the end-to-end check that the Intel side is real.
 
-`PLAN.md` §4 lists the same steps (its items 5 and 9).
+`tech_detail.md` §1 lists the same steps (its items 5 and 9).
 
 ---
 
@@ -682,7 +682,7 @@ slice, which is the end-to-end check that the Intel side is real.
   must stay native.
 * **The version string is `0.85-beter.1` (set 2026-11-21).** `version.h`,
   `LATEST.VER` and both `Info.plist`s carry it, and every About box links to
-  <https://github.com/beterhans/putty-beter> (`PLAN.md` §4 item 6,
+  <https://github.com/beterhans/putty-beter> (`tech_detail.md` §1 item 6,
   `CHANGES-FROM-UPSTREAM.md` §18). **This makes the two slices below stale**:
   they were built before it, so the x86_64 slice still announces `Unidentified
   build` and has no About link — rebuild *both* slices from one revision before
@@ -692,7 +692,7 @@ slice, which is the end-to-end check that the Intel side is real.
 * **Not notarized.** Both bundles are ad-hoc signed only, so Gatekeeper on a
   *different* Mac needs right-click → Open; the local build launches normally
   here. Notarization (`notarytool`, hardened runtime, a Developer account) is
-  still open — `PLAN.md` §4 items 8–9. Note that quarantine is **not** the
+  still open — `tech_detail.md` §1 items 8–9. Note that quarantine is **not** the
   problem it looks like: see §0 item 4 — several hundred files in this repository
   carry `com.apple.quarantine` (a browser download) and it propagates into every
   bundle's `Info.plist`, but a valid seal plus a quarantined `Info.plist` still
@@ -726,7 +726,7 @@ need rebuilding anyway because the version strings changed after they were built
       the merge re-run on the arm Mac, and the image re-verified — `PuTTY.app` 3705
       files / `PuTTYGen.app` 275, 75 Mach-O each, all `x86_64 arm64`, seal valid,
       the readable-exit countdown line in **both** slices. Measurements in
-      `PLAN.md` §4m, "As run again on the arm Mac (2026-11-22)".
+      `tech_detail.md` §4m, "As run again on the arm Mac (2026-11-22)".
 - [x] Run `./scripts/make-universal.sh` **on the arm Mac**: the merged app's
       `Contents/MacOS/putty-mcp` is a symlink that comes from the arm64 bundle
       (x86_64 carries no bridge), and this SMB mount cannot read symlinks at all.

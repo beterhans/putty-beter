@@ -38,6 +38,28 @@ typedef struct McpView {
 typedef void (*mcp_view_fn)(void *ctx, McpView *out);
 
 /*
+ * PuTTY-beter (phase 4c, PLAN.md section 7.8): what the server asks a session
+ * for when a client wants to know whether a *person* is being prompted right
+ * now. Returns the prompt the terminal is putting to the human - the text of
+ * `term_prompt_text()` in putty.h - or NULL when nothing is being asked.
+ *
+ * This is the human-in-the-loop signal, and it is deliberately a state rather
+ * than a guess at the output: a `Password:` line the device printed is the
+ * device talking, but a password prompt the *terminal* is running is the
+ * window asking the person at the keyboard, and an agent must not answer it.
+ * The front end's own ctx is passed, as for the view.
+ */
+typedef const char *(*mcp_prompt_fn)(void *ctx);
+
+/*
+ * Install that. Optional: a front end that never calls it reports "no prompt
+ * forever", which is what the Windows port does until it wants 4c as well.
+ * A separate call rather than another mcp_session_new() argument so that
+ * adding it could not disturb the other front end.
+ */
+void mcp_session_set_prompt_fn(McpSession *s, mcp_prompt_fn fn);
+
+/*
  * Put bytes into the session as if they had been typed. Returns false if the
  * session cannot take them right now - during a ZMODEM transfer the stream is
  * protocol and the terminal is not seeing it, so typed bytes would corrupt the

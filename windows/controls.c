@@ -22,6 +22,17 @@
 
 #include <commctrl.h>
 
+/*
+ * PuTTY-beter: BCM_GETIDEALSIZE asks a button for the size it would like to
+ * be, which is how button_force_left() finds a control's natural width. It
+ * has been in commctrl.h for a long time, but define it if an old SDK is
+ * missing it; the message is only honoured by comctl32 version 6, which the
+ * manifest asks for.
+ */
+#ifndef BCM_GETIDEALSIZE
+#define BCM_GETIDEALSIZE 0x1601
+#endif
+
 #define GAPBETWEEN 3
 #define GAPWITHIN 1
 #define GAPXBOX 7
@@ -37,11 +48,30 @@
 #define COMBOHEIGHT 12
 #define PUSHBTNHEIGHT 14
 #define PROGBARHEIGHT 14
+/*
+ * PuTTY-beter: how tall a multi-line edit box is, in text lines. The panel is
+ * laid out to fit it, so this is what decides the comment box's size
+ * (tech_detail.md section 7).
+ */
+#define MULTILINE_EDIT_LINES 6
 
 DECL_WINDOWS_FUNCTION(static, void, InitCommonControls, (void));
 DECL_WINDOWS_FUNCTION(static, BOOL, MakeDragList, (HWND));
 DECL_WINDOWS_FUNCTION(static, int, LBItemFromPt, (HWND, POINT, BOOL));
 DECL_WINDOWS_FUNCTION(static, void, DrawInsert, (HWND, HWND, int));
+/*
+ * PuTTY-beter: subclassing, which is how a list box gets drag-and-drop of
+ * its own rows (see listbox_state_install() further down). comctl32 has
+ * exported these since Windows XP, but this file loads every comctl32 entry
+ * point dynamically, so do the same here rather than add an import that the
+ * platform link line in cmake/platforms/windows.cmake does not carry.
+ */
+DECL_WINDOWS_FUNCTION(static, BOOL, SetWindowSubclass,
+                      (HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR));
+DECL_WINDOWS_FUNCTION(static, BOOL, RemoveWindowSubclass,
+                      (HWND, SUBCLASSPROC, UINT_PTR));
+DECL_WINDOWS_FUNCTION(static, LRESULT, DefSubclassProc,
+                      (HWND, UINT, WPARAM, LPARAM));
 
 void init_common_controls(void)
 {
@@ -50,6 +80,9 @@ void init_common_controls(void)
     GET_WINDOWS_FUNCTION(comctl32_module, MakeDragList);
     GET_WINDOWS_FUNCTION(comctl32_module, LBItemFromPt);
     GET_WINDOWS_FUNCTION(comctl32_module, DrawInsert);
+    GET_WINDOWS_FUNCTION(comctl32_module, SetWindowSubclass);
+    GET_WINDOWS_FUNCTION(comctl32_module, RemoveWindowSubclass);
+    GET_WINDOWS_FUNCTION(comctl32_module, DefSubclassProc);
     p_InitCommonControls();
 }
 
@@ -535,9 +568,10 @@ void staticbtn(struct ctlpos *cp, const char *stext, int sid,
 /*
  * A simple push button.
  */
-void button(struct ctlpos *cp, const char *btext, int bid, bool defbtn)
+HWND button(struct ctlpos *cp, const char *btext, int bid, bool defbtn)
 {
     RECT r;
+    HWND h;
 
     r.left = GAPBETWEEN;
     r.top = cp->ypos;
@@ -549,12 +583,49 @@ void button(struct ctlpos *cp, const char *btext, int bid, bool defbtn)
     if (defbtn && cp->hwnd)
         SendMessage(cp->hwnd, DM_SETDEFID, bid, 0);
 
-    doctl(cp, r, "BUTTON",
-          BS_NOTIFY | WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-          (defbtn ? BS_DEFPUSHBUTTON : 0) | BS_PUSHBUTTON,
-          0, btext, bid);
+    h = doctl(cp, r, "BUTTON",
+              BS_NOTIFY | WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+              (defbtn ? BS_DEFPUSHBUTTON : 0) | BS_PUSHBUTTON,
+              0, btext, bid);
 
     cp->ypos += PUSHBTNHEIGHT + GAPBETWEEN;
+    return h;
+}
+
+/*
+ * PuTTY-beter: like button(), but the control keeps its natural width and is
+ * left-aligned in its column rather than stretched to fill it. This is what
+ * the shared code's `force_left' flag asks for (dialog.h); GTK does the same
+ * thing with columns_force_left_align(), and it stops a row of buttons from
+ * growing into wide bars when the configuration box is resized.
+ *
+ * The natural width is whatever comctl32 reports for the label, via
+ * BCM_GETIDEALSIZE. That needs the button to exist first, so the button is
+ * created at the column width and then shrunk. The column width is the
+ * ceiling, so a button can never overrun its column and cover the panel
+ * border; if comctl32 does not answer (no version 6), the column width
+ * stands, which is the old behaviour.
+ */
+HWND button_force_left(struct ctlpos *cp, const char *btext, int bid,
+                       bool defbtn)
+{
+    HWND h = button(cp, btext, bid, defbtn);
+    RECT r;
+    SIZE sz;
+
+    if (!h)
+        return h;
+
+    sz.cx = sz.cy = 0;
+    if (!SendMessage(h, BCM_GETIDEALSIZE, 0, (LPARAM)&sz) || sz.cx <= 0)
+        return h;
+
+    GetWindowRect(h, &r);
+    if (sz.cx < r.right - r.left)
+        SetWindowPos(h, NULL, 0, 0, sz.cx, r.bottom - r.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    return h;
 }
 
 /*
@@ -761,8 +832,14 @@ void bigeditctrl(struct ctlpos *cp, const char *stext,
     r.right = cp->width;
     r.bottom = EDITHEIGHT + (lines - 1) * STATICHEIGHT;
     cp->ypos += r.bottom + GAPBETWEEN;
+    /*
+     * PuTTY-beter: ES_WANTRETURN so that Return puts a line break in the box
+     * rather than reaching the dialog and firing its default button, and
+     * ES_AUTOVSCROLL so a long block scrolls itself.
+     */
     doctl(cp, r, "EDIT",
-          WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE,
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE |
+          ES_WANTRETURN | ES_AUTOVSCROLL,
           WS_EX_CLIENTEDGE, "", eid);
 }
 
@@ -788,10 +865,25 @@ void listbox(struct ctlpos *cp, const char *stext,
     r.right = cp->width;
     r.bottom = LISTHEIGHT + (lines - 1) * LISTINCREMENT;
     cp->ypos += r.bottom + GAPBETWEEN;
+    /*
+     * PuTTY-beter: a multi-selection list box uses LBS_EXTENDEDSEL, not
+     * LBS_MULTIPLESEL. LBS_MULTIPLESEL means "every click toggles the row
+     * under the mouse", so a plain click on the saved-session list selects
+     * without clearing the previous row - which reads as if Ctrl or Shift
+     * were being held down when they are not. LBS_EXTENDEDSEL is the style
+     * that behaves like the GTK side's GTK_SELECTION_MULTIPLE, which is
+     * what the shared configuration code was written against: a plain click
+     * selects one row, Ctrl-click toggles a row, Shift-click extends.
+     *
+     * (Upstream used LBS_MULTIPLESEL here for the one multi-selection list
+     * box it had, the character-class panel. That panel now needs Ctrl to
+     * pick several codes, which is how it already works on macOS.)
+     */
+    /* (multi ? LBS_MULTIPLESEL : 0), */
     doctl(cp, r, "LISTBOX",
           WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
           LBS_NOTIFY | LBS_HASSTRINGS | LBS_USETABSTOPS |
-          (multi ? LBS_MULTIPLESEL : 0),
+          (multi ? LBS_EXTENDEDSEL : 0),
           WS_EX_CLIENTEDGE, "", lid);
 }
 
@@ -1341,6 +1433,29 @@ static void move_windows(HWND hwnd, int base_id, int num_ids, LONG dy)
     }
 }
 
+/*
+ * PuTTY-beter: the state a saved-session list box carries - drag-and-drop of
+ * its rows, and the folder tree. It is attached to the list box with
+ * SetWindowSubclass(); see the definitions with the other list box code
+ * further down. The struct itself is defined there, so these are forward
+ * declarations only.
+ */
+struct listbox_state;
+
+static void listbox_state_install(struct dlgparam *dp, dlgcontrol *ctrl,
+                                  HWND hwnd, int id);
+static struct listbox_state *listbox_state_of(struct dlgparam *dp,
+                                              struct winctrl *c);
+static void listbox_tree_forget_paths(struct listbox_state *ls);
+static void listbox_tree_add_path(struct listbox_state *ls, const char *path,
+                                  int at);
+static int listbox_tree_insert_at(struct listbox_state *ls, const char *path);
+static bool listbox_tree_hidden(struct listbox_state *ls, const char *path);
+static bool listbox_tree_is_folder(const char *path);
+static char *listbox_tree_row_text(struct listbox_state *ls, const char *path);
+static bool listbox_tree_toggle(struct dlgcontrol *ctrl, struct dlgparam *dp,
+                                struct winctrl *c);
+
 void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
                     struct ctlpos *cp, struct controlset *s, int *id)
 {
@@ -1542,7 +1657,18 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
             escaped = shortcut_escape(ctrl->label,
                                       ctrl->editbox.shortcut);
             shortcuts[nshortcuts++] = ctrl->editbox.shortcut;
-            if (ctrl->editbox.percentwidth == 100) {
+            if (ctrl->editbox.multiline) {
+                /*
+                 * PuTTY-beter: a multi-line box for a block of free text, which
+                 * here means the session comment (tech_detail.md section 7).
+                 * The GTK side uses a GtkTextView; this is the same ES_MULTILINE
+                 * edit that windows/dialog.c builds for its "more information"
+                 * box, and the panel is grown to fit it because the layout
+                 * below it moves down with it.
+                 */
+                bigeditctrl(&pos, escaped, base_id, base_id+1,
+                            MULTILINE_EDIT_LINES);
+            } else if (ctrl->editbox.percentwidth == 100) {
                 if (ctrl->editbox.has_list)
                     combobox(&pos, escaped,
                              base_id, base_id+1);
@@ -1557,6 +1683,25 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
                     (ctrl->editbox.password ? staticpassedit : staticedit)
                         (&pos, escaped, base_id, base_id+1,
                          ctrl->editbox.percentwidth);
+                }
+            }
+            /*
+             * PuTTY-beter: an edit box that has been given a placeholder
+             * shows it while it is empty, which is how the "Saved Sessions"
+             * box advertises that a leading '/' searches the list rather
+             * than naming a session. GTK has gtk_entry_set_placeholder_text();
+             * the Windows equivalent is EM_SETCUEBANNER, which needs
+             * comctl32 6 - the manifest in putty.mft asks for it - and a
+             * wide string, because this build is ANSI. wParam false means
+             * the hint goes away as soon as there is text to see.
+             */
+            if (pos.hwnd && ctrl->editbox.placeholder) {
+                HWND edit = GetDlgItem(pos.hwnd, base_id+1);
+                if (edit) {
+                    wchar_t *w = dup_mb_to_wc(DEFAULT_CODEPAGE,
+                                              ctrl->editbox.placeholder);
+                    SendMessageW(edit, EM_SETCUEBANNER, false, (LPARAM)w);
+                    sfree(w);
                 }
             }
             sfree(escaped);
@@ -1611,7 +1756,17 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
             if (ctrl->button.iscancel)
                 actual_base_id = IDCANCEL;
             num_ids = 1;
-            button(&pos, escaped, actual_base_id, ctrl->button.isdefault);
+            /*
+             * PuTTY-beter: the shared code marks the saved-session buttons
+             * `force_left' so that they keep their natural width instead of
+             * stretching across their column. Windows has to be told to
+             * honour that.
+             */
+            if (ctrl->force_left)
+                button_force_left(&pos, escaped, actual_base_id,
+                                  ctrl->button.isdefault);
+            else
+                button(&pos, escaped, actual_base_id, ctrl->button.isdefault);
             sfree(escaped);
             break;
           case CTRL_LISTBOX:
@@ -1712,6 +1867,17 @@ void winctrl_layout(struct dlgparam *dp, struct winctrls *wc,
             winctrl_add_shortcuts(dp, c);
             if (actual_base_id == base_id)
                 base_id += num_ids;
+
+            /*
+             * PuTTY-beter: a list box that has a drop handler accepts a row
+             * dragged onto another row, and a list box that is a tree needs
+             * somewhere to keep which folders are closed. Both are handled by
+             * the box itself, so it gets a subclassed window procedure rather
+             * than the dialog engine having to track the mouse.
+             */
+            if (ctrl->type == CTRL_LISTBOX && ctrl->listbox.height != 0 &&
+                (ctrl->listbox.tree || ctrl->listbox.drag_handler))
+                listbox_state_install(dp, ctrl, pos.hwnd, actual_base_id + 1);
 
             if (ctrl->align_next_to) {
                 /*
@@ -1968,8 +2134,21 @@ bool winctrl_handle_command(struct dlgparam *dp, UINT msg,
             ret = pret & 1;
         } else {
             if (msg == WM_COMMAND && HIWORD(wParam) == LBN_DBLCLK) {
-                SetCapture(dp->hwnd);
-                ctrl->handler(ctrl, dp, dp->data, EVENT_ACTION);
+                /*
+                 * PuTTY-beter: in the saved-session list a double click on a
+                 * folder row opens or closes it, and the list is rebuilt. A
+                 * folder cannot be loaded, so nothing is lost by taking the
+                 * gesture over from the shared code, which would only beep.
+                 */
+                bool toggled = false;
+
+                if (ctrl->listbox.tree)
+                    toggled = listbox_tree_toggle(ctrl, dp, c);
+
+                if (!toggled) {
+                    SetCapture(dp->hwnd);
+                    ctrl->handler(ctrl, dp, dp->data, EVENT_ACTION);
+                }
             } else if (msg == WM_COMMAND && HIWORD(wParam) == LBN_SELCHANGE) {
                 ctrl->handler(ctrl, dp, dp->data, EVENT_SELCHANGE);
             }
@@ -1996,10 +2175,18 @@ bool winctrl_handle_command(struct dlgparam *dp, UINT msg,
                 sfree(text);
             }
 
-            Filename *fn = request_file(
-                dp->hwnd, ctrl->fileselect.title, fn_prev,
-                ctrl->fileselect.for_writing, NULL, false,
-                ctrl->fileselect.filter);
+            /*
+             * PuTTY-beter: a setting that names a folder gets the folder
+             * picker. The file dialog can only return a file name, which is
+             * why the transfer folder's Browse button used to insist on a
+             * file and a directory could not be selected at all.
+             */
+            Filename *fn = ctrl->fileselect.for_directory ?
+                request_directory(dp->hwnd, ctrl->fileselect.title, fn_prev) :
+                request_file(
+                    dp->hwnd, ctrl->fileselect.title, fn_prev,
+                    ctrl->fileselect.for_writing, NULL, false,
+                    ctrl->fileselect.filter);
             if (fn_prev)
                 filename_free(fn_prev);
 
@@ -2191,10 +2378,69 @@ bool dlg_checkbox_get(dlgcontrol *ctrl, dlgparam *dp)
     return 0 != IsDlgButtonChecked(dp->hwnd, c->base_id);
 }
 
+/*
+ * PuTTY-beter: the two line-ending conversions a multi-line edit box needs.
+ *
+ * `dup_crlf' turns the configuration's LF-only text into the CRLF an edit
+ * control wants (a CR that is already there is dropped first, so text that
+ * somehow arrived with CRLF does not end up with CRCRLF); `dup_lf_only' does
+ * the reverse, dropping a CR that precedes an LF. A lone CR - which a file
+ * pasted into the box might contain - is left alone either way.
+ */
+static char *dup_crlf(const char *text)
+{
+    size_t len = strlen(text);
+    char *ret = snewn(2 * len + 1, char);
+    size_t at = 0;
+
+    for (const char *p = text; *p; p++) {
+        if (*p == '\r' && p[1] == '\n')
+            continue;                  /* already CRLF; the LF adds the CR */
+        if (*p == '\n')
+            ret[at++] = '\r';
+        ret[at++] = *p;
+    }
+    ret[at] = '\0';
+
+    return ret;
+}
+
+static char *dup_lf_only(const char *text)
+{
+    size_t len = strlen(text);
+    char *ret = snewn(len + 1, char);
+    size_t at = 0;
+
+    for (const char *p = text; *p; p++) {
+        if (*p == '\r' && p[1] == '\n')
+            continue;                  /* the edit's CRLF: the LF is enough */
+        ret[at++] = *p;
+    }
+    ret[at] = '\0';
+
+    return ret;
+}
+
 void dlg_editbox_set(dlgcontrol *ctrl, dlgparam *dp, char const *text)
 {
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     assert(c && c->ctrl->type == CTRL_EDITBOX);
+
+    /*
+     * PuTTY-beter: a multi-line edit wants CRLF between its lines, but the
+     * value being set is the configuration's, and that is LF-only - the GTK
+     * front end's GtkTextView produces LF, and settings.c escapes the two
+     * separately so that a comment written on one platform reads correctly on
+     * the other (tech_detail.md section 7). Convert on the way in and on the
+     * way out, and the stored text stays the same on both.
+     */
+    if (c->ctrl->editbox.multiline) {
+        char *crlf = dup_crlf(text);
+        SetDlgItemText(dp->hwnd, c->base_id+1, crlf);
+        sfree(crlf);
+        return;
+    }
+
     SetDlgItemText(dp->hwnd, c->base_id+1, text);
 }
 
@@ -2210,8 +2456,20 @@ void dlg_editbox_set_utf8(dlgcontrol *ctrl, dlgparam *dp, char const *text)
 char *dlg_editbox_get(dlgcontrol *ctrl, dlgparam *dp)
 {
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
+    char *text;
+
     assert(c && c->ctrl->type == CTRL_EDITBOX);
-    return GetDlgItemText_alloc(dp->hwnd, c->base_id+1);
+
+    text = GetDlgItemText_alloc(dp->hwnd, c->base_id+1);
+
+    /* A multi-line box hands back CRLF; the configuration keeps LF. */
+    if (c->ctrl->editbox.multiline) {
+        char *lf = dup_lf_only(text);
+        sfree(text);
+        text = lf;
+    }
+
+    return text;
 }
 
 char *dlg_editbox_get_utf8(dlgcontrol *ctrl, dlgparam *dp)
@@ -2244,6 +2502,17 @@ void dlg_listbox_clear(dlgcontrol *ctrl, dlgparam *dp)
     msg = (c->ctrl->type==CTRL_LISTBOX && c->ctrl->listbox.height!=0 ?
            LB_RESETCONTENT : CB_RESETCONTENT);
     SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, 0, 0);
+
+    /*
+     * PuTTY-beter: the rows are about to be made again, so the record of what
+     * each row is a name for goes with them. Which folders are closed stays.
+     */
+    if (c->ctrl->type == CTRL_LISTBOX && c->ctrl->listbox.tree) {
+        struct listbox_state *ls = listbox_state_of(dp, c);
+
+        if (ls)
+            listbox_tree_forget_paths(ls);
+    }
 }
 
 void dlg_listbox_del(dlgcontrol *ctrl, dlgparam *dp, int index)
@@ -2284,6 +2553,10 @@ void dlg_listbox_addwithid(dlgcontrol *ctrl, dlgparam *dp,
 {
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     int msg, msg2, index;
+    struct listbox_state *ls = NULL;
+    char *display = NULL;
+    const char *row = text;
+
     assert(c &&
            (c->ctrl->type == CTRL_LISTBOX ||
             (c->ctrl->type == CTRL_EDITBOX &&
@@ -2292,8 +2565,41 @@ void dlg_listbox_addwithid(dlgcontrol *ctrl, dlgparam *dp,
            LB_ADDSTRING : CB_ADDSTRING);
     msg2 = (c->ctrl->type==CTRL_LISTBOX && c->ctrl->listbox.height!=0 ?
             LB_SETITEMDATA : CB_SETITEMDATA);
-    index = SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, 0, (LPARAM)text);
+
+    /*
+     * PuTTY-beter: in a tree list box a row is indented and marked with
+     * whether its folder is open, a row inside a closed folder is not added
+     * at all, and the row goes where the tree puts it rather than at the end.
+     * The id still goes with the row, so the shared code's idea of which row
+     * is which is untouched; only the text and the order differ.
+     */
+    if (c->ctrl->type == CTRL_LISTBOX && c->ctrl->listbox.height != 0 &&
+        c->ctrl->listbox.tree) {
+        ls = listbox_state_of(dp, c);
+
+        if (ls && listbox_tree_hidden(ls, text))
+            return;
+
+        display = listbox_tree_row_text(ls, text);
+        row = display;
+        msg = LB_INSERTSTRING;
+    }
+
+    if (msg == LB_INSERTSTRING) {
+        int at = ls ? listbox_tree_insert_at(ls, text) : 0;
+
+        index = SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, at,
+                                   (LPARAM)row);
+        if (ls)
+            listbox_tree_add_path(ls, text, at);
+    } else {
+        index = SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, 0,
+                                   (LPARAM)row);
+    }
+
     SendDlgItemMessage(dp->hwnd, c->base_id+1, msg2, index, (LPARAM)id);
+
+    sfree(display);
 }
 
 int dlg_listbox_getid(dlgcontrol *ctrl, dlgparam *dp, int index)
@@ -2340,27 +2646,804 @@ void dlg_listbox_select(dlgcontrol *ctrl, dlgparam *dp, int index)
 {
     struct winctrl *c = dlg_findbyctrl(dp, ctrl);
     int msg;
-    assert(c && c->ctrl->type == CTRL_LISTBOX &&
-           !c->ctrl->listbox.multisel);
+    assert(c && c->ctrl->type == CTRL_LISTBOX);
+
+    /*
+     * PuTTY-beter: a multi-selection list box needs different handling.
+     * The saved-session list is multi-selection (so that several sessions
+     * and folders can be dragged at once), and the shared configuration
+     * code selects a row in it whenever a session name is typed or a
+     * search is run. This function used to assert that the control was
+     * *not* multi-selection, which upstream Windows could get away with
+     * because nothing was - so on this fork it aborted as soon as a
+     * session name was entered.
+     *
+     * LB_SETCURSEL alone would not do here: on a multi-selection box it does
+     * not set the caret (and on an LBS_EXTENDEDSEL box it does nothing at
+     * all). So clear every selection first, then select the one wanted row,
+     * then move the caret - with LB_SETCARETINDEX, which is the message for
+     * the caret in a multi-selection list box and also scrolls the row into
+     * view, which is what a search hit needs. That keeps this function's
+     * meaning the same as everywhere else - "the selection is now exactly
+     * this row".
+     */
+    if (c->ctrl->listbox.multisel) {
+        int n;
+
+        assert(c->ctrl->listbox.height != 0);   /* not a combo box */
+
+        n = SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_GETCOUNT, 0, 0);
+        for (int i = 0; i < n; i++)
+            SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_SETSEL, false, i);
+        if (index >= 0 && index < n)
+            SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_SETSEL, true, index);
+        /* SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_SETCURSEL, index, 0); */
+        SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_SETCARETINDEX, index,
+                           TRUE);
+        return;
+    }
+
     msg = (c->ctrl->listbox.height != 0 ? LB_SETCURSEL : CB_SETCURSEL);
     SendDlgItemMessage(dp->hwnd, c->base_id+1, msg, index, 0);
 }
 
 /*
- * PuTTY-beter: every selected row's id. This front end has no tree list
- * boxes, so there is at most one, and the single-row lookup is enough.
+ * PuTTY-beter: every selected row's id, in row order. The saved-session list
+ * is multi-selection, so several sessions and folders can be dragged into a
+ * folder - or deleted - in one go, and the shared configuration code asks for
+ * all of them. This used to return at most one, because this front end had no
+ * multi-selection list boxes; it has one now.
  */
 int dlg_listbox_selected_ids(dlgcontrol *ctrl, dlgparam *dp, int **ids)
 {
-    int id = dlg_listbox_selected_id(ctrl, dp);
+    struct winctrl *c = dlg_findbyctrl(dp, ctrl);
+    int n, *rows;
+
+    assert(c && c->ctrl->type == CTRL_LISTBOX);
 
     *ids = NULL;
-    if (id < 0)
+
+    if (c->ctrl->listbox.height == 0) {
+        /* A drop-down list can hold only one selection. */
+        int id = dlg_listbox_selected_id(ctrl, dp);
+
+        if (id < 0)
+            return 0;
+
+        *ids = snew(int);
+        (*ids)[0] = id;
+        return 1;
+    }
+
+    n = SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_GETSELCOUNT, 0, 0);
+    if (n == LB_ERR || n <= 0)
         return 0;
 
-    *ids = snew(int);
-    (*ids)[0] = id;
-    return 1;
+    rows = snewn(n, int);
+    n = SendDlgItemMessage(dp->hwnd, c->base_id+1, LB_GETSELITEMS, n,
+                           (LPARAM)rows);
+    if (n == LB_ERR || n <= 0) {
+        sfree(rows);
+        return 0;
+    }
+
+    *ids = snewn(n, int);
+    for (int i = 0; i < n; i++)
+        (*ids)[i] = dlg_listbox_getid(ctrl, dp, rows[i]);
+
+    sfree(rows);
+    return n;
+}
+
+/*
+ * PuTTY-beter: drag and drop between the rows of a list box.
+ *
+ * The saved-session list is a flat list in which a folder is an entry whose
+ * name ends in '/', and the shared configuration code wants a row dragged on
+ * to a folder row to mean "move it into that folder". It is told about the
+ * drop through ctrl->listbox.drag_handler(), which is passed the id of the
+ * row that was dropped on, or -1 for the top level. The GTK front end does
+ * the same thing in unix/dialog.c, against a real tree.
+ *
+ * The box is subclassed rather than the dialog engine being taught about the
+ * mouse: the drag is then invisible to everything else, and the list box
+ * keeps its ordinary behaviour, because DefSubclassProc() still gets every
+ * message that is not part of a drag. Windows gives the window that received
+ * WM_LBUTTONDOWN the mouse until the button comes up, so no SetCapture() is
+ * needed either.
+ *
+ * The one thing that needs care is the selection. Pressing a row in a
+ * multi-selection list box does not necessarily select it - Windows applies
+ * the click when the button comes *up* - and a drag never lets the button come
+ * up over the box. So the selection is copied before the press is passed on,
+ * and set again before the handler is called: either the whole of what was
+ * selected, if the press was on one of those rows, or just the pressed row, if
+ * it was not. That is the rule the GTK front end uses in
+ * listbox_restore_selection(), and it is what makes "drag one of several" move
+ * several while "drag a row on its own" moves one. The mouse moves are also
+ * withheld from the list box while a drag is in progress, because on its own
+ * they would extend the selection as the cursor travelled.
+ */
+struct listbox_state {
+    struct dlgparam *dp;
+    dlgcontrol *ctrl;
+    HWND hwnd;
+    bool pressed;                      /* left button went down on a row */
+    bool dragging;                     /* and has moved far enough since */
+    POINT press;                       /* where it went down, client coords */
+    int press_row;                     /* the row it went down on */
+    bool press_was_selected;           /* and was that row already selected? */
+    int *press_rows;                   /* the selection as it was, by row */
+    int npress_rows;
+    int target;                        /* where a drop would go, -2 for unset */
+    /*
+     * The tree half: the full name of each row currently in the box, and the
+     * folders the user has closed. `paths' is rebuilt by every refill;
+     * `closed' deliberately survives one, because that is the whole point of
+     * closing a folder.
+     */
+    char **paths;
+    int npaths;
+    char **closed;
+    int nclosed;
+};
+
+static void listbox_drag_forget_rows(struct listbox_state *ld)
+{
+    sfree(ld->press_rows);
+    ld->press_rows = NULL;
+    ld->npress_rows = 0;
+}
+
+/* The row at a point in the box, or -1 if there is not one. */
+static int listbox_row_at(struct listbox_state *ld, POINT pt)
+{
+    LRESULT hit;
+    int row, outside, count;
+
+    hit = SendMessage(ld->hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+    row = (int)LOWORD(hit);
+    outside = (int)HIWORD(hit);
+    count = (int)SendMessage(ld->hwnd, LB_GETCOUNT, 0, 0);
+
+    if (row < 0 || outside || row >= count)
+        return -1;
+
+    return row;
+}
+
+/* Copy the selected rows, before the press is allowed to change them. */
+static void listbox_drag_snapshot(struct listbox_state *ld)
+{
+    int n;
+
+    listbox_drag_forget_rows(ld);
+
+    n = (int)SendMessage(ld->hwnd, LB_GETSELCOUNT, 0, 0);
+    if (n == LB_ERR || n <= 0)
+        return;
+
+    ld->press_rows = snewn(n, int);
+    ld->npress_rows = (int)SendMessage(ld->hwnd, LB_GETSELITEMS, n,
+                                       (LPARAM)ld->press_rows);
+    if (ld->npress_rows == LB_ERR || ld->npress_rows <= 0)
+        listbox_drag_forget_rows(ld);
+}
+
+/* Leave exactly one row selected, the way a plain click would. */
+static void listbox_drag_select_one(struct listbox_state *ld, int row)
+{
+    int count = (int)SendMessage(ld->hwnd, LB_GETCOUNT, 0, 0);
+
+    for (int i = 0; i < count; i++)
+        SendMessage(ld->hwnd, LB_SETSEL, false, i);
+
+    if (row >= 0 && row < count) {
+        SendMessage(ld->hwnd, LB_SETSEL, true, row);
+        SendMessage(ld->hwnd, LB_SETCARETINDEX, row, TRUE);
+    }
+}
+
+/*
+ * The selection the drop handler should act on: everything that was selected
+ * when the drag began, if the drag began on one of those rows, or just the row
+ * that was dragged if it began anywhere else.
+ */
+static void listbox_drag_restore(struct listbox_state *ld)
+{
+    if (ld->npress_rows > 1 && ld->press_was_selected)
+        for (int i = 0; i < ld->npress_rows; i++)
+            SendMessage(ld->hwnd, LB_SETSEL, true, ld->press_rows[i]);
+    else
+        listbox_drag_select_one(ld, ld->press_row);
+}
+
+/* The row holding a given id, or -1. */
+static int listbox_row_for_id(struct listbox_state *ld, int id)
+{
+    int count = (int)SendMessage(ld->hwnd, LB_GETCOUNT, 0, 0);
+
+    for (int i = 0; i < count; i++)
+        if (dlg_listbox_getid(ld->ctrl, ld->dp, i) == id)
+            return i;
+
+    return -1;
+}
+
+/*
+ * The full name a row stands for.
+ *
+ * A tree list box shows only the indented leaf of each name - "- Folder", not
+ * "Folder/" - so the text in the control is not the name. The record kept
+ * alongside the rows is. Without one (a list box that is not a tree) the text
+ * *is* the name.
+ */
+static char *listbox_row_path(struct listbox_state *ld, int row)
+{
+    int len;
+    char *text;
+
+    if (row >= 0 && row < ld->npaths)
+        return dupstr(ld->paths[row]);
+
+    len = (int)SendMessage(ld->hwnd, LB_GETTEXTLEN, row, 0);
+    if (len == LB_ERR || len < 0)
+        return NULL;
+
+    text = snewn(len + 1, char);
+    SendMessage(ld->hwnd, LB_GETTEXT, row, (LPARAM)text);
+    text[len] = '\0';
+
+    return text;
+}
+
+/* The row whose name is exactly `name`, or -1. */
+static int listbox_row_for_path(struct listbox_state *ld, const char *name)
+{
+    int count = (int)SendMessage(ld->hwnd, LB_GETCOUNT, 0, 0);
+
+    for (int i = 0; i < count; i++) {
+        char *text = listbox_row_path(ld, i);
+        bool same = (text != NULL && !strcmp(text, name));
+
+        sfree(text);
+        if (same)
+            return i;
+    }
+
+    return -1;
+}
+
+/*
+ * What a drop at `pt` would mean: a folder row is the destination, a session
+ * row means the folder that session lives in, and anywhere that is not a row
+ * means the top level (-1).
+ */
+static int listbox_drop_target(struct listbox_state *ld, POINT pt)
+{
+    int row, count, id;
+    char *path, *slash;
+
+    row = listbox_row_at(ld, pt);
+    if (row < 0)
+        return -1;
+
+    count = (int)SendMessage(ld->hwnd, LB_GETCOUNT, 0, 0);
+
+    /*
+     * A point in the empty space below the last row answers with that row,
+     * so ask the last row where it really ends.
+     */
+    if (row == count - 1) {
+        RECT r;
+
+        if (SendMessage(ld->hwnd, LB_GETITEMRECT, row, (LPARAM)&r) == TRUE &&
+            pt.y > r.bottom)
+            return -1;
+    }
+
+    path = listbox_row_path(ld, row);
+    if (!path)
+        return -1;
+
+    if (listbox_tree_is_folder(path)) {
+        /* A folder: that is the destination itself. */
+        id = dlg_listbox_getid(ld->ctrl, ld->dp, row);
+        sfree(path);
+        return id;
+    }
+
+    /*
+     * A session: the destination is the folder it is in, which is its name up
+     * to and including the last '/'. That folder may have no row of its own -
+     * a search can filter it out, or it may be closed - in which case there is
+     * nothing to name, and the drop goes to the top level.
+     */
+    slash = strrchr(path, '/');
+    if (!slash) {
+        sfree(path);
+        return -1;
+    }
+    slash[1] = '\0';
+
+    id = -1;
+    row = listbox_row_for_path(ld, path);
+    if (row >= 0)
+        id = dlg_listbox_getid(ld->ctrl, ld->dp, row);
+
+    sfree(path);
+    return id;
+}
+
+/* Show where the drop would go, by moving the focus rectangle there. */
+static void listbox_drag_show_target(struct listbox_state *ld, int target)
+{
+    int row;
+
+    if (target == ld->target)
+        return;
+
+    if (target >= 0) {
+        row = listbox_row_for_id(ld, target);
+        if (row >= 0)
+            SendMessage(ld->hwnd, LB_SETCARETINDEX, row, TRUE);
+    }
+
+    ld->target = target;
+}
+
+static LRESULT CALLBACK listbox_drag_proc(HWND hwnd, UINT msg, WPARAM wParam,
+                                          LPARAM lParam, UINT_PTR subclass,
+                                          DWORD_PTR refdata)
+{
+    struct listbox_state *ld = (struct listbox_state *)refdata;
+
+    switch (msg) {
+      case WM_LBUTTONDOWN:
+        /*
+         * The selection is read before the box sees the press, because the
+         * press is what changes it.
+         */
+        listbox_drag_snapshot(ld);
+        ld->press.x = (short)LOWORD(lParam);
+        ld->press.y = (short)HIWORD(lParam);
+        ld->press_row = listbox_row_at(ld, ld->press);
+        ld->press_was_selected = false;
+        for (int i = 0; i < ld->npress_rows; i++)
+            if (ld->press_rows[i] == ld->press_row)
+                ld->press_was_selected = true;
+        /* A press that is not on a row has nothing to drag. */
+        ld->pressed = (ld->press_row >= 0);
+        ld->dragging = false;
+        ld->target = -2;
+        break;
+
+      case WM_MOUSEMOVE: {
+        POINT pt;
+
+        pt.x = (short)LOWORD(lParam);
+        pt.y = (short)HIWORD(lParam);
+
+        if (ld->pressed && !ld->dragging) {
+            int dx = pt.x - ld->press.x;
+            int dy = pt.y - ld->press.y;
+
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+
+            if (dx > GetSystemMetrics(SM_CXDRAG) ||
+                dy > GetSystemMetrics(SM_CYDRAG))
+                ld->dragging = true;
+        }
+
+        if (ld->dragging) {
+            listbox_drag_show_target(ld, listbox_drop_target(ld, pt));
+            /* Withheld from the box: see the comment on the state struct. */
+            return 0;
+        }
+        break;
+      }
+
+      case WM_LBUTTONUP: {
+        POINT pt;
+        int target;
+
+        if (!ld->dragging) {
+            ld->pressed = false;
+            listbox_drag_forget_rows(ld);
+            break;
+        }
+
+        pt.x = (short)LOWORD(lParam);
+        pt.y = (short)HIWORD(lParam);
+        target = listbox_drop_target(ld, pt);
+
+        ld->pressed = false;
+        ld->dragging = false;
+        listbox_drag_restore(ld);
+        listbox_drag_forget_rows(ld);
+
+        if (ld->ctrl->listbox.drag_handler)
+            ld->ctrl->listbox.drag_handler(ld->ctrl, ld->dp, target);
+
+        return 0;                  /* the drop was the point of the click */
+      }
+
+      case WM_SETCURSOR:
+        if (ld->dragging) {
+            SetCursor(LoadCursor(NULL, IDC_SIZEALL));
+            return TRUE;
+        }
+        break;
+
+      case WM_CAPTURECHANGED:
+        /* The mouse went elsewhere, so whatever drag was running is over. */
+        ld->dragging = false;
+        break;
+
+      case WM_NCDESTROY:
+        listbox_drag_forget_rows(ld);
+        listbox_tree_forget_paths(ld);
+        for (int i = 0; i < ld->nclosed; i++)
+            sfree(ld->closed[i]);
+        sfree(ld->closed);
+        if (p_RemoveWindowSubclass)
+            p_RemoveWindowSubclass(hwnd, listbox_drag_proc, subclass);
+        sfree(ld);
+        break;
+    }
+
+    return p_DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+static void listbox_state_install(struct dlgparam *dp, dlgcontrol *ctrl,
+                                 HWND hwnd, int id)
+{
+    struct listbox_state *ld;
+    HWND list;
+
+    if (!p_SetWindowSubclass || !p_RemoveWindowSubclass || !p_DefSubclassProc)
+        return;                    /* this comctl32 cannot subclass */
+
+    list = GetDlgItem(hwnd, id);
+    if (!list)
+        return;
+
+    ld = snew(struct listbox_state);
+    memset(ld, 0, sizeof(*ld));
+    ld->dp = dp;
+    ld->ctrl = ctrl;
+    ld->hwnd = list;
+    ld->target = -2;
+
+    if (!p_SetWindowSubclass(list, listbox_drag_proc, 1, (DWORD_PTR)ld)) {
+        sfree(ld);
+        return;
+    }
+
+    /*
+     * The dlg_listbox_* functions and the double-click handler need this
+     * state too, and they only have the control, so leave a pointer to it on
+     * the list box itself. Nothing else uses a list box's GWLP_USERDATA.
+     */
+    SetWindowLongPtr(list, GWLP_USERDATA, (LONG_PTR)ld);
+}
+
+/* The state installed above, or NULL if this control has none. */
+static struct listbox_state *listbox_state_of(struct dlgparam *dp,
+                                              struct winctrl *c)
+{
+    HWND list;
+
+    if (!c || c->ctrl->type != CTRL_LISTBOX)
+        return NULL;
+
+    list = GetDlgItem(dp->hwnd, c->base_id+1);
+    if (!list)
+        return NULL;
+
+    return (struct listbox_state *)GetWindowLongPtr(list, GWLP_USERDATA);
+}
+
+/*
+ * PuTTY-beter: the saved-session list as a tree.
+ *
+ * A Windows list box is the only control here that can have several rows
+ * selected at once, and several-at-once is what dragging a group into a folder
+ * and deleting a group both need - so the tree is *flattened into rows* rather
+ * than being a WC_TREEVIEW, which cannot multi-select at all. The shared
+ * configuration code hands over one row per session, in the order
+ * get_sesslist() produced (depth first, folders before sessions), and this is
+ * where that becomes a tree: a row shows the last component of its name,
+ * indented by its depth, with "- " for an open folder, "+ " for a closed one
+ * and two spaces for a session. A row whose folder is closed is left out
+ * altogether.
+ *
+ * Closing a folder is a front-end notion - the shared code knows nothing about
+ * it - so the set of closed folders is kept here and the list is rebuilt with
+ * dlg_refresh() when it changes. Folders start open, which is what the GTK side
+ * does too (tree_expand() in unix/dialog.c).
+ *
+ * A double click on a folder row opens or closes it; see
+ * listbox_tree_toggle(). A double click on a session row still loads it.
+ */
+
+#define LISTBOX_TREE_INDENT 3          /* spaces per level of nesting */
+
+/* How deep a name sits: "A/" is 0, "A/B/" is 1, "A/B/c" is 2. */
+static int listbox_tree_depth(const char *path)
+{
+    size_t len = strlen(path);
+    int depth = 0;
+
+    for (size_t i = 0; i < len; i++)
+        if (path[i] == '/')
+            depth++;
+
+    if (len > 0 && path[len-1] == '/')
+        depth--;                   /* a folder's own '/' is a marker, not a level */
+
+    return depth < 0 ? 0 : depth;
+}
+
+/* The last component of a name: "A/B/" -> "B", "A/B/c" -> "c". */
+static size_t listbox_tree_leaf(const char *path, const char **leafp)
+{
+    size_t len = strlen(path), start = 0;
+
+    while (len > 0 && path[len-1] == '/')
+        len--;
+
+    for (size_t i = 0; i < len; i++)
+        if (path[i] == '/')
+            start = i + 1;
+
+    *leafp = path + start;
+    return len - start;
+}
+
+/* A name ending in '/' is a folder. */
+static bool listbox_tree_is_folder(const char *path)
+{
+    size_t len = strlen(path);
+
+    return len > 0 && path[len-1] == '/';
+}
+
+/*
+ * Compare two names as entries of a tree: folders before sessions at every
+ * level, then by name, with a folder's own entries directly after it.
+ *
+ * This is deliberately not sessioncmp(). That one only applies the
+ * folders-before-sessions rule when both names end at the component being
+ * compared, so "192.168.1.81" sorts after "zzone/" but *before* "zzone/zzmid"
+ * - the entries of a folder do not stay together after all. Harmless for the
+ * GTK front end, whose tree store groups rows by parent whatever order they
+ * arrive in; wrong for this one, which shows rows in the order it is given
+ * them, and would put a top-level session in the middle of a folder's
+ * contents. So the rows are ordered here instead.
+ */
+static int listbox_tree_cmp(const char *a, const char *b)
+{
+    const char *pa = a, *pb = b;
+
+    /* "Default Settings" is a special case and always comes first. */
+    if (!strcmp(a, "Default Settings"))
+        return -1;
+    if (!strcmp(b, "Default Settings"))
+        return +1;
+
+    while (1) {
+        const char *sa, *sb;
+        size_t la, lb, l;
+        int c;
+        bool fa, fb;
+
+        /*
+         * A name that has run out is a folder the other one is inside, and a
+         * folder comes before its own contents.
+         */
+        if (*pa == '\0' || *pb == '\0')
+            return (*pa == '\0') ? ((*pb == '\0') ? 0 : -1) : +1;
+
+        sa = strchr(pa, '/');
+        sb = strchr(pb, '/');
+        la = sa ? (size_t)(sa - pa) : strlen(pa);
+        lb = sb ? (size_t)(sb - pb) : strlen(pb);
+        l = la < lb ? la : lb;
+        c = memcmp(pa, pb, l);
+
+        /*
+         * A component with a '/' after it is a folder: either the trailing
+         * one that marks a folder, or one with more levels below it.
+         */
+        fa = (sa != NULL);
+        fb = (sb != NULL);
+
+        if (fa != fb)
+            return fa ? -1 : +1;      /* the folder first */
+        if (c)
+            return c;
+        if (la != lb)
+            return la < lb ? -1 : +1;
+        if (!sa || !sb)
+            return 0;                 /* the same name */
+
+        pa = sa + 1;
+        pb = sb + 1;
+    }
+}
+
+/* Where a name belongs among the rows already in the box. */
+static int listbox_tree_insert_at(struct listbox_state *ls, const char *path)
+{
+    for (int i = 0; i < ls->npaths; i++)
+        if (listbox_tree_cmp(path, ls->paths[i]) < 0)
+            return i;
+
+    return ls->npaths;
+}
+
+/* Is this path one of the folders the user has closed? */
+static bool listbox_tree_closed(struct listbox_state *ls, const char *path)
+{
+    for (int i = 0; i < ls->nclosed; i++)
+        if (!strcmp(ls->closed[i], path))
+            return true;
+
+    return false;
+}
+
+static void listbox_tree_set_closed(struct listbox_state *ls,
+                                    const char *path, bool closed)
+{
+    for (int i = 0; i < ls->nclosed; i++) {
+        if (strcmp(ls->closed[i], path))
+            continue;
+
+        if (closed)
+            return;                /* already there */
+
+        sfree(ls->closed[i]);
+        ls->closed[i] = ls->closed[--ls->nclosed];
+        return;
+    }
+
+    if (!closed)
+        return;
+
+    ls->closed = sresize(ls->closed, ls->nclosed + 1, char *);
+    ls->closed[ls->nclosed++] = dupstr(path);
+}
+
+/* Was this row put in the box by the fill that is running now? */
+static bool listbox_tree_shown(struct listbox_state *ls, const char *path)
+{
+    for (int i = 0; i < ls->npaths; i++)
+        if (!strcmp(ls->paths[i], path))
+            return true;
+
+    return false;
+}
+
+/*
+ * Is this row inside a folder that is closed? A folder that is not itself in
+ * the list does not count: a search filters rows out, and a match inside a
+ * closed folder must still be shown, or a search would come up empty.
+ */
+static bool listbox_tree_hidden(struct listbox_state *ls, const char *path)
+{
+    size_t len = strlen(path);
+
+    for (size_t i = 0; i + 1 < len; i++) {
+        char *anc;
+        bool hidden;
+
+        if (path[i] != '/')
+            continue;
+
+        /* path[0..i] is an ancestor folder's name, with its '/'. */
+        anc = snewn(i + 2, char);
+        memcpy(anc, path, i + 1);
+        anc[i+1] = '\0';
+
+        hidden = listbox_tree_shown(ls, anc) && listbox_tree_closed(ls, anc);
+        sfree(anc);
+
+        if (hidden)
+            return true;
+    }
+
+    return false;
+}
+
+/* The text a row is displayed with: indent, marker, last component. */
+static char *listbox_tree_row_text(struct listbox_state *ls, const char *path)
+{
+    const char *leaf;
+    size_t leaflen = listbox_tree_leaf(path, &leaf);
+    int depth = listbox_tree_depth(path);
+    int at = depth * LISTBOX_TREE_INDENT;
+    bool folder = listbox_tree_is_folder(path);
+    char *out = snewn(at + 3 + leaflen, char);
+
+    memset(out, ' ', at);
+    out[at] = folder ? (listbox_tree_closed(ls, path) ? '+' : '-') : ' ';
+    out[at + 1] = ' ';
+    memcpy(out + at + 2, leaf, leaflen);
+    out[at + 2 + leaflen] = '\0';
+
+    return out;
+}
+
+/* Forget the rows, keeping the closed folders. */
+static void listbox_tree_forget_paths(struct listbox_state *ls)
+{
+    for (int i = 0; i < ls->npaths; i++)
+        sfree(ls->paths[i]);
+
+    sfree(ls->paths);
+    ls->paths = NULL;
+    ls->npaths = 0;
+}
+
+/* Remember the full name of a row, at the row it was put in. */
+static void listbox_tree_add_path(struct listbox_state *ls, const char *path,
+                                  int at)
+{
+    if (at < 0 || at > ls->npaths)
+        at = ls->npaths;
+
+    ls->paths = sresize(ls->paths, ls->npaths + 1, char *);
+    memmove(ls->paths + at + 1, ls->paths + at,
+            (ls->npaths - at) * sizeof(char *));
+    ls->paths[at] = dupstr(path);
+    ls->npaths++;
+}
+
+/*
+ * A double click on a folder row opens or closes it, and the list is rebuilt
+ * from storage. Returns false if the double click was not on a folder, which
+ * leaves the caller to do what it always did with it - load the session.
+ */
+static bool listbox_tree_toggle(struct dlgcontrol *ctrl, struct dlgparam *dp,
+                               struct winctrl *c)
+{
+    struct listbox_state *ls = listbox_state_of(dp, c);
+    HWND list = GetDlgItem(dp->hwnd, c->base_id+1);
+    char *target;
+    int row, n;
+
+    if (!ls || !list)
+        return false;
+
+    row = (int)SendMessage(list, LB_GETCURSEL, 0, 0);
+    if (row < 0 || row >= ls->npaths)
+        return false;
+
+    if (!listbox_tree_is_folder(ls->paths[row]))
+        return false;              /* a session: not ours to handle */
+
+    /* The refill below frees this, so keep a copy of it to look for. */
+    target = dupstr(ls->paths[row]);
+
+    listbox_tree_set_closed(ls, target, !listbox_tree_closed(ls, target));
+    dlg_refresh(ctrl, dp);
+
+    /* Leave the folder that was opened or closed selected, as before. */
+    n = (int)SendMessage(list, LB_GETCOUNT, 0, 0);
+    for (int i = 0; i < n; i++) {
+        if (i >= ls->npaths || strcmp(ls->paths[i], target))
+            continue;
+
+        SendMessage(list, LB_SETSEL, false, -1);   /* lParam -1: all rows */
+        SendMessage(list, LB_SETSEL, true, i);
+        SendMessage(list, LB_SETCARETINDEX, i, TRUE);
+        break;
+    }
+
+    sfree(target);
+    return true;
 }
 
 /*

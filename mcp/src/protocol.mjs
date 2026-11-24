@@ -1,16 +1,23 @@
 /*
- * The socket side of putty-mcp: find a running PuTTY MCP server, handshake
+ * The transport side of putty-mcp: find a running PuTTY MCP server, handshake
  * with it, and exchange requests.
  *
  * The protocol is deliberately dumb - a list of length-prefixed fields, no
  * JSON, no escaping - because the other end is C and should not grow a JSON
- * parser. The format is documented at the top of unix/mcp.c, and this file is
- * its only other reader.
+ * parser. The format is documented at the top of unix/mcp.c (and, identically,
+ * windows/mcp.c), and this file is its only other reader.
  *
  *     message := u32 nfields, then nfields * (u32 length, length bytes)
  *
  * Everything is big-endian. Integers travel as decimal text, so the two ends
  * never have to agree on an integer width.
+ *
+ * WHAT THE SERVER IS REACHED THROUGH
+ *
+ * On macOS the server listens on a Unix domain socket; on Windows it listens
+ * on a named pipe. Node's net.connect() takes either - a filesystem path or a
+ * \\.\pipe\name - so only the *discovery* differs, and only in where the
+ * endpoint file is looked for. Everything below the connect is identical.
  */
 
 import fs from 'node:fs';
@@ -21,10 +28,15 @@ import { fileURLToPath } from 'node:url';
 
 import { runOnSession } from './run.mjs';
 
+export const IS_WINDOWS = process.platform === 'win32';
+
 /* Bumped to 2 when `sessions` gained the read-only/read-write field and `send`
- * and `key` were added. Both ends ship together, so a mismatch is a mistake
+ * and `key` were added. Bumped to 3 by phase 4c, when `sessions` gained the
+ * human-prompt field and `read` gained one beside its line count, so a client
+ * can tell "the device is waiting for me" from "the window is waiting for the
+ * person at the keyboard". Both ends ship together, so a mismatch is a mistake
  * rather than a compatibility question, and the handshake reports it. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /* ------------------------------------------------------------------ */
 /* Framing                                                             */
@@ -227,10 +239,50 @@ function configDirs() {
     return out;
 }
 
+/*
+ * Where the server keeps its token and endpoint record.
+ *
+ * On macOS that is $TMPDIR/putty-mcp-<uid>/, with one file per *process*
+ * inside it (sock.<pid>, token.<pid>, endpoint.<pid>).
+ *
+ * On Windows there is no getuid(), so the layout is one directory per process
+ * instead: %TEMP%\putty-mcp-<pid>\ holding `token' and `endpoint'. That is what
+ * windows/mcp.c writes, and it is why discovery below has to look a level
+ * deeper there.
+ */
 function runtimeDir() {
+    if (IS_WINDOWS) {
+        const tmp = process.env.TEMP || process.env.TMP || '.';
+        const parent = tmp.replace(/[\\/]+$/, '') || '.';
+        return path.join(parent, `putty-mcp-${process.pid}`);
+    }
     let tmp = process.env.TMPDIR || '/tmp';
     tmp = tmp.replace(/\/+$/, '') || '/';
     return path.join(tmp, `putty-mcp-${process.getuid()}`);
+}
+
+/*
+ * Every runtime directory a server might be using.
+ *
+ * On macOS that is the single per-user directory. On Windows each PuTTY has
+ * its own, so they are enumerated - a bridge cannot know which pids are live,
+ * and does not need to: a stale endpoint is found out when the connect fails.
+ */
+function runtimeDirs() {
+    if (!IS_WINDOWS)
+        return [runtimeDir()];
+
+    const tmp = process.env.TEMP || process.env.TMP || '.';
+    const parent = tmp.replace(/[\\/]+$/, '') || '.';
+    let names;
+    try {
+        names = fs.readdirSync(parent);
+    } catch {
+        return [];
+    }
+    return names
+        .filter((n) => /^putty-mcp-\d+$/.test(n))
+        .map((n) => path.join(parent, n));
 }
 
 function readEndpointFile(file) {
@@ -246,16 +298,27 @@ function readEndpointFile(file) {
         const m = /^(\w+)\s+(.+?)\s*$/.exec(line);
         if (m) kv[m[1]] = m[2];
     }
-    if (!kv.socket || !kv.token) return null;
+
+    /*
+     * `socket' on macOS, `pipe' on Windows; the field is kept under the name
+     * `socket' from here on, because it is just "the thing to connect to" and
+     * net.connect() does not care which it is.
+     */
+    const target = kv.socket || kv.pipe;
+    if (!target || !kv.token) return null;
 
     /*
      * A crash leaves the endpoint file behind. If its socket is gone the file
      * is stale, and we would rather say "no server" than fail to connect.
+     *
+     * A named pipe is not a filesystem object, so there is nothing to check on
+     * Windows; a stale endpoint there fails at the connect instead, which the
+     * caller already handles.
      */
-    if (!fs.existsSync(kv.socket)) return null;
+    if (!IS_WINDOWS && !fs.existsSync(target)) return null;
 
     return {
-        socket: kv.socket,
+        socket: target,
         tokenFile: kv.token,
         pid: kv.pid ? Number(kv.pid) : undefined,
         version: kv.version ? Number(kv.version) : undefined,
@@ -314,15 +377,23 @@ export function endpointCandidates(opts = {}) {
         for (const file of endpointFiles(dir))
             push(readEndpointFile(file));
 
-    const rt = runtimeDir();
-    for (const file of endpointFiles(rt))
-        push(readEndpointFile(file));
+    for (const dir of runtimeDirs())
+        for (const file of endpointFiles(dir))
+            push(readEndpointFile(file));
 
-    /* An explicit socket and token override everything. */
-    const sock = opts.socket || path.join(rt, 'sock');
-    const token = opts.tokenFile || path.join(rt, 'token');
-    if (fs.existsSync(sock) && fs.existsSync(token))
-        push({ socket: sock, tokenFile: token, source: 'derived' });
+    /*
+     * An explicit socket and token override everything. This is the macOS
+     * layout (a fixed `sock' inside the per-user runtime directory); on
+     * Windows the endpoint record in each per-process directory already names
+     * the pipe, so there is nothing to derive.
+     */
+    if (!IS_WINDOWS) {
+        const rt = runtimeDir();
+        const sock = opts.socket || path.join(rt, 'sock');
+        const token = opts.tokenFile || path.join(rt, 'token');
+        if (fs.existsSync(sock) && fs.existsSync(token))
+            push({ socket: sock, tokenFile: token, source: 'derived' });
+    }
 
     return out;
 }
@@ -526,10 +597,16 @@ export async function listSessions(opts = {}) {
         for (const { client, endpoint } of clients) {
             const [count, ...fields] = await client.request('sessions');
             for (let i = 0; i < Number(count); i++) {
+                const prompt = fields[4 * i + 3] || '';
                 sessions.push({
-                    id: Number(fields[3 * i]),
-                    name: fields[3 * i + 1],
-                    writable: fields[3 * i + 2] === 'rw',
+                    id: Number(fields[4 * i]),
+                    name: fields[4 * i + 1],
+                    writable: fields[4 * i + 2] === 'rw',
+                    /* Phase 4c: non-empty while the *window* is asking the
+                     * person at the keyboard something. An agent must not
+                     * answer it - ask the human instead. */
+                    needs_human: prompt !== '',
+                    prompt,
                     pid: endpoint.pid,
                 });
             }
@@ -547,10 +624,10 @@ async function readOn(c, session, since, maxBytes) {
         since ? String(since) : '',
         maxBytes ? String(maxBytes) : '');
 
-    const [cursor, totalLines, missingFrom, missingTo, omitted, nlines] = f;
+    const [cursor, totalLines, missingFrom, missingTo, omitted, nlines, prompt] = f;
     const lines = [];
     for (let i = 0; i < Number(nlines); i++) {
-        const base = 6 + 3 * i;
+        const base = 7 + 3 * i;
         lines.push({
             id: Number(f[base]),
             author: f[base + 1],
@@ -566,6 +643,13 @@ async function readOn(c, session, since, maxBytes) {
     };
     if (missingTo)
         out.gap = { missing_from: Number(missingFrom), missing_to: Number(missingTo) };
+    /*
+     * Phase 4c: whether the window is prompting the person at the keyboard.
+     * The words of a PuTTY prompt are on the screen either way, so this state
+     * is what says "do not answer this - ask the human".
+     */
+    if (prompt)
+        out.needs_human = prompt;
     return out;
 }
 

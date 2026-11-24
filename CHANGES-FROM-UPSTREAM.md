@@ -11,6 +11,18 @@ deliberately not vendored (`tools/README.md`).
 
 Everything not mentioned below is unmodified upstream PuTTY.
 
+**Scope.** The narrative sections below describe the fork as it behaves on
+**macOS**, which is where it was developed; that is what the feature-by-feature
+accounts and their measurements are about. The **Windows port** is a difference
+from upstream in its own right, and a large one: it is recorded in the
+`windows/*` rows of *Modified upstream files* below, with the full file inventory
+in [`tech_detail.md` Appendix A](tech_detail.md#appendix-a-what-the-windows-port-touches),
+and its per-feature status in [`PLAN.md`](PLAN.md). A handful of the sentences
+below name a macOS mechanism where the Windows front end has an equivalent of its
+own — the readable exit's "GTK label below the terminal" is a status line across
+the bottom of the terminal window on Windows, for instance — and `tech_detail.md`
+is the place that says which is which.
+
 ---
 
 ## Reproducing this diff
@@ -46,14 +58,14 @@ fixes, so `git log` alone shows only the later work.
 | Session files | A saved session is a `<name>.conf` file, and only `.conf` files are read as sessions, so Finder's `.DS_Store` and stray copies no longer turn up in the list. Folders are directories and have no extension. |
 | Session passwords | A session can remember its login password — kept in the session file wrapped, injected into the password prompt so connecting does not ask, and offered for keeping after a login that succeeds. Named for both halves: the offer to remember covers the login name typed at the `login as:` prompt as well, so a session whose password is already saved stops asking for the username too. |
 | ZMODEM | `sz`/`rz` file transfer in both directions, engine written in-tree from the public-domain spec, with a progress window and a working Cancel. |
-| Transparent background | Window → Colours → "Transparency (0 = solid, 255 = see-through)": how much of the desktop shows through the background colour. Applied to the *default* background only, so text with a colour of its own — highlighted lines, the cursor — stays solid. |
+| Transparent background | Window → Colours → "Transparency (0 = solid, 255 = see-through)": how much of the desktop shows through the background colour. Applied to the *default* background only, so text with a colour of its own — highlighted lines, the cursor — stays solid. **macOS only** — Windows has no good equivalent, so the feature was dropped there (section 15). |
 | Window placement | A new session window opens on the monitor the configuration box (or the window a new session was asked for from) is on, instead of on whichever screen macOS picks; the primary one when there is nothing to inherit from. See section 16 — and note that `-geometry` is a no-op on macOS. |
 | File chooser | One chooser for every file and folder setting, with a visible full-path box instead of GTK's Ctrl+L location bar. |
 | Dialog title bars | GTK's `GtkDialog` windows get an opaque title bar; on macOS they were drawn see-through. |
 | Defaults | Logging, function keys, Backspace, window size, keepalive and IP version defaults changed. |
-| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. **The bridge itself ships inside `PuTTY.app`**, with the note that says how to configure it as an MCP server (section 19). |
+| MCP | An AI agent can read a live session — list sessions, read their output, read the visible screen — type into it, and **run a command and wait for the device to finish** (`run`), including answering a `--More--` pager and stopping at a prompt that wants input. Text the *human* types is tagged `h` in the transcript. Off by default, per session, with reading and typing as separate opt-ins. **The bridge itself ships inside `PuTTY.app`**, with the note that says how to configure it as an MCP server (section 19). **The window's own prompts are reported** — an agent can see that PuTTY is asking the human for a password, and will not answer it (section 13). |
 | PuTTYGen GUI | `puttygen` gains a **GTK front end** — `unix/puttygen.c`, a port of the Windows-only `windows/puttygen.c` — built as `puttygenapp` and shipped as `PuTTYGen.app` beside `PuTTY.app`. Generate, inspect, load, convert and save keys by clicking, on a worker thread with a working Cancel. The command-line `puttygen` is unchanged and is the oracle the GUI is tested against. |
-| Version and identity | The fork's own version string — **0.85-beter.1** — in `version.h`, `LATEST.VER` and both `Info.plist`s, a clickable link to <https://github.com/beterhans/putty-beter> at the foot of every About box, and a second copyright line (`This fork: Copyright 2026 beterhans.`) below the preserved upstream notice. See section 18. |
+| Version and identity | The fork's own version string — **0.85-beter.1** — in `version.h`, `LATEST.VER` and both `Info.plist`s, a clickable link to <https://github.com/beterhans/putty-beter> at the foot of every About box, and a second copyright line (`This fork: Copyright 2026 beterhans.`) below the preserved upstream notice. **Both front ends**: the Windows About box gained the same two lines and the same fork link, and `windows/putty.ico` is now the fork icon, built from the PNG by `scripts/make-ico.py`. See section 18. |
 | Build tooling | `scripts/build-macos.sh`, `scripts/bundle-macos.sh` (now building **both** apps), `scripts/make-universal.sh` (universal apps + the `PuTTY-universal.dmg` installer), `scripts/make-icns.sh`, `scripts/test-puttygen-gui.sh`, `CMakePresets.json`, self-contained `PuTTY.app` and `PuTTYGen.app` with this fork's own icons, and GSettings schemas compiled into each bundle. |
 | Diagnostics | `PUTTY_DIAG=1`, `PUTTY_CONFIG_DEBUG=1`, `PUTTY_MCP_DEBUG=1`, `PUTTY_SESS_SEARCH_DEBUG=1`, `PUTTY_SESSPASS_DEBUG=1` and `PUTTYGEN_DEBUG=1` runtime traces. |
 
@@ -69,8 +81,8 @@ tool will give slightly different numbers for the same change.
 | File | +/- | What changed |
 |---|---|---|
 | `conf.h` | +137 / -7 | Seven default values changed (see below); `session_comment`, `session_password`, `session_name`, `zmodem_dir`, `bg_transparency`, `mcp_enabled` and `mcp_write` added |
-| `config.c` | +660 / -42 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added; the saved-session search in the Session panel (see below); the password box moved next to "Auto-login username" in Connection → Data; the Window/Colours transparency controlset |
-| `dialog.h` | +83 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` and `placeholder` on the edit box; `for_directory` flag on the file selector (per front end; Windows ignores all of them) |
+| `config.c` | +660 / -42 | New tunnels in Connection → Tunnels preselect IPv4 instead of Auto; the Session panel reordered so the saved-session list is last and can grow; the Load/Save/Delete buttons keep their natural width; the Session/Comment panel added; the Session/File transfer panel added; the Session/Automation (MCP) panel added; the saved-session search in the Session panel (see below); the password box moved next to "Auto-login username" in Connection → Data; the Window/Colours transparency controlset; the saved-session buttons' column widened from 20% to 26% so "New Folder" is not clipped at high display scaling (only Windows notices — GTK sizes that column to its contents) |
+| `dialog.h` | +83 / -0 | `vexpand` flag on `struct controlset`; `vexpand` / `force_left` flags on `struct dlgcontrol`; `multiline` and `placeholder` on the edit box; `for_directory` flag on the file selector (per front end; on Windows `vexpand` is still ignored, and `force_left` was ignored until W7 gave it `button_force_left()`) |
 | `dialog.c` | +9 / -0 | Initialise those flags in `ctrl_getset()` / `ctrl_new()` / `ctrl_editbox()` / `ctrl_filesel()` |
 | `settings.c` | +179 / -4 | `CtrlShiftCV` default comes from `CLIPUI_DEFAULT_CV` instead of a hardcoded `CLIPUI_NONE`, so it can differ per platform; `sessioncmp` sorts folders before sessions at every level; the session comment and the session password are saved and loaded by hand (the comment with newlines escaped, the password wrapped by `utils/sesspass.c`); `load_settings()` records which saved session the configuration came from |
 | `terminal/terminal.c` | +179 / -2 | IME pre-edit cursor fix; `PUTTY_DIAG` tracing; `term_get_screen_text()`, the visible screen as plain UTF-8, for the MCP server; `term_set_input_tap()`, which reports what a human typed or pasted |
@@ -92,9 +104,12 @@ tool will give slightly different numbers for the same change.
 | `unix/storage.c` | +1205 / -30 | Configuration-folder redirection, the `config_location_*` API, and the `gui-state` key=value store; session files are `.conf` (`INDEX_SESSIONFILE` beside `INDEX_SESSION`, which stays a folder), hidden entries are skipped, and a name beginning with `.` is refused; the redirect file is `config-location.conf` |
 | `unix/unifont.c` | +1 / -0 | The font selector dialog also gets the opaque-title-bar fix |
 | `unix/window.c` | +1597 / -28 | Default log file name; Finder drag-and-drop; `dup_mb_to_wc_c` fix; Command-key pass-through; `is_insert_key()` for Ctrl+Ins/Shift+Ins; `PUTTY_DIAG`; the ZMODEM front end (engine lifecycle, output divert, key routing, progress window); the MCP front end (session lifecycle, the stream tap, the screen callback, the human-input tap); the saved-session login details: the seat asks for the password after `-pw` declines, one attempt per connection, and offers to keep a freshly typed password *and* the login name typed at the `login as:` prompt after a login succeeds; the transparent background: RGBA visual, alpha on the default background colour, and a GTK-drawn title bar while the window is see-through; which monitor a new session window opens on (section 16) |
-| `windows/platform.h` | +2 / -0 | Keep `CLIPUI_DEFAULT_CV = CLIPUI_NONE` on Windows |
-| `windows/controls.c` | +62 / -0 | `dlg_listbox_selected_id()` / `dlg_listbox_select_id()` for the Windows front end (no tree support there, so an id is a row index); the `for_directory` file selector flag is ignored |
-| `windows/storage.c` | +21 / -0 | Folder operations return "not supported" (a Windows session is a registry key) |
+| `windows/platform.h` | +74 / -0 | `CLIPUI_DEFAULT_CV` is `CLIPUI_EXPLICIT` on Windows (the port's change; upstream leaves it `CLIPUI_NONE`), the folder-chooser, `config_state_*` and `request_file_in_dir()` declarations |
+| `windows/controls.c` | +1099 / -13 | the dialog primitives the shared configuration box calls (`dlg_listbox_selected_id()`, `dlg_listbox_select_id()`, `dlg_confirm`), and everything the Windows port has since added to them: the multi-selection fix, the extended-selection style, the `EM_SETCUEBANNER` placeholder, the multi-line comment box, and the saved-session list's own drag-and-drop and folder tree |
+| `windows/window.c` | +1383 / -20 | the MCP front end, the saved-session login details, the readable exit's close countdown, and the ZMODEM front end (§11) |
+| `windows/dialog.c` | +453 / -43 | the resizable configuration box, and the box size remembered in `gui-state` |
+| `windows/storage.c` | +61 / -0 | **not built** — superseded by `unix/storage.c`; its folder operations return "not supported" and are dead code now |
+| `windows/*` (the rest) | see **`tech_detail.md` Appendix A** | `utils/defaults.c`, `utils/request_file.c`, `win-gui-seat.h`, `putty-common.rc2`, `CMakeLists.txt`, `utils/split_into_argv.c`, `putty-rc.h`, `README-msi.txt`, and the new `config-location.c`, `storage-win32-compat.h`, `jumplist-store.c`, `mcp.c` and `mcp.h`. The full inventory — 13 files differing, 5 new, 105 byte-identical — is kept in **`tech_detail.md` Appendix A** rather than repeated here, because it changes with every Windows batch |
 | `storage.h` | +26 / -0 | Declarations for the folder operations and the name checks |
 | `utils/CMakeLists.txt` | +2 / -0 | Build `utils/sesssearch.c` and `utils/sesspass.c` into the `utils` library |
 | `CMakeLists.txt` | +48 / -1 | `test_sessions`, `test_sesssearch`, `test_sesspass`, `test_zmodem`, `test_zmodem_interop` and `test_mcp_buffer` targets |
@@ -112,12 +127,15 @@ tool will give slightly different numbers for the same change.
 |---|---|
 | `CMakePresets.json` | `arm64`, `x86_64`, `debug` presets |
 | `scripts/build-macos.sh` | Per-architecture build, one command |
+| `scripts/build-windows.ps1` | The Windows counterpart, and more than a build: one command produces `build-win\putty.exe` **and** stages `putty-beter-win64\` — the exe plus `putty-mcp\` with dependencies installed on Windows and a generated `SETUP-WIN.txt`. Idempotent, with switches for clean/reconfigure/reinstall/stage-only. See [`WINDOWS-BUILD.md`](WINDOWS-BUILD.md) |
+| `install-toolchain-win.ps1` | Sets up a Windows build host: Git, CMake, Ninja, MSYS2 x86_64 and the mingw-w64 **UCRT64** toolchain, with machine-scope PATH entries and optional Defender exclusions. Re-runnable and self-verifying |
+| `WINDOWS-BUILD.md` | The Windows build reference: the one-command script, what it stages and why, the switches, prerequisites, the PowerShell 5.1 trap, a troubleshooting table, and how to verify a payload by hand |
 | `scripts/bundle-macos.sh` | Builds `PuTTY.app` with gtk-mac-bundler, then has to fix up the result: normalise Cellar paths to `opt`, resolve dangling references, regenerate `loaders.cache`, **compile the GSettings schemas into the bundle**, **install the MCP bridge** (section 19), ad-hoc re-sign |
 | `terminal/zmodem.c` | The ZMODEM engine: sender and receiver, written in-tree from the public-domain spec and Forsberg's original `rzsz`. Pure C with a callback interface, so it has no GTK, display or filesystem dependency and can be tested on its own |
 | `terminal/zmodem.h` | The `ZmodemCallbacks` interface it talks to the front end through |
 | `test/test_zmodem.c` | 135 checks: independent CRC vectors, a full loopback round trip, and the cancel / refused-file paths |
 | `test/test_zmodem_interop.c` | Drives the **real** `sz` and `rz` over a pty, both directions, byte-for-byte |
-| `docs/zmodem-protocol-notes.md` | Byte-exact protocol reference, with the licence status of every source it draws on |
+| `tech_detail.md` Appendix E | Byte-exact ZMODEM protocol reference, with the licence status of every source it draws on (was `docs/zmodem-protocol-notes.md`) |
 | `unix/utils/filechooser.c` | `our_file_chooser_run()` — the one file/folder chooser, with the full-path box |
 | `unix/config-location.c` | The "where should the configuration live?" dialog |
 | `unix/mcp.c` | The MCP server: the Unix socket, the session registry, the handshake, the length-prefixed wire protocol, and the endpoint files. Deliberately has no JSON — that lives in `mcp/` |
@@ -128,12 +146,12 @@ tool will give slightly different numbers for the same change.
 | `mcp/` | The bridge. `bin/putty-mcp.mjs` (the CLI and the MCP server entry point), `src/protocol.mjs` (endpoint discovery and the socket protocol), `src/server.mjs` (the MCP tools and resources), `src/cli.mjs`, `src/manual.mjs`; plus `USER-MANUAL.md`, `README.md` and `package.json` |
 | `mcp/USER-MANUAL.md` | The agent-facing manual, served by the `user_manual` tool and the `putty://manual` resource |
 | `mcp/test/protocol.test.mjs` | 19 checks over the bridge's framing and its endpoint discovery, including following a `config-location.conf` redirect and a check that the redirect file's name still matches `CONFIG_REDIRECT_FILENAME` in `unix/storage.c`. No PuTTY, no socket, no display |
-| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (36 checks) |
+| `scripts/test-mcp.sh` | Smoke test: starts its own `pterm` against a throwaway configuration folder and drives the bridge end to end (38 checks) |
 | `mcp/src/detect.mjs` | What the last line of output means: the prompt family, the pager patterns (including the two macOS pagers put where nobody expects them), the waiting-for-input patterns, and the order between them. Pure functions, so it is tested from a table of strings |
 | `mcp/src/run.mjs` | The `run` poll loop: baseline, send, the fence, pager answers, `needs_input`, quiet/prompt completion, timeout, and the human-cancel rule |
 | `mcp/test/run.test.mjs` | 124 checks over the two above, with a fake session on a virtual clock |
-| `docs/mcp.md` | **How the MCP works**, for whoever works on it next: the files, the wire protocol with a snippet for driving the socket by hand, the capture-buffer semantics, `run` and why the waiting is in the bridge rather than the server, how human keystrokes are tagged (and why they are not written), the socket and its permissions, the build, testing, debugging, and what is still missing |
-| `docs/mcp-user-manual.md` | The agent's manual as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, kept in step by a check in `scripts/test-mcp.sh` |
+| `tech_detail.md` Appendix F | **How the MCP works**, for whoever works on it next: the files, the wire protocol with a snippet for driving the socket by hand, the capture-buffer semantics, `run` and why the waiting is in the bridge rather than the server, how human keystrokes are tagged (and why they are not written), the socket and its permissions, the build, testing, debugging, and what is still missing (was `docs/mcp.md`) |
+| ~~`docs/mcp-user-manual.md`~~ | **Deleted.** It was a byte-identical copy of `mcp/USER-MANUAL.md` kept for reading; the bridge reads `mcp/USER-MANUAL.md` itself at run time, so the copy could only drift |
 | `tools/README.md` | Why `gtk-mac-bundler` is not vendored, and how to fetch it |
 | `test/test_sessions.c` | Tests for the session-folder storage layer |
 | `utils/sesssearch.c` | The saved-session search: what counts as a search, the text a session is searched by, and the case-insensitive match. Pure - no I/O, no GTK - so it is testable on its own |
@@ -142,9 +160,10 @@ tool will give slightly different numbers for the same change.
 | `utils/sesspass.c` | The stored form of a saved session's password: `sesspass_blob_new()` / `sesspass_blob_open()` and the `v0` version tag. Pure — no I/O, no GTK — so it is testable on its own, and the tag is the seam for the encrypted `v1` that comes next |
 | `utils/sesspass.h` | Its interface, and the `PUTTY_SESSPASS_DEBUG` switch |
 | `test/test_sesspass.c` | 38 checks: round trips (including base64 padding and UTF-8), an empty password, and the failure modes — an unknown version, invalid base64, and a blob that must not be decodable |
-| `docs/session-search.md` | **How the search works**: the prefix rule, what is matched, the per-session cache and its invalidation, how to drive the dialog from a script, and what is deliberately not done |
-| `docs/macos-gtk-notes.md` | **What macOS and GTK do that you would not expect**, with the numbers: a new window lands on the monitor at (0,0) rather than the primary one and `GTK_WIN_POS_CENTER` does not help; `-geometry` is compiled out (so `inst->gotpos` is dead code here); a native title bar is painted from the window's own background; GTK windows and menus are invisible to AppleScript (but keystrokes and `ESC [ 3 ; x ; y t` work). Plus the recipes for measuring window and monitor state, and two small compile traps |
-| `PLAN.md` | Roadmap and the reasoning behind it |
+| `tech_detail.md` Appendix G | **How the search works**: the prefix rule, what is matched, the per-session cache and its invalidation, how to drive the dialog from a script, and what is deliberately not done (was `docs/session-search.md`) |
+| `tech_detail.md` Appendix D | **What macOS and GTK do that you would not expect**, with the numbers: a new window lands on the monitor at (0,0) rather than the primary one and `GTK_WIN_POS_CENTER` does not help; `-geometry` is compiled out (so `inst->gotpos` is dead code here); a native title bar is painted from the window's own background; GTK windows and menus are invisible to AppleScript (but keystrokes and `ESC [ 3 ; x ; y t` work). Plus the recipes for measuring window and monitor state, and two small compile traps (was `docs/macos-gtk-notes.md`) |
+| `tech_detail.md` | The detail behind `PLAN.md`: findings, gotchas and "as built" accounts, one section per feature with a macOS half and a Windows half |
+| `PLAN.md` | The plan: tools, phases, progress and results, both platforms |
 | `icons/PuTTY.icns`, `icons/putty-*.pam` | Generated icon assets; the `.icns` is what `unix/putty.plist` asks for |
 | `icons/putty-beter-icon.png` | The app icon source, converted to `icons/PuTTY.icns` at bundle time |
 | `scripts/make-icns.sh` | PNG → `.icns` using only `sips` and `iconutil` |
@@ -361,6 +380,14 @@ window that stays the size you made it, the list is the natural thing to grow.
   `build-universal/PuTTY-universal.dmg` with an `/Applications` symlink. The image
   is built with `diskutil image create from` (macOS 27 deprecates `hdiutil
   create`), falling back to `hdiutil` where that verb is absent.
+* `scripts/build-windows.ps1` is the Windows build **and packaging** entry point;
+  `install-toolchain-win.ps1` sets up the host. The script runs the cross build
+  (native arm64 cmake/ninja driving the x86_64 UCRT64 gcc), copies `putty.exe` into
+  `putty-beter-win64\`, mirrors the MCP bridge into `putty-mcp\` there, installs
+  its dependencies **on Windows** (`npm ci --omit=dev`, so `node_modules/.bin` is
+  native rather than the SMB-mangled mac shims), writes `SETUP-WIN.txt` from the
+  real paths, and smoke-tests the bridge before reporting success. Step-by-step
+  behaviour, the switches, and the PowerShell 5.1 traps: [`WINDOWS-BUILD.md`](WINDOWS-BUILD.md).
 
 ## 8. Diagnostics
 
@@ -588,7 +615,7 @@ interface** (`ZmodemCallbacks` in `terminal/zmodem.h`) and depends on neither
 GTK nor the display nor the filesystem, so it is unit-testable and would suit
 any front end. It was written in-tree from the public-domain ZMODEM
 specification and Chuck Forsberg's original `rzsz`, and is MIT like the rest of
-this tree — no GPL component is involved. `docs/zmodem-protocol-notes.md`
+this tree - no GPL component is involved. `tech_detail.md` Appendix E
 records exactly which sources were used and the licence status of each;
 `lrzsz` was deliberately never consulted.
 
@@ -612,10 +639,21 @@ records exactly which sources were used and the licence status of each;
   actually been sent. One `rz` sends one file; run `rz` again for another.
 * A transfer cut short does **not** leave a truncated file behind.
 
+**On Windows** the same engine is wired into the Win32 seat: `win_seat_output()`
+diverts stdout to it, every typed-input path goes through a funnel that hands the
+bytes to the engine instead of the terminal, and the progress window is a
+modeless `IDD_ZMODEM` dialog with a real `msctls_progress32` bar. Verified the
+same way, byte-for-byte, both directions. Three Windows-specific notes are in
+`tech_detail.md` §12: a directory is not a valid initial file name for the common
+dialog (hence `request_file_in_dir()`), editing a `.rc2` does not rebuild the
+resource unless the `.rc` is touched too, and a blocking front-end callback also
+stops the socket being read, so the upload chooser must be answered promptly.
+
 **Tests.** `test/test_zmodem.c` (135 checks) covers CRC vectors from the spec, a
 full loopback round trip, and the cancel and refused-file paths.
 `test/test_zmodem_interop.c` drives the **real** `sz` and `rz` over a pty in both
-directions and compares 250000 bytes byte-for-byte.
+directions and compares 250000 bytes byte-for-byte. (That one is macOS-only: it
+uses `forkpty()`.)
 
 ## 12. One file chooser, and dialog title bars on macOS
 
@@ -899,12 +937,12 @@ running against a real pty, which is the argument for doing it:
    truncation reports `omitted_lines` so it is actionable. The cap also counts
    each line's newline, so it is a true bound on the string returned.
 
-**Test:** `scripts/test-mcp.sh` (36 checks) starts its own `pterm` against a
+**Test:** `scripts/test-mcp.sh` (38 checks) starts its own `pterm` against a
 throwaway configuration folder and verifies the whole path end to end, including
 `run` against a real pty: a slow command waited for rather than cut off, a real
 `more` paged through, a stand-in for network gear's own `--More--`, and a
 `Password:` prompt stopping the run. It needs a display and touches nothing of
-yours. `mcp/test/run.test.mjs` (124 checks) and `mcp/test/protocol.test.mjs` (12)
+yours. `mcp/test/run.test.mjs` (159 checks) and `mcp/test/protocol.test.mjs` (19)
 need neither PuTTY nor a display; `test/test_mcp_buffer.c` (110) and
 `test/test_terminal.c` cover the buffer and the input tap.
 
@@ -914,10 +952,40 @@ bytes over a real pty — but not by a router or a switch. Nor has the
 human-keystroke path been driven by an actual person at a keyboard: it is
 unit-tested at both layers (the buffer and the tap) and not end-to-end.
 
+**The window's own prompts are reported, not guessed (phase 4c, 2026-11-24).**
+PuTTY asks for a login password, a key passphrase or a login name by drawing the
+prompt **in the session's own window**, and the person at the keyboard answers it
+there. Those words look exactly like device output in the transcript, so an agent
+could not tell "the device is waiting for me" from "the window is waiting for the
+person at the keyboard" — and only the second must never be answered. The session
+now reports it, as a **state** rather than a guess at the text:
+
+* `term_prompt_text()` (`terminal/terminal.c`, declared in `putty.h`) reads it
+  from the terminal's own `prompts_t`. A prompt the saved-session password
+  answered never gets that far, and is never reported — which is the point of
+  reading the state rather than the words.
+* `sessions` gains `needs_human` and `prompt` per session, and `read` gains
+  `needs_human`: **protocol version 2 → 3**, so a mismatched pair says so.
+* `run` stops with `completed_by: "needs_human"` — and, the part that matters,
+  **sends nothing at all** when the window was already prompting before the run
+  started. Before this it typed the command into the prompt and only noticed
+  afterwards.
+
+Verified live against a real `login as:` prompt: `putty-mcp list` showed
+`[waiting for you: login as: ]`, a `run` returned `needs_human` with the command
+unsent, and answering it in the window moved the state on to the password prompt.
+The one thing it does not cover: a prompt that is *not* a `prompts_t` — the
+host-key confirmation, and the fork's own "Remember Login" offer — is a dialog,
+and is still invisible to an agent. See `tech_detail.md` §7.13.
+
+The same change is written for the Windows port (protocol 3, the prompt field on
+both replies, `mcp_get_prompt()` in `windows/window.c`) but has **not been built
+or tested there**.
+
 ## 14. Saved-session passwords
 
 A saved session can keep its login password, so that connecting to it does not
-ask for one (design and reasoning: `PLAN.md` §4k).
+ask for one (design and reasoning: `tech_detail.md` §4k).
 
 * **What is stored is not the password.** The session's file gets
   `SessionPassword=v0;<base64>`, written and read by hand beside
@@ -969,7 +1037,7 @@ ask for one (design and reasoning: `PLAN.md` §4k).
 ## 15. Transparent background
 
 Window → Colours → **"Transparency (0 = solid, 255 = see-through)"**
-(`CONF_bg_transparency`; design and reasoning: `PLAN.md` §4l). It applies to the
+(`CONF_bg_transparency`; design and reasoning: `tech_detail.md` §4l). It applies to the
 *default* background colour only, so a highlighted line, a coloured `ls` entry
 and the cursor stay solid and readable. `bg_alpha()` maps the setting to a cairo
 alpha, and the value is clamped in `cache_conf_values()` because the edit box
@@ -1038,6 +1106,19 @@ offscreen** — `cairo_surface_write_to_png()` from a temporary probe, composite
 over magenta to make the alpha visible — and looking at the image. No screen
 capture, and the same trick is what showed the title bar going missing.
 
+**On Windows there is no equivalent, and the feature was dropped.** Windows offers
+no per-pixel alpha for a window that GDI paints into, so the four routes that were
+built and measured are all unusable: the DWM frame extension composites against an
+opaque white backdrop on Windows 8 and later, not the desktop; `UpdateLayeredWindow`
+does give true per-pixel alpha but *replaces* the window, taking the native title
+bar with it; a colour key keeps the frame and the crisp text but is binary, so the
+background becomes 100% see-through and the 0–255 amount means nothing (64 and 255
+behave identically); and a uniform `LWA_ALPHA` fades the text and the title bar too.
+`CONF_bg_transparency` and its Window → Colours control are still shared and still
+appear in the Windows configuration box, where they do nothing. The working
+colour-key build was verified pixel-for-pixel and then reverted; the measurements
+are in `tech_detail.md` §10.
+
 ## 16. Which monitor a new session window opens on
 
 `new_session_window()`, plus one hook line in the configuration box
@@ -1074,7 +1155,7 @@ still wins.
 
 The measurements behind that, what does *not* change where a window lands, and
 the recipes for checking it are in
-[`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
+[`tech_detail.md` Appendix D](tech_detail.md#appendix-d-macos-and-gtk-what-they-do-that-you-would-not-expect).
 
 ## 17. PuTTYGen got a GTK front end (and a second `.app`)
 
@@ -1237,6 +1318,16 @@ now clears the selectable label's initial select-all
 (`gtk_label_select_region(label, 0, 0)`, exactly as `unix/dialog.c` already did),
 so it no longer opens as a solid blue highlight.
 
+**On Windows** the same two things now hold for `putty.exe`
+(`windows/dialog.c`, `AboutProc()`): the About box reads the same two copyright
+lines — upstream's, then `This fork: Copyright 2026 beterhans. All rights
+reserved` — and its `Visit Web Site` button opens
+`https://github.com/beterhans/putty-beter` instead of upstream chiark. The two
+macros are repeated in `windows/dialog.c`, since `unix/gtkmisc.h` is Unix-only.
+The fork's **icon** replaces upstream's `windows/putty.ico` too, generated from
+`icons/putty-beter-icon.png` by the new `scripts/make-ico.py` — the Windows
+counterpart of `scripts/make-icns.sh`.
+
 ## 19. The MCP bridge ships inside PuTTY.app
 
 An agent drives PuTTY through `mcp/`, a Node program that speaks MCP on stdio and
@@ -1294,7 +1385,7 @@ all a user needs. `MCP_APP=` (default `PuTTY`) chooses which app gets the bridge
 session printed — normally the reason it dropped — was unreadable. It is now held
 for a **countdown**, two seconds by default, with a line under the terminal
 saying so; any keystroke or click cancels the countdown and leaves the window
-open, and a later one closes it as before. Design of record: `PLAN.md` §4n.
+open, and a later one closes it as before. Design of record: `tech_detail.md` §4n.
 
 **New setting.** `conf.h`:
 
@@ -1353,13 +1444,13 @@ is only *deferred*: the first keypress cancels the hold, the next closes.
 | a second keystroke | closed the window, as upstream does |
 | `johnny@S-D220.local` (rejected) | the banner and `Permission denied, please try again.` held on screen |
 
-The last row is the case from `PLAN.md` §4n, and the SSH log is worth recording:
+The last row is the case from `tech_detail.md` §4n, and the SSH log is worth recording:
 `plink -v` shows **`Access granted`**, `Opening main session channel`,
 `Opened main channel`, `Started a shell/command`, and only then
 `Permission denied, please try again.` / `Session sent command exit status 1`. So
 the password is accepted and the *account* is refused at the session level; the
 window closes non-cleanly (exit code 1) on the platform default `CloseOnExit=2`.
-That is also why the fork's "Remember Login" offer (§14, `PLAN.md` §4k) appears on
+That is also why the fork's "Remember Login" offer (§14, `tech_detail.md` §4k) appears on
 this connection: it is triggered by `notify_session_started`, which fires when the
 main channel opens — before the server refuses the session. See §4n's "As built"
 for that, and for what the code should do about it.
@@ -1371,7 +1462,7 @@ line in both, and the installed `/Applications/PuTTY.app` (3705 files, seal vali
 shows the new Session box with its value of 2. The bundled app takes no session on
 the command line — it is the single-instance `puttyapp` front end, which rejects
 `-load`/`-raw` — so the countdown itself was driven from the same arm64 binary
-through `build-arm64/`, and the image is verified by mounting (`PLAN.md` §4m, "As
+through `build-arm64/`, and the image is verified by mounting (`tech_detail.md` §4m, "As
 run again on the arm Mac (2026-11-22)").
 
 ## Worth reporting upstream
@@ -1401,6 +1492,6 @@ run again on the arm Mac (2026-11-22)").
   every dependency, and that is a rewrite, not a fork.
 * No *writing* to a session from MCP yet, and no master password on the saved
   session passwords yet: `v0` wraps the password, it does not encrypt it — see
-  `PLAN.md` §4k.
+  `tech_detail.md` §4k.
 * Copy-on-select (`CLIPUI_DEFAULT_AUTOCOPY`) is still off, matching the macOS
   Human Interface Guidelines.

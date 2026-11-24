@@ -1,4 +1,5 @@
 #include "putty.h"
+#include <shlobj.h>                    /* SHBrowseForFolderW, for folders */
 
 typedef enum SavedDir { SD_NONE, SD_WCHAR, SD_CHAR } SavedDir;
 
@@ -249,6 +250,124 @@ Filename *request_file(
         restore_dir(saved_cwd);
 
     return filename;
+}
+
+/*
+ * PuTTY-beter: the file chooser, opening in a given *directory*.
+ *
+ * request_file() cannot express this. Its `initial' argument is a file name,
+ * and the common dialog rejects a directory path there with
+ * FNERR_INVALIDFILENAME (0x3002, measured 2026-11-23) rather than using it as
+ * a starting location. Its `dir' argument is a private cache of the process's
+ * working directory, not an initial location either.
+ *
+ * The ZMODEM upload chooser is the one caller that needs it: the macOS side
+ * opens the chooser in the transfer folder, so the Windows side must too
+ * (tech_detail.md section 12). Rather than add a fourth parameter to
+ * request_file() that its other five call sites would all pass NULL for, this
+ * is its own entry point.
+ */
+Filename *request_file_in_dir(
+    HWND hwnd, const char *title, Filename *initial_dir, FilereqFilter filter)
+{
+    filereq_saved_dir *dir = filereq_saved_dir_new();
+    Filename *filename;
+
+    /*
+     * Seed the saved-directory state with the directory we want, because that
+     * is what do_filereq_w() reads as lpstrInitialDir. It overwrites the
+     * state with the process's real working directory once the dialog closes,
+     * which is harmless: nothing reads it again.
+     */
+    wcsncpy(dir->wcwd, filename_to_wstr(initial_dir), lenof(dir->wcwd) - 1);
+    dir->wcwd[lenof(dir->wcwd) - 1] = L'\0';
+    dir->which = SD_WCHAR;
+
+    filename = request_file(hwnd, title, NULL, false, dir, false, filter);
+
+    filereq_saved_dir_free(dir);
+    return filename;
+}
+
+/*
+ * PuTTY-beter: choose a directory rather than a file.
+ *
+ * Some configuration settings name a folder - the ZMODEM transfer folder is
+ * the one today, via ctrl_filesel's for_directory flag - and GetOpenFileName
+ * can only ever return a file name, so the Browse button used to insist on a
+ * file and a folder could not be selected at all.
+ *
+ * SHBrowseForFolderW is the shell's folder picker, the same call
+ * windows/config-location.c uses for the configuration folder; it is kept in
+ * step with that one deliberately, including the choice of SHBrowseForFolder
+ * over IFileDialog (no COM set-up of its own). Unlike that one the dialog is
+ * raised from the configuration box, long after startup, so a title and an
+ * initial folder are both available.
+ *
+ * `initial' is the folder to start in, or NULL; it is also used verbatim as
+ * the seed for the path box, so a folder that no longer exists simply falls
+ * back to the default view. The result is a native path with backslashes,
+ * which is exactly the shape of the default transfer folder (see
+ * windows/utils/defaults.c). Set PUTTY_DIAG to trace the choice to stderr.
+ */
+static int CALLBACK request_directory_cb(HWND hwnd, UINT msg, LPARAM lp,
+                                         LPARAM data)
+{
+    if (msg == BFFM_INITIALIZED && data)
+        SendMessage(hwnd, BFFM_SETSELECTIONW, TRUE, data);
+    return 0;
+}
+
+Filename *request_directory(HWND hwnd, const char *title, Filename *initial)
+{
+    BROWSEINFOW bi;
+    wchar_t display[MAX_PATH];
+    wchar_t *wtitle = NULL, *winitial = NULL;
+    LPITEMIDLIST pidl;
+    Filename *fn = NULL;
+    bool diag = (getenv("PUTTY_DIAG") != NULL);
+
+    if (initial && *filename_to_wstr(initial))
+        winitial = dupwcs(filename_to_wstr(initial));
+    if (title)
+        wtitle = dup_mb_to_wc(CP_ACP, title);
+
+    memset(&bi, 0, sizeof(bi));
+    bi.hwndOwner = hwnd;
+    bi.pszDisplayName = display;
+    bi.lpszTitle = wtitle;
+    bi.ulFlags = BIF_RETURNONLYFSDIRS;
+#ifdef BIF_NEWDIALOGSTYLE
+    bi.ulFlags |= BIF_NEWDIALOGSTYLE;   /* resizable, with a new-folder button */
+#endif
+    if (winitial) {
+        bi.lpfn = request_directory_cb;
+        bi.lParam = (LPARAM)winitial;
+    }
+
+    if (diag)
+        fprintf(stderr, "[request_directory] %s: starting at \"%s\"\n",
+                title ? title : "(no title)",
+                winitial ? filename_to_str(initial) : "");
+
+    pidl = SHBrowseForFolderW(&bi);
+    if (pidl) {
+        wchar_t path[MAX_PATH];
+
+        if (SHGetPathFromIDListW(pidl, path)) {
+            fn = filename_from_wstr(path);
+            if (diag)
+                fprintf(stderr, "[request_directory] chose \"%s\"\n",
+                        filename_to_str(fn));
+        }
+        CoTaskMemFree(pidl);
+    } else if (diag) {
+        fprintf(stderr, "[request_directory] cancelled\n");
+    }
+
+    sfree(wtitle);
+    sfree(winitial);
+    return fn;
 }
 
 static struct request_multi_file_return *request_multi_file_populate_a(

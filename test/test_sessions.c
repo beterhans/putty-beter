@@ -22,6 +22,15 @@
 #include "utils/sesspass.h"     /* PuTTY-beter: the saved session password */
 
 /*
+ * PuTTY-beter: on Windows this test drives the same file-based storage the
+ * real application uses (there is no registry backend any more), so it needs
+ * the same small POSIX compatibility layer that unix/storage.c does.
+ */
+#ifdef _WIN32
+#include "storage-win32-compat.h"
+#endif
+
+/*
  * PuTTY-beter: from unix/storage.c, which this test links anyway for
  * session_mkdir() and the rest of the storage layer. Declared here rather than
  * including unix/platform.h, which wants GTK's widget types.
@@ -209,7 +218,24 @@ static void expect_err(const char *what, const char *err)
 
 int main(void)
 {
+#ifdef _WIN32
+    /*
+     * PuTTY-beter: there is no /tmp on Windows, so use the per-user temporary
+     * directory. Everything else the test does happens under PUTTYDIR, so this
+     * is the only place that has to know which platform it is on.
+     */
+    char tmpl[1024];
+    {
+        const char *tmp = getenv("TEMP");
+        if (!tmp || !*tmp)
+            tmp = getenv("TMP");
+        if (!tmp || !*tmp)
+            tmp = ".";
+        snprintf(tmpl, sizeof(tmpl), "%s/putty-sessions-XXXXXX", tmp);
+    }
+#else
     char tmpl[] = "/tmp/putty-sessions-XXXXXX";
+#endif
     char *dir = mkdtemp(tmpl);
 
     if (!dir) {

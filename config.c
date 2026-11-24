@@ -2361,7 +2361,14 @@ void setup_config_box(struct controlbox *b, bool midsession,
      * space, so the saved-session list grows when the window does.
      */
     s->vexpand = true;
-    ctrl_columns(s, 2, 80, 20);
+    /*
+     * PuTTY-beter: the buttons' column is 26% rather than 20% so that the
+     * widest of them - "New Folder" - fits at high display scaling, where a
+     * 20% column is narrower than the label. GTK sizes this column to its
+     * contents anyway (columns_content_last_col(), unix/columns.c), so the
+     * percentage only decides the layout on Windows.
+     */
+    ctrl_columns(s, 2, 74, 26);
     get_sesslist(&ssd->sesslist, true);
     ssd->editbox = ctrl_editbox(s, "Saved Sessions", 'e', 100,
                                 HELPCTX(session_saved),
@@ -2370,16 +2377,30 @@ void setup_config_box(struct controlbox *b, bool midsession,
     /*
      * PuTTY-beter: say what the box is for while it is empty. It takes a
      * session name, the name of a folder to make, or - with a leading '/',
-     * or '\' - a search of the list below. The GTK front end shows this as
-     * a placeholder; see PLAN.md section 4j. It is kept short because the
+     * or '\' - a search of the list below. Both front ends show this as a
+     * placeholder - GTK with gtk_entry_set_placeholder_text(), Windows with
+     * EM_SETCUEBANNER; see PLAN.md section 4j. It is kept short because the
      * box is only as wide as the panel, and the front end clips what will
      * not fit.
      */
-    ssd->editbox->editbox.placeholder = "Name/folder, or / to search";
+    /*
+     * PuTTY-beter: the wording was "Name/folder, or / to search". It now
+     * names what a search actually looks at - the host name, the IP address
+     * or the comment - because the box's own label already says "Saved
+     * Sessions", so describing the box told the user nothing.
+     */
+    /* ssd->editbox->editbox.placeholder = "Name/folder, or / to search"; */
+    ssd->editbox->editbox.placeholder = "hostname ip or type / to search";
     /* Reset columns so that the buttons are alongside the list, rather
      * than alongside that edit box. */
     ctrl_columns(s, 1, 100);
-    ctrl_columns(s, 2, 80, 20);
+    /*
+     * PuTTY-beter: same 74/26 as the edit box above, so the list and the
+     * button column line up, and so that "New Folder" is not clipped at high
+     * display scaling. GTK ignores the 26 (the last column is sized to its
+     * contents - see the note above the edit box).
+     */
+    ctrl_columns(s, 2, 74, 26);
     ssd->listbox = ctrl_listbox(s, NULL, NO_SHORTCUT,
                                 HELPCTX(session_saved),
                                 sessionsaver_handler, P(ssd));

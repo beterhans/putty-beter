@@ -130,12 +130,26 @@ add_executable(test_zmodem
   test/test_zmodem.c
   terminal/zmodem.c)
 target_link_libraries(test_zmodem utils ${platform_libraries})
+# PuTTY-beter / Windows port: several of this test's cases hold two `Cap`s plus
+# a 256 KB buffer on the stack (each Cap carries four 256 KB arrays), i.e. over
+# 2 MB. Unix gives an 8 MB stack by default, but the PE default here is 2 MB, so
+# ask the linker for the same 8 MB. Test-only - the shipped binaries are
+# unaffected. (Measured 2026-11-23: without this, test_zmodem died in
+# test_refuse_file with 0xC0000409 = STATUS_STACK_BUFFER_OVERRUN.)
+if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  target_link_libraries(test_zmodem -Wl,--stack,8388608)
+endif()
 
 # PuTTY-beter: the MCP capture buffer. Like the ZMODEM engine it has no front
 # end, so the test needs only utils and no display or socket.
 add_executable(test_mcp_buffer
   test/test_mcp_buffer.c
   unix/mcp-buffer.c)
+# PuTTY-beter: mcp-buffer.h lives in unix/. On macOS that directory is already
+# on the include path (setup.cmake adds ${platform}, which is "unix" there); on
+# Windows ${platform} is "windows", so add unix/ explicitly for this target.
+# Harmless duplicate on the mac build.
+target_include_directories(test_mcp_buffer PRIVATE unix)
 target_link_libraries(test_mcp_buffer utils ${platform_libraries})
 
 # PuTTY-beter: a real interoperability check for the ZMODEM engine. It runs the
@@ -214,11 +228,24 @@ target_link_libraries(test_conf sshclient otherbackends settings network crypto 
 
 # PuTTY-beter: session folders. Kept outside the GTK block, because it only
 # tests the storage layer.
+# Windows port note: this used to be Unix-only, because it drives the
+# *file-based* store (PUTTYDIR, mkdtemp, .conf files) and Windows had no such
+# thing - it kept its configuration in the registry. Windows now uses the same
+# file-based storage (see windows/storage-win32-compat.h), so the test runs
+# there too, and is the regression net for that change.
+# if(UNIX)
 add_executable(test_sessions
   test/test_sessions.c)
 # Only the storage layer, so no backends and no front end are linked; the
 # test supplies the few hooks that would otherwise come from them.
 target_link_libraries(test_sessions settings utils)
+if(WIN32)
+  # shared settings.c calls add_session_to_jumplist(), which on Windows is a
+  # real function rather than a no-op macro; this is the same stub the other
+  # Windows test targets use.
+  target_sources(test_sessions PRIVATE windows/no-jump-list.c)
+endif()
+# endif()
 
 # PuTTY-beter: the saved-session search. The helpers under test are pure, so
 # this needs nothing but the utils library either.

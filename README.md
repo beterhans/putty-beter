@@ -16,14 +16,14 @@ Everything not listed below is stock upstream PuTTY. MIT licensed — see `LICEN
 |---|---|
 | **This file** | what the fork changes, how to build it, and how to use each feature |
 | [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) | every difference from the official PuTTY 0.85 tarball, file by file, with the commands to reproduce the diff |
-| [`PLAN.md`](PLAN.md) | the roadmap, and the reasoning behind each decision — §7 is the MCP design of record |
-| [`docs/mcp.md`](docs/mcp.md) | **how the MCP works**: the files, the wire protocol, the capture-buffer semantics, the socket and its permissions, the build, testing and debugging |
-| [`docs/session-search.md`](docs/session-search.md) | **how the saved-session search works**: the prefix rule, what is matched, the per-session cache, and how to drive the dialog by hand |
-| [`docs/mcp-user-manual.md`](docs/mcp-user-manual.md) | the manual the AI agent is given, as a plain document to read. A byte-identical copy of `mcp/USER-MANUAL.md`, checked by `scripts/test-mcp.sh` |
+| [`PLAN.md`](PLAN.md) | the plan: the tools, the phases, the progress and the results, for macOS and Windows side by side - one row per feature |
+| [`tech_detail.md`](tech_detail.md) | the detail behind `PLAN.md`: the findings, the gotchas and the "as built" accounts, one section per feature with a macOS half and a Windows half |
+| [`tech_detail.md` §13 / Appendix F](tech_detail.md#appendix-f-mcp--how-it-works) | **how the MCP works**: the files, the wire protocol, the capture-buffer semantics, the socket and its permissions, the build, testing and debugging |
+| [`tech_detail.md` §8 / Appendix G](tech_detail.md#appendix-g-saved-session-search--how-it-works) | **how the saved-session search works**: the prefix rule, what is matched, the per-session cache, and how to drive the dialog by hand |
 | [`mcp/README.md`](mcp/README.md) | the `putty-mcp` bridge: how to install it and point a client at it |
-| [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) | the canonical copy of the agent manual (what is actually served) |
-| [`docs/zmodem-protocol-notes.md`](docs/zmodem-protocol-notes.md) | byte-exact ZMODEM protocol reference, with the licence status of every source it draws on |
-| [`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md) | what macOS and GTK do that you would not expect — window placement, `-geometry`, title bars, why AppleScript cannot drive GTK windows — with the measurements and the recipes for checking them |
+| [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) | the agent manual - what is actually served, and the file `putty-mcp manual` prints |
+| [`tech_detail.md` Appendix E](tech_detail.md#appendix-e-zmodem-protocol--byte-exact-implementation-notes) | byte-exact ZMODEM protocol reference, with the licence status of every source it draws on |
+| [`tech_detail.md` Appendix D](tech_detail.md#appendix-d-macos-and-gtk-what-they-do-that-you-would-not-expect) | what macOS and GTK do that you would not expect - window placement, `-geometry`, title bars, why AppleScript cannot drive GTK windows - with the measurements and the recipes for checking them |
 | [`tools/README.md`](tools/README.md) | why `gtk-mac-bundler` is not vendored, and how to fetch it |
 
 ---
@@ -196,7 +196,7 @@ and **New Folder** beep while a search is on: `/beta` is not a session name.
 `PUTTY_SESS_SEARCH_DEBUG=1` traces each search — the query, the match count and
 whether the session files had to be read again — to stderr. For the design, the
 cache and how to drive the dialog from a script, see
-[`docs/session-search.md`](docs/session-search.md).
+[`tech_detail.md` Appendix G](tech_detail.md#appendix-g-saved-session-search--how-it-works).
 
 ### 9c. Saving a session's login details
 
@@ -221,7 +221,7 @@ password; clear it and press **Save** to forget one.
 * **What is on disk is wrapped, not encrypted**: the session file holds
   `SessionPassword=v0;<base64>`. That keeps it off a plain `grep` and out of
   sight, but anyone who can read the file can decode it. Encrypting it under a
-  master password is the next piece of work (`PLAN.md` §4k).
+  master password is the next piece of work (`tech_detail.md` §4k).
 * `PUTTY_SESSPASS_DEBUG=1` traces a decode, an injection and a remembered login
   name to stderr — never the password itself.
 
@@ -259,7 +259,7 @@ is left at 0: only the colours and the fonts are taken from that session.
 The engine is written in-tree from the public-domain ZMODEM specification and
 Chuck Forsberg's original `rzsz`, and is MIT like the rest of this tree; no GPL
 component is involved. See
-[`docs/zmodem-protocol-notes.md`](docs/zmodem-protocol-notes.md) for the
+[`tech_detail.md` Appendix E](tech_detail.md#appendix-e-zmodem-protocol--byte-exact-implementation-notes) for the
 byte-exact protocol reference and the licence status of every source used.
 
 * **Downloads** need no prompt: the protocol carries the file name, so `sz`
@@ -354,7 +354,7 @@ the **primary** monitor. A position given explicitly still wins.
 
 The platform behaviour behind all of this — why the wrong monitor is picked, what
 does *not* change it, and how to measure it — is written up with its numbers in
-[`docs/macos-gtk-notes.md`](docs/macos-gtk-notes.md).
+[`tech_detail.md` Appendix D](tech_detail.md#appendix-d-macos-and-gtk-what-they-do-that-you-would-not-expect).
 
 ### 12d. A readable exit: the window is held open when a session ends
 
@@ -392,7 +392,7 @@ level, the server printing `Permission denied, please try again.` with exit stat
 1. The window used to disappear before any of that could be read, which is why it
 looked like a crash. The cause is upstream's default rather than a bug:
 `CloseOnExit` is **Always** on Unix, from `platform_default_i()` in
-`unix/window.c`. [`PLAN.md`](PLAN.md) §4n is the design of record and carries the
+`unix/window.c`. [`tech_detail.md`](tech_detail.md) §4n is the design of record and carries the
 test results.
 
 ### 13. MCP: let an AI agent read a session
@@ -404,6 +404,13 @@ wait for the device to finish** — including answering a `--More--` pager by
 itself, which is what makes it usable on network gear. It stops rather than
 guessing at a `[confirm]` or a password prompt, and says so. Text **you** type
 is tagged in the transcript, so the agent can tell your doing from the device's.
+
+**When PuTTY itself asks you for something**, the agent is told, and waits: a
+login password, a key passphrase or a `login as:` prompt is drawn **in the
+session window** and answered by you. Those words look exactly like device
+output, so the session reports it as a state (`needs_human`) and a command that
+would otherwise be typed *into* that prompt is not sent at all — a password is
+yours to give.
 
 It is **off by default and per session** — *Session → Automation (MCP) → Offer
 this session to an MCP client* — because turning it on offers the session to
@@ -537,7 +544,7 @@ handshake and every request and reply; `putty-mcp list --debug` traces the
 bridge's side.
 
 **Test:** `scripts/test-mcp.sh` starts its own `pterm` against a throwaway
-configuration folder and checks the whole path end to end (36 checks), including
+configuration folder and checks the whole path end to end (38 checks), including
 `run` against a real pty: a slow command is waited for rather than cut off, a
 real `more` is paged through, and a `Password:` prompt stops the run. It needs
 a display, and touches nothing of yours. `mcp/test/protocol.test.mjs` and
@@ -554,15 +561,16 @@ restart the client when you are done.
 
 **Where to read more:**
 
-* [`docs/mcp.md`](docs/mcp.md) — **how it works**: the files, the wire protocol
-  (with a snippet for driving the socket by hand), the capture-buffer semantics,
-  the socket and its permissions, the build, and what is still missing.
-* [`docs/mcp-user-manual.md`](docs/mcp-user-manual.md) — the manual the agent is
-  given, as a plain document. `mcp/USER-MANUAL.md` is the canonical copy, and
-  the two are kept identical by a check in the smoke test.
+* [`tech_detail.md` Appendix F](tech_detail.md#appendix-f-mcp--how-it-works) - **how it
+  works**: the files, the wire protocol (with a snippet for driving the socket by
+  hand), the capture-buffer semantics, the socket and its permissions, the build,
+  and what is still missing.
+* [`mcp/USER-MANUAL.md`](mcp/USER-MANUAL.md) - the manual the agent is given. This
+  is the canonical copy: the bridge reads it at run time (`mcp/src/manual.mjs`) and
+  serves it as the `user_manual` tool and the `putty://manual` resource.
 * [`mcp/README.md`](mcp/README.md) — installing the bridge and pointing a client
   at it.
-* `PLAN.md` §7 — the design and the decisions; §7.11 for what was actually
+* `tech_detail.md` §13 — the design and the decisions; §7.11 for what was actually
   built, and the nine places it departed from the sketch.
 
 ---
@@ -608,7 +616,7 @@ created once). 33 checks. Set `DEBUG=1` to see each command and the raw output.
 self-test hooks (`PUTTYGEN_SELFTEST`, `PUTTYGEN_SELFTEST_LOAD`) drive the window
 without a human — that is what the test script uses.
 
-**Where to read more:** `PLAN.md` §4m — the porting map, the design, and the "As
+**Where to read more:** `tech_detail.md` §4m — the porting map, the design, and the "As
 built" list of ten places it departed from the sketch (and why).
 
 ---
@@ -909,7 +917,7 @@ Notes for the Intel path, since it is the one with the moving parts:
   app nothing: the merged app gets the bridge and its dependencies from the arm64
   slice, which `make-universal.sh` treats as its structural authority. One
   consequence — the merge must run where symlinks are readable, i.e. on the arm
-  Mac. [`PLAN.md`](PLAN.md) §7 has the detail.
+  Mac. [`tech_detail.md`](tech_detail.md) §13 has the detail.
 * **A build directory cannot be moved between machines** that hold the repo at
   different paths (CMake records the source path). Both scripts detect that and
   tell you to re-run with `--clean`. `BUILD_DIR=`/`STAGE=` let you put the build

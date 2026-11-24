@@ -59,4 +59,8 @@ export const INSTRUCTIONS = [
     'the next command at a `needs_input`.',
     '',
     'A password is the human\'s to give: ask them to type it in the window.',
+    'When PuTTY itself is asking them - a login password, a key passphrase, a',
+    'login name - the session reports `needs_human` (`sessions`, `read` and',
+    '`run` all say so). That is not yours to answer either: tell the human,',
+    'wait, and carry on when it clears.',
 ].join('\n');

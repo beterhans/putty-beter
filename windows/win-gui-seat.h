@@ -6,6 +6,18 @@
 
 typedef struct WinGuiSeat WinGuiSeat;
 
+/*
+ * PuTTY-beter: the MCP session, defined in mcp.h and driven from window.c.
+ * Declared as a tag rather than a typedef so this header needs no include.
+ */
+struct McpSession;
+
+/*
+ * PuTTY-beter: the ZMODEM transfer engine, defined in zmodem.h and driven from
+ * window.c. Declared as a tag for the same reason as McpSession.
+ */
+struct Zmodem;
+
 struct PopupMenu {
     HMENU menu;
 };
@@ -76,9 +88,31 @@ struct WinGuiSeat {
 
     cmdline_get_passwd_input_state cmdline_get_passwd_state;
 
+    /*
+     * PuTTY-beter: saved-session login details (tech_detail.md section 9).
+     * sesspass_tried is the "one attempt per
+     * connection" flag; the other three are what a successful login has to
+     * offer to write into the session's file. See windows/window.c.
+     */
+    bool sesspass_tried;
+    char *sesspass_used;            /* the password this login used */
+    char *ssh_username_used;        /* the login name it used */
+    bool sesspass_offered;          /* the "remember it?" offer has run */
+
     struct unicode_data ucsdata;
     bool session_closed;
     bool reconfiguring;
+
+    /*
+     * PuTTY-beter: the readable exit (tech_detail.md section 11). When the
+     * session ends and CloseOnExit says the window goes, it is held for
+     * CloseOnExitDelay seconds so that the last thing the session printed can
+     * be read. `exit_countdown_left' is what is left of that hold, and 0 means
+     * no countdown is running; `exit_status' is the line below the terminal
+     * that says so. See windows/window.c.
+     */
+    int exit_countdown_left;
+    HWND exit_status;
 
     const SessionSpecial *specials;
     HMENU specials_menu;
@@ -90,6 +124,32 @@ struct WinGuiSeat {
     Conf *conf;
     LogContext *logctx;
     Terminal *term;
+
+    /*
+     * PuTTY-beter: this window's MCP session, if it is offered over MCP at
+     * all. NULL unless McpEnabled was set for the session, and NULL again once
+     * the session has closed. See windows/mcp.c.
+     */
+    struct McpSession *mcp;
+
+    /*
+     * PuTTY-beter: ZMODEM file transfer (tech_detail.md section 12). The
+     * engine exists for the whole life of the session, because it has to sit in
+     * the incoming stream from the start - that is where a transfer is
+     * detected. Until one begins it does nothing but pass bytes through, so an
+     * idle engine is byte-identical to upstream. The rest is its front-end
+     * state. See windows/window.c.
+     */
+    struct Zmodem *zmodem;
+    bool zm_in_engine;              /* zmodem_feed_in() is on the stack */
+    unsigned char *zm_pending;      /* bytes that arrived while it was */
+    size_t zm_pendinglen, zm_pendingalloc;
+    FILE *zm_file;                  /* the local file in use, if any */
+    Filename *zm_path;              /* its path, for deleting a partial one */
+    HWND zm_dialog;                 /* the progress window, NULL if none */
+    bool zm_receive;                /* direction, for the dialog's wording */
+    bool zm_sent_one;               /* a file has been sent in this transfer */
+    uint64_t zm_total;
 
     int cursor_type;
     int vtmode;

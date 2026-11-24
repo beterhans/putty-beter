@@ -49,7 +49,15 @@ add_sources_from_current_dir(eventloop
 add_sources_from_current_dir(console
   select-cli.c nohelp.c console.c)
 add_sources_from_current_dir(settings
-  storage.c)
+  ../unix/storage.c
+  jumplist-store.c)
+# PuTTY-beter: Windows keeps its configuration in a folder, exactly like macOS,
+# so it uses the shared file-based storage rather than upstream's registry
+# backend. windows/storage-win32-compat.h supplies the small POSIX layer that
+# lets unix/storage.c build here, and makes every path UTF-8 so that non-ASCII
+# session names work whatever the system code page is.
+# jumplist-store.c is the one piece that stays Windows-only: the shell jump
+# list's list of recent sessions, which upstream kept in the registry.
 add_sources_from_current_dir(network
   network.c handle-socket.c named-pipe-client.c named-pipe-server.c local-proxy.c x11.c)
 add_sources_from_current_dir(sshcommon
@@ -63,7 +71,21 @@ add_sources_from_current_dir(otherbackends
 add_sources_from_current_dir(agent
   agent-client.c)
 add_sources_from_current_dir(guiterminal
-  dialog.c controls.c config.c printing.c jump-list.c sizetip.c)
+  dialog.c controls.c config.c printing.c jump-list.c sizetip.c
+  # PuTTY-beter: choosing the configuration folder. Kept in the shared library
+  # so that every front end links it; only putty.c actually calls it.
+  config-location.c
+  # PuTTY-beter: the MCP capture buffer (PLAN.md section 7). It is pure C with
+  # no front end and no socket, so the same file serves the Unix and Windows
+  # front ends; the transport-specific server is mcp.c below. (The MCP buffer is
+  # also what test_mcp_buffer exercises on its own.)
+  ../unix/mcp-buffer.c
+  # PuTTY-beter: the MCP server over a Windows named pipe (tech_detail.md
+  # section 13). The Windows twin of unix/mcp.c - the wire protocol and the session
+  # registry are copied from it deliberately, so that the two stay parallel and
+  # the buffer above is literally the same file. See the comment at the top of
+  # mcp.c for why there are two.
+  mcp.c)
 add_dependencies(guiterminal generated_licence_h) # dialog.c uses licence.h
 
 # This object awkwardly needs to live in the network library as well
@@ -139,7 +161,7 @@ add_executable(puttygen
   ${CMAKE_SOURCE_DIR}/stubs/no-timing.c
   noise.c
   no-jump-list.c
-  storage.c
+  ../unix/storage.c
   help.c
   ${CMAKE_SOURCE_DIR}/sshpubk.c
   ${CMAKE_SOURCE_DIR}/sshrand.c

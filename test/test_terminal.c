@@ -1,6 +1,27 @@
 #include "putty.h"
 #include "terminal.h"
 
+/*
+ * PuTTY-beter / Windows port: CS_UTF8 is the Unix libcharset spelling of the
+ * UTF-8 codepage (unix/platform.h even defines CP_UTF8 as CS_UTF8). Windows has
+ * no CS_UTF8, but its CP_UTF8 (65001, from <winnls.h>) is the same codepage, so
+ * map it here. On Unix CS_UTF8 is already defined and this is a no-op.
+ *
+ * PuTTY-beter (fix 2026-11-24): the `#ifndef CS_UTF8' guard is not enough on
+ * its own, and without the `_WIN32' the mapping ran on macOS too. CS_UTF8
+ * arrives from libcharset as an *enum* member there, not a macro, so
+ * `#ifndef CS_UTF8' was always true; and by that point unix/platform.h had
+ * already done `#define CP_UTF8 CS_UTF8', so this line made the two names
+ * mutually recursive - the preprocessor gave up and left `CP_UTF8' as a bare
+ * identifier, and the macOS build of this test failed with "use of undeclared
+ * identifier 'CP_UTF8'". Windows is the only platform that needs the mapping.
+ */
+#ifdef _WIN32
+#ifndef CS_UTF8
+#define CS_UTF8 CP_UTF8
+#endif
+#endif
+
 void modalfatalbox(const char *p, ...)
 {
     va_list ap;

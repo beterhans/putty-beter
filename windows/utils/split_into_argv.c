@@ -154,8 +154,15 @@
  * behaviour, and VS7 uses the old one. Things in between may be
  * wrong; if anyone cares, patches to change the cutoff version in
  * this #if are welcome.
+ *
+ * PuTTY-beter / Windows port note: the original condition was the bare
+ * `#if _MSC_VER < 1400`. With a non-MSVC compiler (mingw/gcc) _MSC_VER is
+ * undefined, so that comparison is 0 < 1400 == true and gcc builds silently
+ * took the VS7-era branch - disagreeing with the modern CRT the build actually
+ * links against (and failing test_split_into_argv). Requiring _MSC_VER to be
+ * defined fixes that; MSVC behaviour is unchanged.
  */
-#if _MSC_VER < 1400
+#if defined(_MSC_VER) && _MSC_VER < 1400
 #define MOD3 1
 #else
 #define MOD3 0

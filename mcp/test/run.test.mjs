@@ -122,12 +122,27 @@ class FakeSession {
         if (this.openLine && used + this.openLine.text.length <= maxBytes)
             lines.push({ id: total + 1, author: this.openLine.author, text: this.openLine.text });
 
-        return {
+        const out = {
             cursor,
             total_lines: total,
             omitted: total > cursor ? total - cursor : 0,
             lines,
         };
+        /*
+         * Phase 4c: a prompt PuTTY itself is putting to the person at the
+         * keyboard, which is a *state* rather than a line of output.
+         * `humanPromptFromMs` / `humanPromptUntilMs` let a test have it start
+         * part-way through a run, and be answered again, so both the "already
+         * prompting" and the "started prompting mid-command" cases are
+         * exercised.
+         */
+        const hp = this.opts.humanPrompt ?? null;
+        const from = this.opts.humanPromptFromMs ?? 0;
+        if (hp !== null && this.t >= from &&
+            (this.opts.humanPromptUntilMs === undefined ||
+             this.t < this.opts.humanPromptUntilMs))
+            out.needs_human = hp;
+        return out;
     }
 
     _emitPage() {
@@ -442,6 +457,81 @@ async function testNeedsInput() {
     checkEqual(rc.completed_by, 'needs_input',
                'run: a [confirm] stops the run rather than answering it');
     checkEqual(c.sent.length, 1, 'run: nothing is sent at a [confirm]');
+}
+
+async function testNeedsHuman() {
+    /*
+     * Phase 4c. PuTTY itself is asking the person at the keyboard - a login
+     * password, a key passphrase, a login name. The words may be in the
+     * transcript, but what is being waited for is a human, and no agent may
+     * answer it.
+     *
+     * The important case first: it was *already* prompting when the run was
+     * asked for, so nothing is sent at all. Sending here is how an agent types
+     * a command at a password prompt, and the transcript could not have told
+     * us - `Password: ` looks exactly like device output.
+     */
+    const s = new FakeSession({
+        humanPrompt: 'Password: ',
+        steps: [{ afterMs: 100, open: true, text: 'Password: ' }],
+    });
+    const r = await run(s, 'ls');
+    checkEqual(r.completed_by, 'needs_human',
+               'run: being prompted stops the run before it sends');
+    checkEqual(r.needs_human.reason, 'the window is asking the human',
+               'run: and says who is being asked');
+    checkEqual(r.needs_human.prompt, 'Password: ',
+               'run: and reports what it is asking');
+    checkEqual(s.sent.length, 0, 'run: nothing at all was sent');
+    checkEqual(s.keys.length, 0, 'run: and no key was pressed');
+
+    /* Answering it is what is expected, so it is not a cancellation. */
+    const s2 = new FakeSession({
+        humanPrompt: 'Password: ',
+        steps: [{ afterMs: 100, open: true, text: 'Password: ' }],
+    });
+    const r2 = await run(s2, 'ls', { timeoutMs: 800 });
+    checkEqual(r2.cancelled_by_human, false,
+               'run: waiting for the human is not a cancellation');
+
+    /*
+     * And if the window starts asking *after* our command went out - the login
+     * prompt answered by the device, say - the run stops at the next poll with
+     * nothing further sent.
+     */
+    const s3 = new FakeSession({
+        humanPrompt: 'Password: ',
+        humanPromptFromMs: 100,
+        steps: [{ afterMs: 400, open: true, text: 'Password: ' }],
+    });
+    const r3 = await run(s3, 'ls');
+    checkEqual(r3.completed_by, 'needs_human',
+               'run: a prompt that appears mid-command also stops it');
+    checkEqual(s3.sent.length, 1,
+               'run: with the one command already sent and no more');
+
+    /*
+     * A silent window that is prompting is not "quiet - probably done", and
+     * once the prompt has been answered the state is simply not reported: it
+     * is only ever "this is happening now".
+     */
+    const s4 = new FakeSession({ humanPrompt: 'login as: ' });
+    const r4 = await run(s4, 'ls', { timeoutMs: 800 });
+    checkEqual(r4.completed_by, 'needs_human',
+               'run: a silent window that is prompting still reports it');
+    checkEqual(r4.needs_human.prompt, 'login as: ', 'run: with the prompt text');
+
+    const s5 = new FakeSession({
+        humanPrompt: 'Password: ',
+        humanPromptFromMs: 2000,   /* long after this run has finished */
+        steps: [{ afterMs: 400, text: 'the output' },
+                { afterMs: 450, open: true, text: 'Router>' }],
+    });
+    const r5 = await run(s5, 'ls');
+    checkEqual(r5.completed_by, 'prompt',
+               'run: a window that is not prompting is not reported as such');
+    checkEqual(r5.needs_human, undefined,
+               'run: and the state is absent from the result');
 }
 
 async function testHumanCancels() {
@@ -765,7 +855,8 @@ try {
     await testPager();
     console.log('  [test] waiting for input');
     await testNeedsInput();
-    console.log('  [test] a human typing');
+
+    await testNeedsHuman();    console.log('  [test] a human typing');
     await testHumanCancels();
     console.log('  [test] timeout');
     await testTimeout();

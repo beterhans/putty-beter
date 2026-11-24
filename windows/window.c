@@ -20,6 +20,9 @@
 #include "putty-rc.h"
 #include "security-api.h"
 #include "win-gui-seat.h"
+#include "mcp.h"
+#include "zmodem.h"          /* PuTTY-beter: ZMODEM file transfer */
+#include "utils/sesspass.h"
 #include "tree234.h"
 
 #ifdef NO_MULTIMON
@@ -30,6 +33,7 @@
 #include <commctrl.h>
 #include <richedit.h>
 #include <mmsystem.h>
+#include <sys/stat.h>            /* PuTTY-beter: _wstat64 for ZMODEM */
 
 /* From MSDN: In the WM_SYSCOMMAND message, the four low-order bits of
  * wParam are used by Windows, and should be masked off, so we shouldn't
@@ -238,6 +242,7 @@ static size_t win_seat_output(
 static bool win_seat_eof(Seat *seat);
 static SeatPromptResult win_seat_get_userpass_input(Seat *seat, prompts_t *p);
 static void win_seat_notify_remote_exit(Seat *seat);
+static void win_seat_notify_session_started(Seat *seat);
 static void win_seat_connection_fatal(Seat *seat, const char *msg);
 static void win_seat_nonfatal(Seat *seat, const char *msg);
 static void win_seat_update_specials_menu(Seat *seat);
@@ -247,13 +252,38 @@ static bool win_seat_can_set_trust_status(Seat *seat);
 static bool win_seat_get_cursor_position(Seat *seat, int *x, int *y);
 static bool win_seat_get_window_pixel_size(Seat *seat, int *x, int *y);
 
+/*
+ * PuTTY-beter: the front end's half of the MCP server. windows/mcp.c holds the
+ * pipe, the session registry and the wire protocol; these four are what it
+ * asks the window for. See tech_detail.md section 13.
+ */
+static void mcp_start(WinGuiSeat *wgs);
+static void mcp_stop(WinGuiSeat *wgs);
+static void mcp_get_view(void *ctx, McpView *out);
+static const char *mcp_get_prompt(void *ctx);
+static bool mcp_send(void *ctx, const void *data, size_t len);
+static void mcp_input_tap(void *ctx, const void *data, size_t len);
+
+/*
+ * PuTTY-beter: the front end's half of the ZMODEM engine. The engine itself is
+ * terminal/zmodem.c; these are what the window supplies. Declared here because
+ * the typed-input funnel below is defined far above the engine's own block.
+ * See tech_detail.md section 12.
+ */
+static void zm_start(WinGuiSeat *wgs);
+static void zm_stop(WinGuiSeat *wgs);
+static bool zm_takes_input(WinGuiSeat *wgs);
+static void zm_keyinput(WinGuiSeat *wgs, int codepage, const char *buf,
+                        int len);
+static void zm_keyinputw(WinGuiSeat *wgs, const wchar_t *buf, int len);
+
 static const SeatVtable win_seat_vt = {
     .output = win_seat_output,
     .eof = win_seat_eof,
     .sent = nullseat_sent,
     .banner = nullseat_banner_to_stderr,
     .get_userpass_input = win_seat_get_userpass_input,
-    .notify_session_started = nullseat_notify_session_started,
+    .notify_session_started = win_seat_notify_session_started,
     .notify_remote_exit = win_seat_notify_remote_exit,
     .notify_remote_disconnect = nullseat_notify_remote_disconnect,
     .connection_fatal = win_seat_connection_fatal,
@@ -286,6 +316,23 @@ static void start_backend(WinGuiSeat *wgs)
     int i;
 
     wgs->cmdline_get_passwd_state = cmdline_get_passwd_input_state_new;
+
+    /*
+     * PuTTY-beter: one saved-password attempt per connection, and nothing
+     * carried over from the last one (PLAN.md section 4k). The password is
+     * wiped rather than freed; the login name is not secret.
+     */
+    wgs->sesspass_tried = false;
+    wgs->sesspass_offered = false;
+    if (wgs->sesspass_used) {
+        smemclr(wgs->sesspass_used, strlen(wgs->sesspass_used));
+        sfree(wgs->sesspass_used);
+        wgs->sesspass_used = NULL;
+    }
+    if (wgs->ssh_username_used) {
+        sfree(wgs->ssh_username_used);
+        wgs->ssh_username_used = NULL;
+    }
 
     vt = backend_vt_from_conf(wgs->conf);
 
@@ -339,6 +386,158 @@ static void start_backend(WinGuiSeat *wgs)
     wgs->session_closed = false;
 }
 
+/*
+ * PuTTY-beter: the readable exit (tech_detail.md section 11).
+ *
+ * When the session ends and CloseOnExit says the window should go, upstream
+ * destroys it at once - and whatever the session printed on its way out, a
+ * banner or the server's reason for dropping the connection, goes with it.
+ * Instead the window is held for CloseOnExitDelay seconds (2 by default, 0 to
+ * close at once, exactly as upstream does), with a line across the bottom
+ * saying so; any keystroke or click cancels the hold and leaves the window
+ * open. This is the Windows half of what unix/window.c does with a GtkLabel
+ * and a GLib timeout.
+ *
+ * Set PUTTY_BETER_DEBUG=exit in PuTTY's environment for a trace on stderr of
+ * the close decision, the delay, and whether a keystroke cancelled it. The
+ * fork's other traces follow the same pattern (PUTTY_DIAG, PUTTY_MCP_DEBUG).
+ */
+#define EXIT_TIMER_ID      1           /* the countdown itself */
+#define EXIT_KEEP_TIMER_ID 2           /* how long "kept open" is shown */
+
+static int exit_debug_flag = -1;
+static bool exit_debug(void)
+{
+    if (exit_debug_flag < 0) {
+        const char *p = getenv("PUTTY_BETER_DEBUG");
+        exit_debug_flag = (p != NULL && strstr(p, "exit") != NULL);
+    }
+    return exit_debug_flag;
+}
+#define EXIT_TRACE(...) do {                                    \
+        if (exit_debug()) {                                     \
+            fprintf(stderr, "putty-exit: " __VA_ARGS__);        \
+            fputc('\n', stderr);                                \
+            fflush(stderr);                                     \
+        }                                                       \
+    } while (0)
+
+/* The height the line needs, measured from the font it is drawn in. */
+static int exit_status_height(WinGuiSeat *wgs)
+{
+    HDC hdc = GetDC(wgs->term_hwnd);
+    HFONT oldfont;
+    TEXTMETRIC tm;
+    int h;
+
+    if (!hdc)
+        return 20;
+
+    oldfont = SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+    GetTextMetrics(hdc, &tm);
+    SelectObject(hdc, oldfont);
+    ReleaseDC(wgs->term_hwnd, hdc);
+
+    h = tm.tmHeight + 6;
+    return h > 0 ? h : 20;
+}
+
+/*
+ * Put the line across the bottom of the window.
+ *
+ * The terminal fills the whole client area - this window is what draws it, and
+ * the terminal is not a child control - so the line sits over the bottom of it.
+ * That is the same loss the other side has: there the GtkLabel takes its height
+ * off the terminal widget, so the bottom of the terminal is clipped instead.
+ * The session has ended by this point, so nothing is being scrolled away.
+ */
+static void exit_countdown_layout(WinGuiSeat *wgs)
+{
+    RECT r;
+    int h;
+
+    if (!wgs->exit_status || !GetClientRect(wgs->term_hwnd, &r))
+        return;
+
+    h = exit_status_height(wgs);
+    SetWindowPos(wgs->exit_status, HWND_TOP, 0, r.bottom - h, r.right, h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+static void exit_countdown_draw(WinGuiSeat *wgs)
+{
+    char buf[160];
+
+    if (!wgs->exit_status)
+        return;
+
+    sprintf(buf, "The session has ended.  This window closes in %d second%s."
+            "  Press any key to keep it open.",
+            wgs->exit_countdown_left,
+            wgs->exit_countdown_left == 1 ? "" : "s");
+    SetWindowText(wgs->exit_status, buf);
+}
+
+static void exit_countdown_start(WinGuiSeat *wgs, int secs)
+{
+    if (!wgs->term_hwnd || !wgs->exit_status) {
+        /* Nothing to hold the window with; close as upstream would. */
+        PostQuitMessage(0);
+        return;
+    }
+
+    wgs->exit_countdown_left = secs;
+    exit_countdown_draw(wgs);
+    exit_countdown_layout(wgs);
+    SetTimer(wgs->term_hwnd, EXIT_TIMER_ID, 1000, NULL);
+
+    EXIT_TRACE("holding the window for %d second%s",
+               secs, secs == 1 ? "" : "s");
+}
+
+static void exit_countdown_cancel(WinGuiSeat *wgs)
+{
+    if (wgs->exit_countdown_left <= 0)
+        return;
+
+    EXIT_TRACE("a keystroke or click cancelled the countdown: the window stays "
+               "open (%d second%s were left)",
+               wgs->exit_countdown_left,
+               wgs->exit_countdown_left == 1 ? "" : "s");
+
+    KillTimer(wgs->term_hwnd, EXIT_TIMER_ID);
+    wgs->exit_countdown_left = 0;
+
+    if (wgs->exit_status) {
+        /*
+         * Say what happened rather than going blank: the line is the only sign
+         * that the hold was cancelled and the window is now staying. It is
+         * taken away again after a few seconds, because here it covers the
+         * bottom of the terminal - the last output is what this feature exists
+         * to show - and once the user has read the line it is only in the way.
+         */
+        SetWindowText(wgs->exit_status,
+                      "The session has ended.  The window has been kept open;"
+                      " press any key to close it.");
+        SetTimer(wgs->term_hwnd, EXIT_KEEP_TIMER_ID, 3000, NULL);
+    }
+}
+
+/* Drop the countdown and hide its line, for a window being restarted. */
+static void exit_countdown_clear(WinGuiSeat *wgs)
+{
+    if (wgs->exit_countdown_left > 0)
+        KillTimer(wgs->term_hwnd, EXIT_TIMER_ID);
+    KillTimer(wgs->term_hwnd, EXIT_KEEP_TIMER_ID);
+
+    wgs->exit_countdown_left = 0;
+
+    if (wgs->exit_status) {
+        SetWindowText(wgs->exit_status, "");
+        ShowWindow(wgs->exit_status, SW_HIDE);
+    }
+}
+
 static void close_session(void *vctx)
 {
     WinGuiSeat *wgs = (WinGuiSeat *)vctx;
@@ -346,6 +545,22 @@ static void close_session(void *vctx)
     int i;
 
     wgs->session_closed = true;
+
+    /*
+     * PuTTY-beter: there is no session to drive any more, so stop offering it.
+     * mcp_send() would refuse anyway; this also takes the session out of the
+     * list an MCP client sees.
+     */
+    mcp_stop(wgs);
+
+    /*
+     * PuTTY-beter: and no session to carry a ZMODEM transfer either. Stopping
+     * the engine closes any file it had open and drops the progress window, so
+     * a transfer in flight when the connection drops leaves no partial file
+     * and no orphaned dialog behind.
+     */
+    zm_stop(wgs);
+
     newtitle = dupprintf("%s (inactive)", appname);
     win_set_icon_title(&wgs->termwin, newtitle, DEFAULT_CODEPAGE);
     win_set_title(&wgs->termwin, newtitle, DEFAULT_CODEPAGE);
@@ -494,6 +709,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     wgs->caret_x = wgs->caret_y = -1;
     wgs->busy_status = BUSY_NOT;
 
+    /*
+     * PuTTY-beter: choose the configuration folder, if this is a first run or
+     * the user asked to be asked. This has to happen before conf_new(), because
+     * the configuration is read from that folder as the Conf is filled in.
+     */
+    config_location_init();
+
     wgs->conf = conf_new();
 
     /*
@@ -607,6 +829,19 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     SetWindowLongPtr(wgs->term_hwnd, GWLP_USERDATA, (LONG_PTR)wgs);
 
     /*
+     * PuTTY-beter: the line that says the window is being held open after the
+     * session ended (tech_detail.md section 11). It is a child of the terminal
+     * window and stays hidden until there is something to say.
+     */
+    wgs->exit_status = CreateWindowEx(
+        0, "STATIC", "", WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
+        0, 0, 0, 0, wgs->term_hwnd, NULL, inst, NULL);
+    if (wgs->exit_status)
+        SendMessage(wgs->exit_status, WM_SETFONT,
+                    (WPARAM)GetStockObject(DEFAULT_GUI_FONT),
+                    MAKELPARAM(true, 0));
+
+    /*
      * Initialise the fonts, simultaneously correcting the guesses
      * for font_{width,height}.
      */
@@ -625,6 +860,23 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      */
     wgs->term = term_init(wgs->conf, &wgs->ucsdata, &wgs->termwin);
     setup_clipboards(wgs->term, wgs->conf);
+
+    /*
+     * PuTTY-beter: offer this session over MCP, if it is configured for it.
+     * Here rather than earlier, because the input tap needs the terminal to
+     * exist; and before the backend starts, so that nothing the far end sends
+     * can arrive before there is a session to receive it.
+     */
+    mcp_start(wgs);
+
+    /*
+     * PuTTY-beter: start the ZMODEM engine with the session. It has to be in
+     * place before the backend starts, so that a transfer begun by the very
+     * first thing the far end prints is still detected. Until one begins it
+     * does nothing but pass bytes through.
+     */
+    zm_start(wgs);
+
     wgs->logctx = log_init(&wgs->logpolicy, wgs->conf);
     term_provide_logctx(wgs->term, wgs->logctx);
     term_size(wgs->term, conf_get_int(wgs->conf, CONF_height),
@@ -882,6 +1134,26 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
 static void wgs_cleanup(WinGuiSeat *wgs)
 {
+    /*
+     * PuTTY-beter: belt and braces. close_session() has normally done this
+     * already, but a window can be destroyed with its session still live.
+     */
+    mcp_stop(wgs);
+    zm_stop(wgs);
+
+    /*
+     * PuTTY-beter: the password this connection logged in with, if any.
+     * Wiped rather than freed; the login name is not secret (PLAN.md
+     * section 4k).
+     */
+    if (wgs->sesspass_used) {
+        smemclr(wgs->sesspass_used, strlen(wgs->sesspass_used));
+        sfree(wgs->sesspass_used);
+        wgs->sesspass_used = NULL;
+    }
+    sfree(wgs->ssh_username_used);
+    wgs->ssh_username_used = NULL;
+
     deinit_fonts(wgs);
     sfree(wgs->logpal);
     if (wgs->pal)
@@ -2110,7 +2382,33 @@ static void exit_callback(void *vctx)
          * appropriate action. */
         if (close_on_exit == FORCE_ON ||
             (close_on_exit == AUTO && exitcode != INT_MAX)) {
-            PostQuitMessage(0);
+            /*
+             * PuTTY-beter: hold the window open for a moment rather than
+             * closing it at once, so that whatever the session printed on its
+             * way out can be read (tech_detail.md section 11). A delay of 0
+             * closes at once, exactly as upstream does.
+             */
+            int delay = conf_get_int(wgs->conf, CONF_close_on_exit_delay);
+
+            EXIT_TRACE("session ended: exit code %d, CloseOnExit %d, delay %d",
+                       exitcode, close_on_exit, delay);
+
+            if (delay <= 0) {
+                EXIT_TRACE("no delay: closing the window now");
+                PostQuitMessage(0);
+            } else {
+                /*
+                 * The session is over either way, so shut it down first - the
+                 * title becomes "(inactive)", the backend is freed and MCP
+                 * stops offering the session - and then hold the window so the
+                 * last thing printed can be read. unix/window.c does the same
+                 * thing in the same order (destroy_inst_connection, then the
+                 * countdown).
+                 */
+                queue_toplevel_callback(close_session, wgs);
+                wgs->session_closed = true;
+                exit_countdown_start(wgs, delay);
+            }
         } else {
             queue_toplevel_callback(close_session, wgs);
             wgs->session_closed = true;
@@ -2200,6 +2498,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
     HDC hdc;
     int resize_action;
     WinGuiSeat *wgs = (WinGuiSeat *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    /*
+     * PuTTY-beter: while the window is being held open after the session ended,
+     * the first keystroke or click cancels the hold and leaves the window open
+     * (tech_detail.md section 11). Swallowed, so that the key that cancelled the
+     * countdown is not also fed to a session that has gone.
+     */
+    if (wgs && wgs->exit_countdown_left > 0 &&
+        (message == WM_KEYDOWN || message == WM_SYSKEYDOWN ||
+         message == WM_LBUTTONDOWN || message == WM_MBUTTONDOWN ||
+         message == WM_RBUTTONDOWN)) {
+        exit_countdown_cancel(wgs);
+        return 0;
+    }
 
     switch (message) {
       case WM_CREATE:
@@ -2347,6 +2659,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
           case IDM_RESTART:
             if (!wgs->backend) {
                 lp_eventlog(&wgs->logpolicy, "----- Session restarted -----");
+                /*
+                 * PuTTY-beter: a restarted window is not closing, so drop any
+                 * hold left over from the previous session's exit
+                 * (tech_detail.md section 11).
+                 */
+                exit_countdown_clear(wgs);
                 term_pwron(wgs->term, false);
                 start_backend(wgs);
             }
@@ -3018,7 +3336,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
         term_notify_window_pos(wgs->term, LOWORD(lParam), HIWORD(lParam));
         sys_cursor_update(wgs);
         break;
+      case WM_TIMER:
+        /*
+         * PuTTY-beter: the readable exit's two timers (tech_detail.md section
+         * 11). The terminal's own timers are not on this window - they use a
+         * hidden window of their own (windows/utils/gui-timing.c) - so these
+         * ids are ours alone.
+         */
+        if (wParam == EXIT_TIMER_ID) {
+            if (--wgs->exit_countdown_left <= 0) {
+                EXIT_TRACE("countdown reached zero: closing the window");
+                KillTimer(hwnd, EXIT_TIMER_ID);
+                wgs->exit_countdown_left = 0;
+                PostQuitMessage(0);
+            } else {
+                exit_countdown_draw(wgs);
+            }
+            return 0;
+        }
+        if (wParam == EXIT_KEEP_TIMER_ID) {
+            KillTimer(hwnd, EXIT_KEEP_TIMER_ID);
+            if (wgs->exit_status) {
+                SetWindowText(wgs->exit_status, "");
+                ShowWindow(wgs->exit_status, SW_HIDE);
+            }
+            return 0;
+        }
+        break;
       case WM_SIZE:
+        if (wgs && wgs->exit_countdown_left > 0)
+            exit_countdown_layout(wgs);
         resize_action = conf_get_int(wgs->conf, CONF_resize_action);
         term_notify_minimised(wgs->term, wParam == SIZE_MINIMIZED);
         {
@@ -3269,8 +3616,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                      * of asking Windows to hold off on KEYDOWN
                      * messages. We _have_ to buffer everything
                      * we're sent.
+                     *
+                     * PuTTY-beter: through the funnel, so that during a
+                     * ZMODEM transfer the bytes go to the engine rather than
+                     * to the terminal (which is not seeing the stream).
                      */
-                    term_keyinput(wgs->term, -1, buf, len);
+                    zm_keyinput(wgs, -1, buf, len);
                     show_mouseptr(wgs, false);
                 }
             }
@@ -3320,14 +3671,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                     if (IS_HIGH_SURROGATE(hs) && i+2 < n) {
                         WCHAR ls = *(unsigned short *)(buff+i+2);
                         if (IS_LOW_SURROGATE(ls)) {
-                            term_keyinputw(
-                                wgs->term, (unsigned short *)(buff+i), 2);
+                            zm_keyinputw(
+                                wgs, (unsigned short *)(buff+i), 2);
                             i += 2;
                             continue;
                         }
                     }
-                    term_keyinputw(
-                        wgs->term, (unsigned short *)(buff+i), 1);
+                    zm_keyinputw(
+                        wgs, (unsigned short *)(buff+i), 1);
                 }
             }
             free(buff);
@@ -3342,11 +3693,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 
             buf[1] = wParam;
             buf[0] = wParam >> 8;
-            term_keyinput(wgs->term, wgs->kbd_codepage, buf, 2);
+            zm_keyinput(wgs, wgs->kbd_codepage, buf, 2);
         } else {
             char c = (unsigned char) wParam;
             term_seen_key_event(wgs->term);
-            term_keyinput(wgs->term, wgs->kbd_codepage, &c, 1);
+            zm_keyinput(wgs, wgs->kbd_codepage, &c, 1);
         }
         return (0);
       case WM_CHAR:
@@ -3366,15 +3717,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
                 wchar_t pair[2];
                 pair[0] = wgs->pending_surrogate;
                 pair[1] = c;
-                term_keyinputw(wgs->term, pair, 2);
+                zm_keyinputw(wgs, pair, 2);
             } else if (!IS_SURROGATE(c)) {
-                term_keyinputw(wgs->term, &c, 1);
+                zm_keyinputw(wgs, &c, 1);
             }
         } else {
             char c = (unsigned char)wParam;
             term_seen_key_event(wgs->term);
             if (wgs->ldisc)
-                term_keyinput(wgs->term, CP_ACP, &c, 1);
+                zm_keyinput(wgs, CP_ACP, &c, 1);
         }
         return 0;
       case WM_SYSCOLORCHANGE:
@@ -4756,7 +5107,7 @@ static int TranslateKey(WinGuiSeat *wgs, UINT message, WPARAM wParam,
                         return 0;
                     }
                     keybuf = nc;
-                    term_keyinputw(wgs->term, &keybuf, 1);
+                    zm_keyinputw(wgs, &keybuf, 1);
                     continue;
                 }
 
@@ -4767,7 +5118,7 @@ static int TranslateKey(WinGuiSeat *wgs, UINT message, WPARAM wParam,
                         if (in_utf(wgs->term) ||
                             wgs->ucsdata.dbcs_screenfont) {
                             keybuf = wgs->alt_numberpad_accumulator;
-                            term_keyinputw(wgs->term, &keybuf, 1);
+                            zm_keyinputw(wgs, &keybuf, 1);
                         } else {
                             char ch = (char) wgs->alt_numberpad_accumulator;
                             /*
@@ -4779,25 +5130,25 @@ static int TranslateKey(WinGuiSeat *wgs, UINT message, WPARAM wParam,
                              * messages. We _have_ to buffer
                              * everything we're sent.
                              */
-                            term_keyinput(wgs->term, -1, &ch, 1);
+                            zm_keyinput(wgs, -1, &ch, 1);
                         }
                         wgs->alt_numberpad_accumulator = 0;
                     } else {
-                        term_keyinputw(wgs->term, &wch, 1);
+                        zm_keyinputw(wgs, &wch, 1);
                     }
                 } else {
                     if (capsOn && wch < 0x80) {
                         WCHAR cbuf[2];
                         cbuf[0] = 27;
                         cbuf[1] = xlat_uskbd2cyrllic(wch);
-                        term_keyinputw(
-                            wgs->term, cbuf+!left_alt, 1+!!left_alt);
+                        zm_keyinputw(
+                            wgs, cbuf+!left_alt, 1+!!left_alt);
                     } else {
                         WCHAR cbuf[2];
                         cbuf[0] = '\033';
                         cbuf[1] = wch;
-                        term_keyinputw(
-                            wgs->term, cbuf +!left_alt, 1+!!left_alt);
+                        zm_keyinputw(
+                            wgs, cbuf +!left_alt, 1+!!left_alt);
                     }
                 }
                 show_mouseptr(wgs, false);
@@ -5892,10 +6243,778 @@ static void flip_full_screen(WinGuiSeat *wgs)
     }
 }
 
+/*
+ * ----------------------------------------------------------------------
+ * PuTTY-beter: ZMODEM file transfer (tech_detail.md section 12).
+ *
+ * The window's half of the ZMODEM engine, mirroring unix/window.c. The engine
+ * itself - the protocol state machine, the CRC, the headers - is
+ * terminal/zmodem.c: pure C with callbacks and no front-end dependency, so it
+ * is the *same* code on both platforms, and it is unit-tested in
+ * test/test_zmodem.c and test/test_zmodem_interop.c. What lives here is only
+ * what needs the window: the transfer folder, the local files, a progress
+ * window and the outcome.
+ *
+ * The engine exists for the whole life of the session, because it has to sit
+ * in the incoming stream from the start - that is where a transfer is
+ * detected. Until one begins it does nothing but pass bytes through, so with
+ * no transfer running the stream reaches the terminal byte for byte, and a
+ * front end with no engine behaves exactly as upstream.
+ * ----------------------------------------------------------------------
+ */
+
+/* ---- the engine's view of the window ---- */
+
+static void zm_trace_cb(void *ctx, const char *msg)
+{
+    if (getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] %s\n", msg);
+}
+
+/*
+ * Ordinary terminal output. The engine calls this for every byte that is not
+ * protocol, including bytes it had to hold back to see whether a prologue was
+ * starting - so the caller never has to reconcile anything, and a stream with
+ * no transfer in it arrives here byte for byte.
+ *
+ * MCP captures here rather than in win_seat_output(), and that is deliberate:
+ * these are exactly the bytes the terminal is about to be shown, so a
+ * transfer's prologue never lands in an MCP client's transcript as junk, while
+ * the engine's own pass-through text ("rz waiting to receive...") does.
+ */
+static void zm_terminal_output(void *ctx, const void *data, size_t len)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    if (wgs->mcp)
+        mcp_session_feed(wgs->mcp, data, len);
+
+    term_data(wgs->term, data, len);
+}
+
+static void zm_send(void *ctx, const void *data, size_t len)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    /*
+     * Straight to the backend, and deliberately not through ldisc_send():
+     * during a transfer these bytes are protocol, not typed input, and the
+     * line discipline would apply local echo and line editing to them.
+     */
+    if (wgs->backend)
+        backend_send(wgs->backend, data, len);
+}
+
+/*
+ * The folder transfers use. Read from the setting, and created if it is not
+ * there yet; the default is %USERPROFILE%\Downloads, resolved at run time by
+ * platform_default_filename() so a profile on another drive is followed.
+ *
+ * Nothing writes the setting back: on both platforms the folder is whatever
+ * the user last chose in the configuration box.
+ */
+static Filename *zm_folder(WinGuiSeat *wgs)
+{
+    Filename *fn = conf_get_filename(wgs->conf, CONF_zmodem_dir);
+    Filename *ret;
+
+    if (filename_is_null(fn)) {
+        /* Unreachable with the built-in default, but never return "". */
+        ret = filename_from_str(".");
+    } else {
+        ret = filename_copy(fn);
+    }
+    CreateDirectoryW(filename_to_wstr(ret), NULL);
+    return ret;
+}
+
+/* `dir\name` as a Filename, with the far end's name taken to be UTF-8. */
+static Filename *zm_path_in(Filename *dir, const char *name)
+{
+    wchar_t *wname = decode_utf8_to_wide_string(name);
+    wchar_t *wpath = dupwcscat(filename_to_wstr(dir), L"\\", wname);
+    Filename *fn = filename_from_wstr(wpath);
+
+    sfree(wname);
+    sfree(wpath);
+    return fn;
+}
+
+static bool zm_exists(Filename *fn)
+{
+    return GetFileAttributesW(filename_to_wstr(fn)) != INVALID_FILE_ATTRIBUTES;
+}
+
+/*
+ * A path that does not exist yet: "report.txt" becomes "report.1.txt", so
+ * downloading the same name twice never destroys the first copy.
+ *
+ * Nothing here asks the user, and that is deliberate: a modal prompt raised
+ * from inside the engine would run a nested message loop with the engine half
+ * way through its state machine. Renaming is the safe answer that needs no
+ * re-entrancy.
+ */
+static Filename *zm_unique_path(Filename *dir, const char *name)
+{
+    Filename *path = zm_path_in(dir, name);
+    const char *dot;
+    int n;
+
+    if (!zm_exists(path))
+        return path;
+
+    dot = strrchr(name, '.');
+    for (n = 1; n < 10000; n++) {
+        Filename *try;
+        char *tryname;
+
+        if (dot && dot != name)
+            tryname = dupprintf("%.*s.%d%s", (int)(dot - name), name, n, dot);
+        else
+            tryname = dupprintf("%s.%d", name, n);
+
+        try = zm_path_in(dir, tryname);
+        sfree(tryname);
+        if (!zm_exists(try)) {
+            filename_free(path);
+            return try;
+        }
+        filename_free(try);
+    }
+    return path;
+}
+
+/* ---- the progress window ---- */
+
+/*
+ * A small progress window. It is deliberately NOT modal: the engine is driven
+ * from the main message loop, so a modal dialog would block the transfer it is
+ * reporting on - which is also why it is a template plus CreateDialog rather
+ * than DialogBox. On the macOS side the equivalent is built in code; here it
+ * is IDD_ZMODEM in putty-common.rc2, like every other Windows dialog.
+ */
+static INT_PTR CALLBACK zm_dialog_proc(HWND hwnd, UINT msg, WPARAM wparam,
+                                       LPARAM lparam)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    switch (msg) {
+      case WM_INITDIALOG:
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)lparam);
+        return TRUE;
+
+      case WM_COMMAND:
+        if (LOWORD(wparam) == IDC_ZM_CANCEL) {
+            if (wgs && wgs->zmodem)
+                zmodem_cancel(wgs->zmodem);
+            return TRUE;
+        }
+        break;
+
+      case WM_CLOSE:
+        /* The window's own close button cancels, exactly like the button. */
+        if (wgs && wgs->zmodem)
+            zmodem_cancel(wgs->zmodem);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void zm_dialog_open(WinGuiSeat *wgs)
+{
+    HWND bar;
+
+    if (wgs->zm_dialog || !wgs->term_hwnd)
+        return;
+
+    wgs->zm_dialog = CreateDialogParam(
+        hinst, MAKEINTRESOURCE(IDD_ZMODEM), wgs->term_hwnd,
+        zm_dialog_proc, (LPARAM)wgs);
+    if (!wgs->zm_dialog) {
+        /*
+         * The transfer still works without the window; only the progress
+         * report is lost. Worth a trace, because the usual cause is a build
+         * one: IDD_ZMODEM lives in putty-common.rc2, and CMake does not track
+         * the .rc2 files a .rc #includes, so editing the template alone does
+         * not rebuild the resource - touch windows/putty.rc as well.
+         */
+        if (getenv("PUTTY_DIAG"))
+            fprintf(stderr, "[zmodem] progress window could not be created "
+                    "(error %lu)\n", (unsigned long)GetLastError());
+        return;
+    }
+
+    bar = GetDlgItem(wgs->zm_dialog, IDC_ZM_PROGRESS);
+    if (bar)
+        SendMessage(bar, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
+
+    ShowWindow(wgs->zm_dialog, SW_SHOW);
+}
+
+static void zm_dialog_close(WinGuiSeat *wgs)
+{
+    if (wgs->zm_dialog) {
+        DestroyWindow(wgs->zm_dialog);
+        wgs->zm_dialog = NULL;
+    }
+}
+
+static void zm_status(WinGuiSeat *wgs, const char *fmt, ...)
+{
+    va_list ap;
+    char *msg;
+
+    if (!wgs->zm_dialog)
+        return;
+    va_start(ap, fmt);
+    msg = dupvprintf(fmt, ap);
+    va_end(ap);
+    SetDlgItemText(wgs->zm_dialog, IDC_ZM_STATUS, msg);
+    sfree(msg);
+}
+
+/* ---- receiving ---- */
+
+static ZmodemFile *zm_receive_open(void *ctx, const char *name,
+                                   uint64_t size, unsigned long mtime)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    Filename *dir;
+    const char *safe = name;
+    FILE *fp;
+
+    (void)mtime;
+
+    /*
+     * The far end does not get to choose a path: anything that looks like a
+     * directory component is stripped off, and an empty or dot name becomes
+     * "download". The engine's name is the bytes of the ZFILE header, which we
+     * take to be UTF-8 - what a modern remote sends.
+     */
+    if (!*safe || !strcmp(safe, ".") || !strcmp(safe, "..")) {
+        safe = "download";
+    } else {
+        const char *p = safe + strlen(safe);
+        while (p > safe && p[-1] != '/' && p[-1] != '\\')
+            p--;
+        safe = p;
+        if (!*safe)
+            safe = "download";
+    }
+
+    dir = zm_folder(wgs);
+    if (wgs->zm_path)
+        filename_free(wgs->zm_path);
+    wgs->zm_path = zm_unique_path(dir, safe);
+    filename_free(dir);
+
+    fp = f_open(wgs->zm_path, "wb", false);
+    if (!fp) {
+        char *msg = dupprintf("Cannot write %s",
+                              filename_to_str(wgs->zm_path));
+        MessageBox(wgs->term_hwnd, msg, "ZMODEM transfer",
+                   MB_ICONERROR | MB_OK);
+        sfree(msg);
+        filename_free(wgs->zm_path);
+        wgs->zm_path = NULL;
+        return NULL;
+    }
+
+    wgs->zm_file = fp;
+    wgs->zm_receive = true;
+    wgs->zm_total = size;
+    zm_dialog_open(wgs);
+    zm_status(wgs, "Receiving %s", safe);
+    return (ZmodemFile *)fp;
+}
+
+static void zm_receive_write(void *ctx, ZmodemFile *f, const void *data,
+                             size_t len)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    (void)f;
+    if (wgs->zm_file)
+        fwrite(data, 1, len, wgs->zm_file);
+}
+
+static void zm_receive_close(void *ctx, ZmodemFile *f, bool complete)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    (void)f;
+
+    if (wgs->zm_file) {
+        fclose(wgs->zm_file);
+        wgs->zm_file = NULL;
+    }
+    if (!complete && wgs->zm_path) {
+        /* A transfer cut short must not leave a truncated file behind. */
+        DeleteFileW(filename_to_wstr(wgs->zm_path));
+        if (getenv("PUTTY_DIAG"))
+            fprintf(stderr, "[zmodem] removed partial %s\n",
+                    filename_to_str(wgs->zm_path));
+    }
+    if (wgs->zm_path) {
+        filename_free(wgs->zm_path);
+        wgs->zm_path = NULL;
+    }
+}
+
+/* ---- sending ---- */
+
+static ZmodemFile *zm_send_open(void *ctx, char **name, uint64_t *size,
+                                unsigned long *mtime)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    Filename *dir = zm_folder(wgs);
+    Filename *fn;
+    const wchar_t *wbase, *wpath;
+    struct _stat64 st;
+    FILE *fp;
+
+    /*
+     * One file per transfer.
+     *
+     * Once the file has been sent, the peer asks whether there is another one,
+     * and this callback is called again. Popping the chooser up a second time,
+     * seconds after a transfer that looked finished, is confusing - and worse,
+     * cancelling that second chooser used to end the session with ZFIN and
+     * report "transfer complete", which reads as if the cancel had been
+     * ignored. Decline instead: the engine ends the session normally, and says
+     * so. To send another file, run rz again.
+     */
+    if (wgs->zm_sent_one) {
+        filename_free(dir);
+        return NULL;
+    }
+
+    /*
+     * The shared chooser, starting in the transfer folder - which is where the
+     * macOS side starts it. request_file() itself cannot do this: a directory
+     * passed as its initial file name is rejected by the common dialog with
+     * FNERR_INVALIDFILENAME, which is why request_file_in_dir() exists.
+     */
+    fn = request_file_in_dir(wgs->term_hwnd, "Choose a file to send", dir,
+                             FILTER_ALL_FILES);
+    if (!fn && getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] no file chosen "
+                "(CommDlgExtendedError=%lu; 0 means the dialog was cancelled)\n",
+                (unsigned long)CommDlgExtendedError());
+    filename_free(dir);
+
+    if (!fn)
+        return NULL;
+
+    fp = f_open(fn, "rb", false);
+    if (!fp) {
+        filename_free(fn);
+        return NULL;
+    }
+
+    /*
+     * The remote name is the base name, in UTF-8 - what the mac side sends,
+     * and what a Linux host expects to receive.
+     */
+    wpath = filename_to_wstr(fn);
+    wbase = wpath + wcslen(wpath);
+    while (wbase > wpath && wbase[-1] != L'/' && wbase[-1] != L'\\')
+        wbase--;
+    *name = encode_wide_string_as_utf8(wbase);
+
+    if (_wstat64(wpath, &st) == 0) {
+        *size = (uint64_t)st.st_size;
+        *mtime = (unsigned long)st.st_mtime;
+    } else {
+        *size = 0;
+        *mtime = 0;
+    }
+    filename_free(fn);
+
+    wgs->zm_file = fp;
+    wgs->zm_receive = false;
+    wgs->zm_total = *size;
+    wgs->zm_sent_one = true;
+    zm_dialog_open(wgs);
+    zm_status(wgs, "Sending %s", *name);
+    return (ZmodemFile *)fp;
+}
+
+static size_t zm_send_read(void *ctx, ZmodemFile *f, void *data, size_t maxlen)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    (void)f;
+    if (!wgs->zm_file)
+        return 0;
+    return fread(data, 1, maxlen, wgs->zm_file);
+}
+
+static void zm_send_close(void *ctx, ZmodemFile *f)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    (void)f;
+    if (wgs->zm_file) {
+        fclose(wgs->zm_file);
+        wgs->zm_file = NULL;
+    }
+}
+
+/* ---- reporting ---- */
+
+static void zm_progress(void *ctx, ZmodemDirection dir, const char *name,
+                        uint64_t done, uint64_t total)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    HWND bar;
+
+    (void)name;
+    wgs->zm_receive = (dir == ZMDIR_RECEIVE);
+    if (total)
+        wgs->zm_total = total;
+
+    if (!wgs->zm_dialog)
+        return;
+
+    bar = GetDlgItem(wgs->zm_dialog, IDC_ZM_PROGRESS);
+    if (total) {
+        int permille = (int)((double)done * 1000.0 / (double)total);
+        if (permille > 1000)
+            permille = 1000;
+        if (bar) {
+            /* A definite total: an ordinary filling bar. */
+            SetWindowLongPtr(bar, GWL_STYLE,
+                             GetWindowLongPtr(bar, GWL_STYLE) & ~PBS_MARQUEE);
+            SendMessage(bar, PBM_SETPOS, permille, 0);
+        }
+        zm_status(wgs, "%s: %llu of %llu bytes (%d%%)",
+                  wgs->zm_receive ? "Receiving" : "Sending",
+                  (unsigned long long)done, (unsigned long long)total,
+                  permille / 10);
+    } else {
+        if (bar) {
+            /* No total: the same moving bar the mac side pulses. */
+            SetWindowLongPtr(bar, GWL_STYLE,
+                             GetWindowLongPtr(bar, GWL_STYLE) | PBS_MARQUEE);
+            SendMessage(bar, PBM_SETMARQUEE, TRUE, 50);
+        }
+        zm_status(wgs, "%s: %llu bytes",
+                  wgs->zm_receive ? "Receiving" : "Sending",
+                  (unsigned long long)done);
+    }
+}
+
+static void zm_finished(void *ctx, ZmodemOutcome outcome, const char *message)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+    char *msg;
+
+    zm_dialog_close(wgs);
+
+    /* The transfer is over, so the next one may prompt for a file again. */
+    wgs->zm_sent_one = false;
+
+    if (getenv("PUTTY_DIAG"))
+        fprintf(stderr, "[zmodem] finished: %d (%s)\n", (int)outcome,
+                message ? message : "");
+
+    msg = dupprintf("ZMODEM transfer %s.%s%s",
+                    outcome == ZMOUT_DONE ? "complete" :
+                    outcome == ZMOUT_CANCELLED ? "cancelled" : "failed",
+                    message ? " " : "", message ? message : "");
+    MessageBox(wgs->term_hwnd, msg, "ZMODEM transfer",
+               (outcome == ZMOUT_DONE ? MB_ICONINFORMATION : MB_ICONERROR)
+               | MB_OK);
+    sfree(msg);
+}
+
+/* ---- plumbing ---- */
+
+static void zm_start(WinGuiSeat *wgs)
+{
+    ZmodemCallbacks cb;
+
+    if (wgs->zmodem)
+        return;
+    memset(&cb, 0, sizeof(cb));
+    cb.ctx = wgs;
+    cb.send = zm_send;
+    cb.terminal_output = zm_terminal_output;
+    cb.receive_open = zm_receive_open;
+    cb.receive_write = zm_receive_write;
+    cb.receive_close = zm_receive_close;
+    cb.send_open = zm_send_open;
+    cb.send_read = zm_send_read;
+    cb.send_close = zm_send_close;
+    cb.progress = zm_progress;
+    cb.finished = zm_finished;
+    cb.trace = zm_trace_cb;
+    wgs->zmodem = zmodem_new(&cb);
+}
+
+static void zm_stop(WinGuiSeat *wgs)
+{
+    /* The engine first: freeing it may close a file through a callback. */
+    if (wgs->zmodem) {
+        zmodem_free(wgs->zmodem);
+        wgs->zmodem = NULL;
+    }
+    zm_dialog_close(wgs);
+    wgs->zm_sent_one = false;
+    if (wgs->zm_file) {
+        fclose(wgs->zm_file);
+        wgs->zm_file = NULL;
+    }
+    if (wgs->zm_path) {
+        filename_free(wgs->zm_path);
+        wgs->zm_path = NULL;
+    }
+    sfree(wgs->zm_pending);
+    wgs->zm_pending = NULL;
+    wgs->zm_pendinglen = wgs->zm_pendingalloc = 0;
+}
+
+/*
+ * Feed the engine, with a guard against re-entry.
+ *
+ * A callback can run a nested message loop - the upload file chooser does -
+ * and during that loop more data may arrive from the backend. Feeding the
+ * engine while it is already half way through its state machine would corrupt
+ * it, so such bytes are queued and drained once the outer call has finished.
+ */
+static void zm_feed(WinGuiSeat *wgs, const void *data, size_t len)
+{
+    if (wgs->zm_in_engine) {
+        if (wgs->zm_pendinglen + len > wgs->zm_pendingalloc) {
+            size_t want = wgs->zm_pendingalloc ? wgs->zm_pendingalloc : 256;
+            while (want < wgs->zm_pendinglen + len)
+                want *= 2;
+            wgs->zm_pending = sresize(wgs->zm_pending, want, unsigned char);
+            wgs->zm_pendingalloc = want;
+        }
+        memcpy(wgs->zm_pending + wgs->zm_pendinglen, data, len);
+        wgs->zm_pendinglen += len;
+        return;
+    }
+
+    wgs->zm_in_engine = true;
+    zmodem_feed_in(wgs->zmodem, data, len);
+
+    while (wgs->zm_pendinglen) {
+        unsigned char *tmp = snewn(wgs->zm_pendinglen, unsigned char);
+        size_t n = wgs->zm_pendinglen;
+        memcpy(tmp, wgs->zm_pending, n);
+        wgs->zm_pendinglen = 0;
+        zmodem_feed_in(wgs->zmodem, tmp, n);
+        sfree(tmp);
+    }
+    wgs->zm_in_engine = false;
+}
+
+/*
+ * True while a transfer is running, in which case typed input must not reach
+ * the terminal emulator: it is not protocol, and the emulator is not seeing
+ * the incoming stream either. The engine keeps the cancel key and drops the
+ * rest.
+ */
+static bool zm_takes_input(WinGuiSeat *wgs)
+{
+    return wgs->zmodem && zmodem_active(wgs->zmodem);
+}
+
+/*
+ * The typed-input funnel. Every path by which a human's keystroke reaches the
+ * terminal comes through here, so that during a transfer it can be diverted to
+ * the engine instead - and, for the wide form, dropped, since a wide character
+ * has no byte form for the protocol to carry (the mac side drops it too).
+ */
+static void zm_keyinput(WinGuiSeat *wgs, int codepage, const char *buf,
+                        int len)
+{
+    if (zm_takes_input(wgs))
+        zmodem_key(wgs->zmodem, buf, (size_t)len);
+    else
+        term_keyinput(wgs->term, codepage, buf, len);
+}
+
+static void zm_keyinputw(WinGuiSeat *wgs, const wchar_t *buf, int len)
+{
+    if (!zm_takes_input(wgs))
+        term_keyinputw(wgs->term, buf, len);
+}
+
+/*
+ * ----------------------------------------------------------------------
+ * PuTTY-beter: MCP.
+ *
+ * The window's half of the MCP server, mirroring unix/window.c. The server
+ * itself - the named pipe, the session registry, the wire protocol - is
+ * windows/mcp.c; what lives here is only what needs the window: the visible
+ * screen, a way to type, and the tap on the stream from the far end.
+ *
+ * Off unless the session says otherwise (McpEnabled), and then read-only
+ * unless McpWrite says otherwise, because this hands a shell - or a switch -
+ * to an AI agent.
+ * ----------------------------------------------------------------------
+ */
+
+/*
+ * A tap on what the human types. It is the single funnel every human keystroke
+ * goes through, and it is what lets read() tell a line the person typed from
+ * one the device echoed back.
+ */
+static void mcp_input_tap(void *ctx, const void *data, size_t len)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    if (wgs->mcp)
+        mcp_session_note_typed(wgs->mcp, data, len);
+}
+
+static void mcp_get_view(void *ctx, McpView *out)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    if (!wgs->term) {
+        out->screen = NULL;
+        out->cols = out->rows = 0;
+        return;
+    }
+    out->screen = term_get_screen_text(wgs->term);
+    out->cols = wgs->term->cols;
+    out->rows = wgs->term->rows;
+}
+
+/*
+ * Phase 4c (PLAN.md section 7.8): who, if anyone, the window is asking. The
+ * terminal knows - a PuTTY password, passphrase or login-name prompt is drawn
+ * *in the terminal* and answered by the person at the keyboard, so
+ * term_prompt_text() is non-NULL exactly while that is happening.
+ *
+ * A prompt that never got that far is not a human's problem and reports NULL:
+ * one the saved session password answered, or one a `-pw` on the command line
+ * answered. That is the whole point of reading the state rather than the
+ * output text - the words `Password:` are on the screen either way.
+ */
+static const char *mcp_get_prompt(void *ctx)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    if (!wgs->term)
+        return NULL;
+    return term_prompt_text(wgs->term);
+}
+
+/*
+ * Put bytes into the session as if they had been typed.
+ *
+ * Through the line discipline, deliberately, and not straight to the backend:
+ * that is what typing does, so local echo, line editing and the terminal's own
+ * handling all behave exactly as they would for the person at the keyboard.
+ *
+ * Returns false if the session cannot take them. The Unix side also refuses
+ * during a ZMODEM transfer, because then the stream is protocol rather than
+ * input; that check is here now too, since W2 brought the engine over.
+ */
+static bool mcp_send(void *ctx, const void *data, size_t len)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)ctx;
+
+    if (!wgs->ldisc || !wgs->backend || wgs->session_closed)
+        return false;
+    if (zm_takes_input(wgs))
+        return false;
+
+    ldisc_send(wgs->ldisc, data, (int)len, false);
+    return true;
+}
+
+/*
+ * Offer this window over MCP, if it is configured for it.
+ *
+ * Called after term_init(), because the input tap needs the terminal to exist.
+ * (On the mac side the tap was originally installed here, before term_init, so
+ * it never fired at all and a typed line came back as the device's - see the
+ * note in unix/window.c.)
+ */
+static void mcp_start(WinGuiSeat *wgs)
+{
+    const char *name;
+    bool writable;
+
+    if (wgs->mcp)
+        return;
+
+    writable = conf_get_bool(wgs->conf, CONF_mcp_write);
+
+    if (getenv("PUTTY_MCP_DEBUG"))
+        fprintf(stderr, "[mcp] session start: McpEnabled=%d McpWrite=%d "
+                "dest=\"%s\"\n",
+                (int)conf_get_bool(wgs->conf, CONF_mcp_enabled),
+                (int)writable, conf_dest(wgs->conf));
+
+    if (!conf_get_bool(wgs->conf, CONF_mcp_enabled))
+        return;
+
+    /*
+     * conf_dest() gives the host name, or the serial line. That is what a
+     * human recognises in a list of sessions, and unlike the window title it
+     * does not change under them when the remote runs something. Sessions are
+     * keyed by id anyway; the name is only for the human.
+     */
+    name = conf_dest(wgs->conf);
+
+    wgs->mcp = mcp_session_new(name, MCP_BUFFER_DEFAULT_BUDGET, writable,
+                               mcp_get_view, mcp_send, wgs);
+
+    /*
+     * Phase 4c: let the server see whether the window is asking the person at
+     * the keyboard something. Safe to install after the session - it is only
+     * read when a client asks, and only reported from `sessions` and `read`.
+     */
+    mcp_session_set_prompt_fn(wgs->mcp, mcp_get_prompt);
+
+    if (wgs->term)
+        term_set_input_tap(wgs->term, mcp_input_tap, wgs);
+}
+
+static void mcp_stop(WinGuiSeat *wgs)
+{
+    if (wgs->mcp) {
+        mcp_session_free(wgs->mcp);
+        wgs->mcp = NULL;
+    }
+    if (wgs->term)
+        term_set_input_tap(wgs->term, NULL, NULL);
+}
+
 static size_t win_seat_output(Seat *seat, SeatOutputType type,
                               const void *data, size_t len)
 {
     WinGuiSeat *wgs = container_of(seat, WinGuiSeat, seat);
+
+    /*
+     * PuTTY-beter: the ZMODEM engine gets first refusal on the stream. It
+     * consumes protocol bytes and hands everything else back through
+     * zm_terminal_output(), so with no engine, or none running, the bytes
+     * reach term_data() exactly as before. Only stdout is diverted; stderr is
+     * never protocol.
+     *
+     * This is where the engine is fed, but *not* where MCP captures: the
+     * capture belongs with term_data(), in zm_terminal_output() and below, so
+     * that it sees exactly what the terminal sees and never the protocol
+     * prologue that a transfer starts with.
+     */
+    if (wgs->zmodem && type == SEAT_OUTPUT_STDOUT) {
+        zm_feed(wgs, data, len);
+        return len;
+    }
+
+    /*
+     * PuTTY-beter: the far end's output is what an MCP client reads. Tapped
+     * before the terminal sees it, so a client cannot miss a byte because the
+     * screen scrolled or the window was not being painted.
+     */
+    if (wgs->mcp)
+        mcp_session_feed(wgs->mcp, data, len);
+
     return term_data(wgs->term, data, len);
 }
 
@@ -5911,13 +7030,285 @@ static bool win_seat_eof(Seat *seat)
     return true;   /* do respond to incoming EOF with outgoing */
 }
 
+/*
+ * ----------------------------------------------------------------------
+ * PuTTY-beter: saved-session login details.
+ *
+ * tech_detail.md section 9 is the design and the account of the port.
+ * A session may carry a password and a login name in its own file; the seat
+ * tries the stored password once per connection, before the inline prompt,
+ * and offers to keep the details after a login succeeds.
+ *
+ * This mirrors unix/window.c closely, and deliberately: everything that is
+ * not the front end - utils/sesspass.c, the CONF_session_password key, its
+ * hand-written storage in settings.c, the config-box field - is shared code
+ * and already worked here. The only Windows-specific piece is the offer
+ * below, which uses a message box instead of the mac's dialog slot.
+ * ----------------------------------------------------------------------
+ */
+
+/*
+ * The shape test for "this prompt set is asking for a login password". The
+ * same one cmdline_get_passwd_input() uses. A private-key passphrase prompt
+ * is to_server = false and a username prompt echoes, so this keeps a login
+ * password away from both; from_proxy keeps it away from a prompt the
+ * SSH-to-SSH proxy forwarded.
+ */
+static bool sesspass_is_login_prompt(prompts_t *p)
+{
+    return p->n_prompts == 1 && !p->prompts[0]->echo && p->to_server &&
+        !p->from_proxy;
+}
+
+/*
+ * Answer the login prompt from the session's saved password, once per
+ * connection.
+ *
+ * Returning SPR_INCOMPLETE means "not mine, carry on" - and that is also what
+ * a rejected password looks like on the second time round, which is how a
+ * stale stored password falls back to the ordinary prompt instead of aborting
+ * the connection the way `-pw' does. A stale password is an ordinary event,
+ * not an error.
+ */
+static SeatPromptResult sesspass_try_prompt(WinGuiSeat *wgs, prompts_t *p)
+{
+    const char *password;
+
+    if (wgs->sesspass_tried)
+        return SPR_INCOMPLETE;
+
+    if (!sesspass_is_login_prompt(p))
+        return SPR_INCOMPLETE;
+
+    password = conf_get_str(wgs->conf, CONF_session_password);
+    if (!password || !*password)
+        return SPR_INCOMPLETE;
+
+    if (sesspass_debug_enabled())
+        fprintf(stderr, "sesspass: answering the password prompt for \"%s\" "
+                "from the session's saved password\n",
+                conf_get_str(wgs->conf, CONF_host));
+
+    prompt_set_result(p->prompts[0], password);
+    wgs->sesspass_tried = true;
+    return SPR_OK;
+}
+
+/*
+ * Remember the password this connection answered the login prompt with, so
+ * that a successful login can offer to keep it in the session's file. Called
+ * from the seat after the prompt has been answered, and copied at once: the
+ * SSH layer frees the prompt set as soon as the seat returns.
+ */
+static void sesspass_remember_used(WinGuiSeat *wgs, prompts_t *p)
+{
+    const char *result;
+
+    if (!sesspass_is_login_prompt(p))
+        return;
+    result = prompt_get_result_ref(p->prompts[0]);
+    if (!result || !*result)
+        return;
+
+    if (wgs->sesspass_used) {
+        smemclr(wgs->sesspass_used, strlen(wgs->sesspass_used));
+        sfree(wgs->sesspass_used);
+    }
+    wgs->sesspass_used = dupstr(result);
+}
+
+/*
+ * The shape test for "this prompt set is asking for an SSH login name" - the
+ * mirror image of sesspass_is_login_prompt(). One prompt, to the server, but
+ * this one *echoes* (a login name is not secret), and it comes from the local
+ * client rather than the server, which keeps it away from a
+ * keyboard-interactive prompt that happens to be a single echoing question.
+ * Both SSH-1 and SSH-2 name their prompt set "SSH login name", which is the
+ * last confirmation.
+ */
+static bool sesslogin_is_username_prompt(prompts_t *p)
+{
+    return p->n_prompts == 1 && p->prompts[0]->echo && p->to_server &&
+        !p->from_server && !p->from_proxy && p->name &&
+        !strcmp(p->name, "SSH login name");
+}
+
+/*
+ * Remember the login name this connection answered the "login as:" prompt
+ * with, so that a successful login can offer to keep it in the session's file
+ * alongside the password. Copied at once, like the password. A login name is
+ * not secret, so it is freed rather than wiped.
+ */
+static void sesslogin_remember_username(WinGuiSeat *wgs, prompts_t *p)
+{
+    const char *result;
+
+    if (!sesslogin_is_username_prompt(p))
+        return;
+    result = prompt_get_result_ref(p->prompts[0]);
+    if (!result || !*result)
+        return;
+
+    sfree(wgs->ssh_username_used);
+    wgs->ssh_username_used = dupstr(result);
+
+    if (sesspass_debug_enabled())
+        fprintf(stderr, "sesspass: remembering the login name \"%s\"\n",
+                result);
+}
+
+/*
+ * What a successful login has to offer to write into the session's file, if
+ * anything. Two things count as new: a password that has just been accepted
+ * and is not saved yet, and a login name typed at the prompt that the session
+ * does not already have. Keeping the "login name typed at the prompt"
+ * condition makes the offer fire even when the password came from the session
+ * file - which is the case where the username was the only thing still being
+ * asked for.
+ */
+static bool sesslogin_wants_password(WinGuiSeat *wgs)
+{
+    const char *saved = conf_get_str(wgs->conf, CONF_session_password);
+
+    return wgs->sesspass_used && *wgs->sesspass_used && (!saved || !*saved);
+}
+
+static bool sesslogin_wants_username(WinGuiSeat *wgs)
+{
+    const char *user;
+
+    if (!wgs->ssh_username_used || !*wgs->ssh_username_used)
+        return false;
+    /*
+     * CONF_username is CONF_TYPE_STR_AMBI, not CONF_TYPE_STR, so it has to be
+     * read with conf_get_str_ambi() - conf_get_str() asserts on it.
+     */
+    user = conf_get_str_ambi(wgs->conf, CONF_username, NULL);
+    return !user || strcmp(user, wgs->ssh_username_used);
+}
+
+/*
+ * Offer to keep the login details that have just been accepted, when the
+ * session has not got them. "Them" is the password, the login name typed at
+ * the "login as:" prompt, or both, whichever is new - the login name alone is
+ * enough, which is the case where the password was already saved and the
+ * username was still being asked for.
+ *
+ * The offer is made from a toplevel callback rather than straight from
+ * notify_session_started, because that runs in the middle of the backend's
+ * packet processing: putting up a modal box there would re-enter the event
+ * loop in the middle of a protocol handler.
+ *
+ * The mac side registers the dialog in DIALOG_SLOT_REMEMBER_PASSWORD so that
+ * it can be dismissed on teardown. Windows has no such slot, and message_box()
+ * is modal, so the offer simply blocks the callback.
+ */
+static void sesspass_offer_callback(void *vctx)
+{
+    WinGuiSeat *wgs = (WinGuiSeat *)vctx;
+    const char *name;
+    char *title, *msg;
+    bool user, pass;
+
+    if (wgs->session_closed || !wgs->term_hwnd)
+        return;
+
+    user = sesslogin_wants_username(wgs);
+    pass = sesslogin_wants_password(wgs);
+    if (!user && !pass)
+        return;
+
+    name = conf_get_str(wgs->conf, CONF_session_name);
+    if (!name || !*name || !strcmp(name, "Default Settings"))
+        return;            /* not a saved session: nowhere to save it */
+
+    title = dupcat(appname, " Remember Login");
+    if (user && pass)
+        msg = dupprintf("Login succeeded. Remember this username and password "
+                        "for the session \"%s\", so that connecting to it does "
+                        "not have to ask for them again?", name);
+    else if (user)
+        msg = dupprintf("Login succeeded. Remember this username for the "
+                        "session \"%s\", so that connecting to it does not have "
+                        "to ask for it again?", name);
+    else
+        msg = dupprintf("Login succeeded. Remember this password for the "
+                        "session \"%s\", so that connecting to it does not have "
+                        "to ask for it again?", name);
+
+    if (message_box(wgs->term_hwnd, msg, title,
+                    MB_YESNO | MB_ICONQUESTION, false, 0) == IDYES) {
+        Conf *conf = conf_copy(wgs->conf);
+        char *errmsg;
+
+        /*
+         * Save the whole configuration, the way Save in the configuration
+         * dialog does, with the login details filled in. Keep the in-memory
+         * copy in step too, so that Restart Session logs in without asking.
+         */
+        if (pass)
+            conf_set_str(conf, CONF_session_password, wgs->sesspass_used);
+        if (user) {
+            /*
+             * A username typed at the prompt replaces whatever the session
+             * had: this is the name that actually logged in. Set as a native
+             * string, like every other place that sets CONF_username;
+             * settings.c converts to and from UTF-8 when it writes the file.
+             */
+            conf_set_str(conf, CONF_username, wgs->ssh_username_used);
+        }
+        errmsg = save_settings(name, conf);
+        conf_free(conf);
+
+        if (errmsg) {
+            message_box(wgs->term_hwnd, errmsg, title,
+                        MB_OK | MB_ICONERROR, false, 0);
+            sfree(errmsg);
+        } else {
+            if (pass)
+                conf_set_str(wgs->conf, CONF_session_password,
+                             wgs->sesspass_used);
+            if (user)
+                conf_set_str(wgs->conf, CONF_username,
+                             wgs->ssh_username_used);
+
+            if (sesspass_debug_enabled())
+                fprintf(stderr, "sesspass: saved the %s for session \"%s\"\n",
+                        user && pass ? "username and password" :
+                        user ? "username" : "password", name);
+        }
+    }
+
+    sfree(title);
+    sfree(msg);
+}
+
+static void win_seat_notify_session_started(Seat *seat)
+{
+    WinGuiSeat *wgs = container_of(seat, WinGuiSeat, seat);
+
+    if (wgs->sesspass_offered)
+        return;
+    if (!sesslogin_wants_password(wgs) && !sesslogin_wants_username(wgs))
+        return;
+
+    wgs->sesspass_offered = true;
+    queue_toplevel_callback(sesspass_offer_callback, wgs);
+}
+
 static SeatPromptResult win_seat_get_userpass_input(Seat *seat, prompts_t *p)
 {
     WinGuiSeat *wgs = container_of(seat, WinGuiSeat, seat);
     SeatPromptResult spr;
     spr = cmdline_get_passwd_input(p, &wgs->cmdline_get_passwd_state, true);
     if (spr.kind == SPRK_INCOMPLETE)
+        spr = sesspass_try_prompt(wgs, p);    /* PuTTY-beter: saved password */
+    if (spr.kind == SPRK_INCOMPLETE)
         spr = term_get_userpass_input(wgs->term, p);
+    if (spr.kind == SPRK_OK) {
+        sesspass_remember_used(wgs, p);
+        sesslogin_remember_username(wgs, p); /* PuTTY-beter: login name */
+    }
     return spr;
 }
 

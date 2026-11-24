@@ -12,13 +12,30 @@
 #include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <dirent.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <pwd.h>
+#endif
 #include "putty.h"
 #include "storage.h"
 #include "tree234.h"
+
+/*
+ * PuTTY-beter: Windows has no POSIX filesystem layer worth the name, so the
+ * handful of calls this file needs are supplied by this header - which also
+ * makes every path UTF-8, so that non-ASCII session names work on a Windows
+ * whose ANSI code page is not UTF-8. See the header for the full list.
+ *
+ * This must come after "putty.h", because it uses smalloc/sfree. windows/ is
+ * on the include path for every target that builds this file.
+ */
+#ifdef _WIN32
+#include "storage-win32-compat.h"
+#endif
 
 #ifdef PATH_MAX
 #define FNLEN PATH_MAX
@@ -796,6 +813,26 @@ static char *config_move_files(const char *src, const char *dst)
  *
  * Returns NULL on success, or a user-presentable error message.
  */
+/*
+ * Is this path absolute? On Unix that means "begins with a slash"; on Windows
+ * it means a drive letter ("C:\...", "C:/...") or a UNC path ("\\server\share").
+ * config_location_set() uses this to decide whether it still has to resolve a
+ * path against the current directory, so getting it wrong on Windows would
+ * prepend the working directory to an already-absolute path.
+ */
+static bool config_path_is_absolute(const char *path)
+{
+#ifdef _WIN32
+    if (path[0] == '\\' || path[0] == '/')
+        return true;               /* UNC, or a root-relative path */
+    if (isalpha((unsigned char)path[0]) && path[1] == ':')
+        return true;               /* drive letter */
+    return false;
+#else
+    return path[0] == '/';
+#endif
+}
+
 char *config_location_set(const char *dirtext)
 {
     char *err = NULL, *path = NULL, *base = NULL, *current = NULL;
@@ -805,7 +842,7 @@ char *config_location_set(const char *dirtext)
         return dupstr("Please specify a folder.");
 
     path = config_expand_home(dirtext);
-    if (path[0] != '/') {
+    if (!config_path_is_absolute(path)) {
         char cwd[FNLEN];
         if (!getcwd(cwd, sizeof(cwd))) {
             err = dupprintf("Unable to resolve the current directory: %s",
@@ -816,10 +853,19 @@ char *config_location_set(const char *dirtext)
         sfree(path);
         path = tmp;
     }
-    { /* strip trailing slashes, but keep a bare "/" */
+    { /* strip trailing slashes, but keep a bare "/" (or a drive root) */
         size_t len = strlen(path);
-        while (len > 1 && path[len-1] == '/')
+        while (len > 1 && (path[len-1] == '/'
+#ifdef _WIN32
+                           || path[len-1] == '\\'
+#endif
+                           )) {
+#ifdef _WIN32
+            if (len == 3 && path[1] == ':')
+                break;             /* "C:/" is a root; leave it alone */
+#endif
             path[--len] = '\0';
+        }
     }
 
     base = config_location_base();
@@ -1145,7 +1191,19 @@ static const char *get_setting(const char *key)
         if (ret)
             return ret->value;
     }
+#ifdef _WIN32
+    /*
+     * PuTTY-beter: there is no X resource database on Windows, so the
+     * fallback below has nothing to consult - and nothing to define, which
+     * matters because test/test_sessions.c supplies its own x_get_default as a
+     * front-end hook, and not every Windows program that links this file also
+     * links a front end.
+     */
+    (void)key;
+    return NULL;
+#else
     return x_get_default(key);
+#endif
 }
 
 /* ----------------------------------------------------------------------
@@ -1235,6 +1293,53 @@ int read_setting_i(settings_r *handle, const char *key, int defvalue)
         return atoi(val);
 }
 
+#ifdef _WIN32
+/*
+ * PuTTY-beter: the Windows FontSpec carries boldness, height and charset as
+ * separate fields rather than encoding them in the name, so they are stored
+ * under separate keys. This is exactly what upstream's registry backend did,
+ * and keeping it means an existing Windows saved session stays readable now
+ * that the configuration lives in a folder.
+ */
+FontSpec *read_setting_fontspec(settings_r *handle, const char *name)
+{
+    char *settingname, *fontname;
+    FontSpec *ret;
+    int isbold, height, charset;
+
+    fontname = read_setting_s(handle, name);
+    if (!fontname)
+        return NULL;
+
+    settingname = dupcat(name, "IsBold");
+    isbold = read_setting_i(handle, settingname, -1);
+    sfree(settingname);
+    if (isbold == -1) {
+        sfree(fontname);
+        return NULL;
+    }
+
+    settingname = dupcat(name, "CharSet");
+    charset = read_setting_i(handle, settingname, -1);
+    sfree(settingname);
+    if (charset == -1) {
+        sfree(fontname);
+        return NULL;
+    }
+
+    settingname = dupcat(name, "Height");
+    height = read_setting_i(handle, settingname, INT_MIN);
+    sfree(settingname);
+    if (height == INT_MIN) {
+        sfree(fontname);
+        return NULL;
+    }
+
+    ret = fontspec_new(fontname, isbold, height, charset);
+    sfree(fontname);
+    return ret;
+}
+#else /* !_WIN32 */
 FontSpec *read_setting_fontspec(settings_r *handle, const char *name)
 {
     /*
@@ -1273,6 +1378,8 @@ FontSpec *read_setting_fontspec(settings_r *handle, const char *name)
         return NULL;
     }
 }
+#endif /* _WIN32 */
+
 Filename *read_setting_filename(settings_r *handle, const char *name)
 {
     char *tmp = read_setting_s(handle, name);
@@ -1284,6 +1391,23 @@ Filename *read_setting_filename(settings_r *handle, const char *name)
         return NULL;
 }
 
+#ifdef _WIN32
+void write_setting_fontspec(settings_w *handle, const char *name, FontSpec *fs)
+{
+    char *settingname;
+
+    write_setting_s(handle, name, fs->name);
+    settingname = dupcat(name, "IsBold");
+    write_setting_i(handle, settingname, fs->isbold);
+    sfree(settingname);
+    settingname = dupcat(name, "CharSet");
+    write_setting_i(handle, settingname, fs->charset);
+    sfree(settingname);
+    settingname = dupcat(name, "Height");
+    write_setting_i(handle, settingname, fs->height);
+    sfree(settingname);
+}
+#else /* !_WIN32 */
 void write_setting_fontspec(settings_w *handle, const char *name, FontSpec *fs)
 {
     /*
@@ -1295,11 +1419,28 @@ void write_setting_fontspec(settings_w *handle, const char *name, FontSpec *fs)
     write_setting_s(handle, suffname, fs->name);
     sfree(suffname);
 }
+#endif /* _WIN32 */
+
+#ifdef _WIN32
+void write_setting_filename(settings_w *handle,
+                            const char *name, Filename *result)
+{
+    /*
+     * PuTTY-beter: Windows keeps the same key as upstream's registry backend,
+     * using the 'cpath' member, so that saved sessions written before the move
+     * to a configuration folder still load. (This is also why 'exotic'
+     * filenames - ones outside the system code page - cannot round-trip here;
+     * that is a long-standing upstream wart, not something this port adds.)
+     */
+    write_setting_s(handle, name, result->cpath);
+}
+#else /* !_WIN32 */
 void write_setting_filename(settings_w *handle,
                             const char *name, Filename *result)
 {
     write_setting_s(handle, name, result->path);
 }
+#endif /* _WIN32 */
 
 void close_settings_r(settings_r *handle)
 {

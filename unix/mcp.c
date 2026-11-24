@@ -32,6 +32,7 @@
  *     "sessions"                                 -> "ok" <count>
  *                                                     then per session:
  *                                                     <id> <name> <ro|rw>
+ *                                                     <prompt>
  *     "read"     <id> <since> <max-bytes>        -> "ok" <cursor> <total-lines>
  *                                                     <missing-from> <missing-to>
  *                                                     <omitted> <nlines>
@@ -104,10 +105,13 @@
 
 /*
  * Bumped to 2 when `sessions` gained the read-only/read-write field, and `send`
- * and `key` were added. Both ends are shipped together, and the handshake
+ * and `key` were added. Bumped to 3 by phase 4c, when `sessions` gained the
+ * human-prompt field and `read` gained one beside its line count, so a client
+ * can tell "the device is waiting for me" from "the window is waiting for the
+ * person at the keyboard". Both ends are shipped together, and the handshake
  * checks this, so a mismatched pair says so instead of misreading fields.
  */
-#define MCP_PROTO_VERSION 2
+#define MCP_PROTO_VERSION 3
 #define MCP_GROUP "putty-mcp"
 
 #define MCP_MAX_FIELDS 64
@@ -142,6 +146,7 @@ struct McpSession {
     McpBuffer *buf;
     bool writable;              /* may a client type into this session? */
     mcp_view_fn get_view;
+    mcp_prompt_fn get_prompt;   /* phase 4c: who is being asked, if anyone */
     mcp_send_fn send;
     void *ctx;
     struct McpSession *next;
@@ -150,6 +155,9 @@ struct McpSession {
 static McpSession *sessions;
 static int session_count;
 static int next_session_id = 1;
+
+/* The prompt the human is being asked right now, or NULL (phase 4c). */
+static const char *session_prompt(McpSession *s);
 
 /* ------------------------------------------------------------------ */
 /* The server                                                          */
@@ -579,14 +587,23 @@ static bool cmd_sessions(McpConn *c)
     for (McpSession *s = sessions; s; s = s->next)
         n++;
 
-    put_uint32(c->out, 2 + 3 * n);
+    put_uint32(c->out, 2 + 4 * n);
     resp_str(c->out, "ok");
     resp_num(c->out, n);
     for (McpSession *s = sessions; s; s = s->next) {
+        const char *prompt = session_prompt(s);
+
         resp_num(c->out, (uint64_t)s->id);
         resp_str(c->out, s->name);
         /* So a client knows before it tries whether it may type. */
         resp_str(c->out, s->writable ? "rw" : "ro");
+        /*
+         * And whether the person at the keyboard is being asked something
+         * (phase 4c). Non-empty means a prompt is on the screen *from PuTTY*
+         * - a password, a passphrase, a login name - and the client must wait
+         * for the human rather than answer it.
+         */
+        resp_str(c->out, prompt ? prompt : "");
     }
 
     MCPDBG("-> sessions: %u", (unsigned)n);
@@ -612,7 +629,7 @@ static bool cmd_read(McpConn *c, const mcp_field *f, uint32_t n)
 
     r = mcp_buffer_read(s->buf, since, max_bytes);
 
-    put_uint32(c->out, 7 + 3 * (uint32_t)r->nlines);
+    put_uint32(c->out, 8 + 3 * (uint32_t)r->nlines);
     resp_str(c->out, "ok");
     resp_num(c->out, r->cursor);
     resp_num(c->out, r->total_lines);
@@ -625,6 +642,17 @@ static bool cmd_read(McpConn *c, const mcp_field *f, uint32_t n)
     }
     resp_num(c->out, r->omitted);
     resp_num(c->out, (uint64_t)r->nlines);
+    /*
+     * Phase 4c: sitting between the line count and the lines is whether a
+     * human is being prompted (empty when not). `run` polls this very reply,
+     * so a command that lands on a PuTTY password prompt can stop and say so
+     * instead of reporting "quiet - probably finished" and sending the next
+     * command into a password prompt.
+     */
+    {
+        const char *prompt = session_prompt(s);
+        resp_str(c->out, prompt ? prompt : "");
+    }
     for (size_t i = 0; i < r->nlines; i++) {
         char tag[2];
         tag[0] = mcp_author_tag(r->lines[i].author);
@@ -1080,6 +1108,28 @@ McpSession *mcp_session_new(const char *name, size_t budget, bool writable,
     MCPDBG("session %d registered as \"%s\" (%s)", s->id, s->name,
            s->writable ? "read-write" : "read-only");
     return s;
+}
+
+/*
+ * Phase 4c: let the front end say who, if anyone, is being prompted. NULL (the
+ * initial value, and the only value on a front end that never calls this) means
+ * "nobody is being asked", which is what `sessions` and `read` report.
+ */
+void mcp_session_set_prompt_fn(McpSession *s, mcp_prompt_fn fn)
+{
+    if (s)
+        s->get_prompt = fn;
+}
+
+/* The prompt now being put to the human, or NULL. Never fails. */
+static const char *session_prompt(McpSession *s)
+{
+    const char *p;
+
+    if (!s->get_prompt)
+        return NULL;
+    p = s->get_prompt(s->ctx);
+    return p ? p : NULL;
 }
 
 void mcp_session_free(McpSession *s)

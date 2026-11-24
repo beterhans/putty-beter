@@ -1040,6 +1040,26 @@ static void mcp_get_view(void *ctx, McpView *out)
 }
 
 /*
+ * Phase 4c (PLAN.md section 7.8): who, if anyone, the window is asking. The
+ * terminal knows - a PuTTY password, passphrase or login-name prompt is drawn
+ * *in the terminal* and answered by the person at the keyboard, so
+ * term_prompt_text() is non-NULL exactly while that is happening.
+ *
+ * A prompt that never got that far is not a human's problem and reports NULL:
+ * one the saved session password answered, or one a `-pw` on the command line
+ * answered. That is the whole point of reading the state rather than the
+ * output text - the words `Password:` are on the screen either way.
+ */
+static const char *mcp_get_prompt(void *ctx)
+{
+    GtkFrontend *inst = (GtkFrontend *)ctx;
+
+    if (!inst->term)
+        return NULL;
+    return term_prompt_text(inst->term);
+}
+
+/*
  * Start the MCP session, if this one is configured for it.
  *
  * Off by default, and deliberately: this hands a shell - or a switch - to an
@@ -1071,6 +1091,12 @@ static void mcp_start(GtkFrontend *inst)
 
     inst->mcp = mcp_session_new(name, MCP_BUFFER_DEFAULT_BUDGET, writable,
                                 mcp_get_view, mcp_send, inst);
+    /*
+     * Phase 4c: let the server see whether the window is asking the person at
+     * the keyboard something. Safe to install after the session - it is only
+     * read when a client asks.
+     */
+    mcp_session_set_prompt_fn(inst->mcp, mcp_get_prompt);
 
     /*
      * The tap is installed after the session, so that the input that starts a

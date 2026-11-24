@@ -238,13 +238,28 @@ export async function runOnSession(session, command, options = {}) {
     log(`baseline: total_lines=${cursor}`);
 
     /*
+     * Phase 4c: if the window is *already* asking the human something, nothing
+     * is sent at all. This is the case that matters most - sending here is how
+     * an agent types a password at a password prompt - and the transcript
+     * alone could not have told us, because the words look exactly like device
+     * output. Pinned, not live: once it was prompting before we sent, the run
+     * must not go on, whatever the human does while we wait.
+     */
+    const promptBeforeSend = before.needs_human ?? null;
+
+    /*
      * One request, not two. The device echoes what we type, and the echo
      * arrives between two requests - landing *inside* our own line, so the
      * transcript reads "pwd pwd" and the fence is unusable. One request closes
      * the line before any echo can be seen.
      */
-    await session.send(command + o.terminator);
-    log(`sent: ${JSON.stringify(command)}`);
+    if (promptBeforeSend === null) {
+        await session.send(command + o.terminator);
+        log(`sent: ${JSON.stringify(command)}`);
+    } else {
+        log(`not sending: the window is asking the human ` +
+            `${JSON.stringify(promptBeforeSend)}`);
+    }
 
     const lines = [];
     const seen = new Set();
@@ -257,8 +272,15 @@ export async function runOnSession(session, command, options = {}) {
     let omittedLines = 0;
     let trailingPromptRemoved = false;
     let needsInput = null;
+    let needsHuman = null;
     let cancelled = false;
     let completedBy = null;
+    /*
+     * Phase 4c: non-null while the *window* is asking the person at the
+     * keyboard something (see readOn() in protocol.mjs). The last read wins,
+     * so an answer clears it.
+     */
+    let humanPrompt = null;
 
     /*
      * Take one read result into the running picture. Returns whether anything
@@ -313,6 +335,7 @@ export async function runOnSession(session, command, options = {}) {
             const r = await session.read({ since: cursor, maxBytes: o.maxBytes });
             if (absorb(r))
                 grew = true;
+            humanPrompt = r.needs_human ?? null;
             cursor = r.cursor;
             if (r.omitted === 0)
                 break;
@@ -352,6 +375,27 @@ export async function runOnSession(session, command, options = {}) {
             pagerPatterns,
             inputPatterns,
         });
+
+        /*
+         * Phase 4c: the *window* is asking the person at the keyboard
+         * something - a password, a key passphrase, a login name. The words
+         * may well be in the transcript, but what is being awaited is a
+         * human, and no agent may answer it: sending the next command here is
+         * typing a password at a password prompt. `promptBeforeSend` pins the
+         * case where it was already asking before this run sent anything.
+         * Checked before the human-typing rule, because the password the human
+         * types at that prompt must not read as a cancellation of the run.
+         */
+        const hp = promptBeforeSend ?? humanPrompt;
+        if (hp !== null) {
+            needsHuman = {
+                reason: 'the window is asking the human',
+                prompt: hp,
+            };
+            completedBy = 'needs_human';
+            log(`needs human: ${JSON.stringify(hp)}`);
+            break;
+        }
 
         /*
          * A human typing cancels the run. The human and the agent must not
@@ -499,6 +543,8 @@ export async function runOnSession(session, command, options = {}) {
         result.omitted_lines = omittedLines;
     if (needsInput)
         result.needs_input = needsInput;
+    if (needsHuman)
+        result.needs_human = needsHuman;
     if (trailingPromptRemoved)
         result.trailing_prompt_removed = true;
     if (gap)

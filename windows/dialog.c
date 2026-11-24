@@ -21,6 +21,15 @@
 #include <commdlg.h>
 #include <shellapi.h>
 
+/*
+ * PuTTY-beter: the fork's identity, as shown in the About box and used for
+ * its home-page link. These mirror unix/gtkmisc.h, which is Unix-only and so
+ * cannot be included here; the Windows front end repeats the values. Keep the
+ * two in step.
+ */
+#define PUTTY_BETER_HOMEPAGE "https://github.com/beterhans/putty-beter"
+#define PUTTY_BETER_COPYRIGHT_HOLDER "2026 beterhans"
+
 #ifdef MSVC4
 #define TVINSERTSTRUCT  TV_INSERTSTRUCT
 #define TVITEM          TV_ITEM
@@ -57,6 +66,19 @@ typedef struct PortableDialogStuff {
      * setup.
      */
     bool initialised;
+
+    /*
+     * PuTTY-beter: geometry for the resizable main configuration box.
+     *
+     * `panel_path' is the controlset path of the panel currently on display,
+     * so that the layout can be redone from scratch whenever the window is
+     * resized. `min_client_h' is the smallest client height, in dialog units,
+     * that panel needs for its controls to fit above the button row - the
+     * window is never allowed to shrink below it, or the panel would run down
+     * over the buttons and hide them.
+     */
+    char *panel_path;
+    int min_client_h;
 } PortableDialogStuff;
 
 /*
@@ -94,6 +116,8 @@ static void pds_free(PortableDialogStuff *pds)
     for (size_t i = 0; i < pds->nctrltrees; i++)
         winctrl_cleanup(&pds->ctrltrees[i]);
     sfree(pds->ctrltrees);
+
+    sfree(pds->panel_path);
 
     sfree(pds);
 }
@@ -170,10 +194,16 @@ static void pds_initdialog_start(PortableDialogStuff *pds, HWND hwnd)
 
 /*
  * Create the panelfuls of controls in the configuration box.
+ *
+ * PuTTY-beter: if `out_bottom' is not NULL, it receives the dialog-unit y
+ * coordinate just below the last control laid out, so the caller can find out
+ * how much vertical room the panel actually needed. (The layout stacks
+ * controls downwards from `top' and does not clip, which is exactly why the
+ * caller needs to know.)
  */
 static void pds_create_controls(
     PortableDialogStuff *pds, size_t which_tree, int base_id,
-    int left, int right, int top, char *path)
+    int left, int right, int top, char *path, int *out_bottom)
 {
     struct ctlpos cp;
 
@@ -184,6 +214,9 @@ static void pds_create_controls(
         struct controlset *s = pds->ctrlbox->ctrlsets[index];
         winctrl_layout(pds->dp, &pds->ctrltrees[which_tree], &cp, s, &base_id);
     }
+
+    if (out_bottom)
+        *out_bottom = cp.ypos;
 }
 
 static void pds_initdialog_finish(PortableDialogStuff *pds)
@@ -414,10 +447,24 @@ static INT_PTR CALLBACK AboutProc(HWND hwnd, UINT msg,
         SetWindowText(hwnd, str);
         sfree(str);
         char *buildinfo_text = buildinfo("\r\n");
+        /*
+         * PuTTY-beter: upstream's copyright line, then the fork's, exactly as
+         * the GTK front end lays it out (unix/dialog.c, about_box()). The old
+         * single upstream line is kept below for reference.
+         */
+        /*
         char *text = dupprintf(
             "%s\r\n\r\n%s\r\n\r\n%s\r\n\r\n%s",
             appname, ver, buildinfo_text,
             "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.");
+        */
+        char *text = dupprintf(
+            "%s\r\n\r\n%s\r\n\r\n%s\r\n\r\n%s\r\n%s",
+            appname, ver, buildinfo_text,
+            "Original author: Copyright " SHORT_COPYRIGHT_DETAILS
+            ". All rights reserved",
+            "This fork: Copyright " PUTTY_BETER_COPYRIGHT_HOLDER
+            ". All rights reserved");
         sfree(buildinfo_text);
         SetDlgItemText(hwnd, IDA_TEXT, text);
         MakeDlgItemBorderless(hwnd, IDA_TEXT);
@@ -439,9 +486,18 @@ static INT_PTR CALLBACK AboutProc(HWND hwnd, UINT msg,
             return 0;
 
           case IDA_WEB:
+            /*
+             * PuTTY-beter: the fork's own home page, not upstream's. The mac
+             * links PUTTY_BETER_HOMEPAGE here too (unix/dialog.c). The old
+             * upstream URL is kept below for reference.
+             */
             /* Load web browser */
+            /*
             ShellExecute(hwnd, "open",
                          "https://www.chiark.greenend.org.uk/~sgtatham/putty/",
+                         0, 0, SW_SHOWDEFAULT);
+            */
+            ShellExecute(hwnd, "open", PUTTY_BETER_HOMEPAGE,
                          0, 0, SW_SHOWDEFAULT);
             return 0;
         }
@@ -511,6 +567,278 @@ enum {
 };
 
 /*
+ * PuTTY-beter: the main configuration box is resizable.
+ *
+ * Upstream lays the box out at hard-coded dialog-unit offsets: the tree view
+ * and the panel column start at fixed points, and the row of buttons along the
+ * bottom is at a fixed offset too. That only works while every panel is
+ * shorter than the space reserved for it, and this fork's Session panel is not
+ * (it adds the close-on-exit countdown and the session-folder button), so its
+ * controls ran off the bottom and hid the buttons.
+ *
+ * So the geometry is computed from the dialog's actual client size instead:
+ * the buttons are pinned to the bottom edge, and the tree view and the panel
+ * fill whatever is above them. The window is resizable, and its minimum height
+ * is whatever the panel on display needs, so the buttons can never be covered.
+ *
+ * All of this is expressed in dialog units and converted with MapDialogRect,
+ * which uses the dialog's own font - so the layout scales with the system DPI,
+ * whatever scale the dialog was created for.
+ */
+#define CB_MARGIN 3            /* border round the outside of the box */
+#define CB_TOP 13              /* top of the tree view and the panel column */
+#define CB_TVWIDTH 95          /* width of the tree view column */
+/*
+ * PuTTY-beter: the file the configuration box's own size is remembered in,
+ * inside the configuration folder. Same name as the GTK front end uses
+ * (unix/dialog.c), so a configuration folder carries the size between the two.
+ */
+#define CONFIG_BOX_STATE_FILE "gui-state"
+#define CB_PANELX 100          /* left edge of the panel column */
+#define CB_BTNHEIGHT 14        /* height of a push button */
+#define CB_MINWIDTH 300        /* narrowest the box may be shrunk to */
+
+/*
+ * Pixels per 8 dialog units vertically, for the font this dialog is using.
+ * Returns false if the conversion is not available.
+ */
+static bool cb_du_scale(HWND hwnd, int *du8y)
+{
+    RECT r;
+
+    r.left = r.top = r.right = 0;
+    r.bottom = 8;
+    if (!MapDialogRect(hwnd, &r) || r.bottom <= 0)
+        return false;
+
+    *du8y = r.bottom;
+    return true;
+}
+
+/* The dialog's client height, in dialog units. */
+static int cb_client_h_du(HWND hwnd)
+{
+    RECT cr;
+    int du8y;
+
+    GetClientRect(hwnd, &cr);
+    if (!cb_du_scale(hwnd, &du8y))
+        return 0;
+    return (cr.bottom * 8) / du8y;
+}
+
+/* The dialog's horizontal scale: pixels for 4 dialog units. */
+static bool cb_du_scale_x(HWND hwnd, int *du4x)
+{
+    RECT r;
+
+    r.left = r.top = r.bottom = 0;
+    r.right = 4;
+    if (!MapDialogRect(hwnd, &r) || r.right <= 0)
+        return false;
+
+    *du4x = r.right;
+    return true;
+}
+
+/* The dialog's client width, in dialog units. */
+static int cb_client_w_du(HWND hwnd)
+{
+    RECT cr;
+    int du4x;
+
+    GetClientRect(hwnd, &cr);
+    if (!cb_du_scale_x(hwnd, &du4x))
+        return 0;
+    return (cr.right * 4) / du4x;
+}
+
+/*
+ * Resize the window so its client area is `want_du' dialog units tall, never
+ * growing past the work area of the monitor it is on. Used once, at startup,
+ * to make sure the first panel fits.
+ */
+static void cb_set_client_height(HWND hwnd, int want_du)
+{
+    RECT wr, cr, wa;
+    int du8y, want_px, frame;
+
+    if (!cb_du_scale(hwnd, &du8y))
+        return;
+
+    want_px = (want_du * du8y) / 8;
+
+    GetWindowRect(hwnd, &wr);
+    GetClientRect(hwnd, &cr);
+    frame = (wr.bottom - wr.top) - cr.bottom;
+
+    if (SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0)) {
+        int maxclient = (wa.bottom - wa.top) - frame;
+        if (maxclient > 0 && want_px > maxclient)
+            want_px = maxclient;
+    }
+
+    if (want_px == cr.bottom)
+        return;
+
+    SetWindowPos(hwnd, NULL, 0, 0, wr.right - wr.left, want_px + frame,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/*
+ * PuTTY-beter: resize the window so its client area is the given size in
+ * dialog units, never growing past the work area of the monitor it is on. This
+ * is cb_set_client_height() with a width as well, and it exists to put back the
+ * size the box was last left at (tech_detail.md section 4).
+ */
+static void cb_set_client_size(HWND hwnd, int want_w_du, int want_h_du)
+{
+    RECT wr, cr, wa;
+    int du4x, du8y, want_w, want_h, framew, frameh;
+
+    if (!cb_du_scale_x(hwnd, &du4x) || !cb_du_scale(hwnd, &du8y))
+        return;
+
+    want_w = (want_w_du * du4x) / 4;
+    want_h = (want_h_du * du8y) / 8;
+
+    GetWindowRect(hwnd, &wr);
+    GetClientRect(hwnd, &cr);
+    framew = (wr.right - wr.left) - cr.right;
+    frameh = (wr.bottom - wr.top) - cr.bottom;
+
+    if (SystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0)) {
+        int maxw = (wa.right - wa.left) - framew;
+        int maxh = (wa.bottom - wa.top) - frameh;
+
+        if (maxw > 0 && want_w > maxw)
+            want_w = maxw;
+        if (maxh > 0 && want_h > maxh)
+            want_h = maxh;
+    }
+
+    if (want_w == cr.right && want_h == cr.bottom)
+        return;
+
+    SetWindowPos(hwnd, NULL, 0, 0, want_w + framew, want_h + frameh,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/* Destroy every control in one of the box's control trees. */
+static void cb_destroy_tree(PortableDialogStuff *pds, HWND hwnd,
+                            size_t which_tree)
+{
+    struct winctrl *c;
+
+    while ((c = winctrl_findbyindex(&pds->ctrltrees[which_tree], 0)) != NULL) {
+        for (int k = 0; k < c->num_ids; k++) {
+            HWND item = GetDlgItem(hwnd, c->base_id + k);
+            if (item)
+                DestroyWindow(item);
+        }
+        winctrl_rem_shortcuts(pds->dp, c);
+        winctrl_remove(&pds->ctrltrees[which_tree], c);
+        sfree(c->data);
+        sfree(c);
+    }
+}
+
+/*
+ * Put the fixed furniture where it belongs for a client `client_h_du' dialog
+ * units tall: the "Category:" label and the tree view down the left. Returns
+ * the dialog-unit y coordinate the button row should start at. The buttons
+ * themselves are not created here; the caller passes this position to
+ * pds_create_controls().
+ */
+static int cb_place_furniture(HWND hwnd, int client_h_du)
+{
+    RECT r;
+    int btn_top, bottom;
+
+    btn_top = client_h_du - CB_MARGIN - CB_BTNHEIGHT;
+    bottom = btn_top - CB_MARGIN;
+    if (bottom < CB_TOP + 1)
+        bottom = CB_TOP + 1;       /* degenerate; keep it the right way up */
+
+    r.left = CB_MARGIN;
+    r.right = CB_MARGIN + CB_TVWIDTH;
+    r.top = CB_MARGIN;
+    r.bottom = r.top + 10;
+    MapDialogRect(hwnd, &r);
+    SetWindowPos(GetDlgItem(hwnd, IDCX_TVSTATIC), NULL,
+                 r.left, r.top, r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+
+    r.left = CB_MARGIN;
+    r.right = CB_MARGIN + CB_TVWIDTH;
+    r.top = CB_TOP;
+    r.bottom = bottom;
+    MapDialogRect(hwnd, &r);
+    SetWindowPos(GetDlgItem(hwnd, IDCX_TREEVIEW), NULL,
+                 r.left, r.top, r.right - r.left, r.bottom - r.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+
+    return btn_top;
+}
+
+/*
+ * Lay the whole box out again for the dialog's current size: reposition the
+ * furniture, then rebuild the panel column and the button row. Both have to be
+ * rebuilt rather than just moved, because their layout depends on the client
+ * width - controls are right-aligned against it - and pds_create_controls()
+ * reads that width itself.
+ *
+ * The keyboard focus is put back on whatever control had it, so resizing the
+ * window while typing in an edit box does not lose the caret.
+ */
+static void cb_relayout(PortableDialogStuff *pds, HWND hwnd)
+{
+    char *path;
+    int btn_top, bottom = 0, focus_id = 0;
+    HWND focused;
+
+    if (!pds->panel_path)
+        return;                    /* no panel selected yet */
+
+    btn_top = cb_place_furniture(hwnd, cb_client_h_du(hwnd));
+
+    path = dupstr(pds->panel_path);
+
+    focused = GetFocus();
+    if (focused && IsChild(hwnd, focused))
+        focus_id = GetDlgCtrlID(focused);
+
+    SendMessage(hwnd, WM_SETREDRAW, false, 0);
+
+    cb_destroy_tree(pds, hwnd, TREE_BASE);
+    cb_destroy_tree(pds, hwnd, TREE_PANEL);
+
+    pds_create_controls(pds, TREE_BASE, IDCX_STDBASE,
+                        CB_MARGIN, CB_MARGIN, btn_top, "", NULL);
+    pds_create_controls(pds, TREE_PANEL, IDCX_PANELBASE,
+                        CB_PANELX, CB_MARGIN, CB_TOP, path, &bottom);
+
+    /*
+     * The least the window may be: the panel's contents, the gap under them,
+     * the buttons, and the bottom margin.
+     */
+    pds->min_client_h = bottom + CB_MARGIN + CB_BTNHEIGHT + CB_MARGIN;
+
+    dlg_refresh(NULL, pds->dp);
+
+    SendMessage(hwnd, WM_SETREDRAW, true, 0);
+    InvalidateRect(hwnd, NULL, true);
+
+    if (focus_id) {
+        HWND again = GetDlgItem(hwnd, focus_id);
+        if (again)
+            SetFocus(again);
+    }
+
+    sfree(path);
+}
+
+/*
  * This function is the configuration box.
  * (Being a dialog procedure, in general it returns 0 if the default
  * dialog processing should be performed, and 1 if it should not.)
@@ -527,24 +855,22 @@ static INT_PTR GenericMainDlgProc(HWND hwnd, UINT msg, WPARAM wParam,
       case WM_INITDIALOG:
         pds_initdialog_start(pds, hwnd);
 
-        pds_create_controls(pds, TREE_BASE, IDCX_STDBASE, 3, 3, 235, "");
-
         SendMessage(hwnd, WM_SETICON, (WPARAM) ICON_BIG,
                     (LPARAM) LoadIcon(hinst, MAKEINTRESOURCE(IDI_CFGICON)));
 
-        centre_window(hwnd);
-
         /*
-         * Create the tree view.
+         * Create the tree view. Its position here is provisional: the layout
+         * is finalised by cb_relayout() below, which is also what runs on
+         * every resize.
          */
         {
             RECT r;
             WPARAM font;
             HWND tvstatic;
 
-            r.left = 3;
-            r.right = r.left + 95;
-            r.top = 3;
+            r.left = CB_MARGIN;
+            r.right = r.left + CB_TVWIDTH;
+            r.top = CB_MARGIN;
             r.bottom = r.top + 10;
             MapDialogRect(hwnd, &r);
             tvstatic = CreateWindowEx(0, "STATIC", "Cate&gory:",
@@ -556,9 +882,9 @@ static INT_PTR GenericMainDlgProc(HWND hwnd, UINT msg, WPARAM wParam,
             font = SendMessage(hwnd, WM_GETFONT, 0, 0);
             SendMessage(tvstatic, WM_SETFONT, font, MAKELPARAM(true, 0));
 
-            r.left = 3;
-            r.right = r.left + 95;
-            r.top = 13;
+            r.left = CB_MARGIN;
+            r.right = r.left + CB_TVWIDTH;
+            r.top = CB_TOP;
             r.bottom = r.top + 219;
             MapDialogRect(hwnd, &r);
             treeview = CreateWindowEx(WS_EX_CLIENTEDGE, WC_TREEVIEW, "",
@@ -635,10 +961,51 @@ static INT_PTR GenericMainDlgProc(HWND hwnd, UINT msg, WPARAM wParam,
              * match the initial treeview selection.
              */
             assert(firstpath);   /* config.c must have given us _something_ */
-            pds_create_controls(pds, TREE_PANEL, IDCX_PANELBASE,
-                                100, 3, 13, firstpath);
-            dlg_refresh(NULL, pds->dp);    /* and set up control values */
+
+            /*
+             * PuTTY-beter: remember which panel is on display (the resize
+             * path needs to rebuild it), lay the box out for the size the
+             * dialog template gave us, and then grow the window if that size
+             * is too small for this panel - otherwise the panel's controls
+             * would run down over the buttons.
+             */
+            sfree(pds->panel_path);
+            pds->panel_path = dupstr(firstpath);
+            cb_relayout(pds, hwnd);
+
+            if (cb_client_h_du(hwnd) < pds->min_client_h) {
+                cb_set_client_height(hwnd, pds->min_client_h);
+                cb_relayout(pds, hwnd);
+            }
+
+            /*
+             * PuTTY-beter: put back the size the box was last left at, if that
+             * is bigger than what this panel needs (tech_detail.md section 4).
+             * The minimum has been applied first, and a remembered size is only
+             * ever grown to, never shrunk to - so a size remembered from a
+             * short panel can never squeeze a taller one over the buttons.
+             */
+            {
+                int saved_w = config_state_get_int(CONFIG_BOX_STATE_FILE,
+                                                   "width", 0);
+                int saved_h = config_state_get_int(CONFIG_BOX_STATE_FILE,
+                                                   "height", 0);
+                int now_w = cb_client_w_du(hwnd);
+                int now_h = cb_client_h_du(hwnd);
+
+                if (saved_w > now_w || saved_h > now_h) {
+                    cb_set_client_size(hwnd,
+                                       saved_w > now_w ? saved_w : now_w,
+                                       saved_h > now_h ? saved_h : now_h);
+                    cb_relayout(pds, hwnd);
+                }
+            }
         }
+
+        /*
+         * Centre it now that the size has settled.
+         */
+        centre_window(hwnd);
 
         if (dialog_box_demo_screenshot_filename)
             SetTimer(hwnd, DEMO_SCREENSHOT_TIMER_ID, TICKSPERSEC, NULL);
@@ -680,41 +1047,98 @@ static INT_PTR GenericMainDlgProc(HWND hwnd, UINT msg, WPARAM wParam,
 
             i = TreeView_GetSelection(((LPNMHDR) lParam)->hwndFrom);
 
-            SendMessage (hwnd, WM_SETREDRAW, false, 0);
-
             item.hItem = i;
             item.pszText = buffer;
             item.cchTextMax = sizeof(buffer);
             item.mask = TVIF_TEXT | TVIF_PARAM;
             TreeView_GetItem(((LPNMHDR) lParam)->hwndFrom, &item);
-            {
-                /* Destroy all controls in the currently visible panel. */
-                int k;
-                HWND item;
-                struct winctrl *c;
 
-                while ((c = winctrl_findbyindex(
-                            &pds->ctrltrees[TREE_PANEL], 0)) != NULL) {
-                    for (k = 0; k < c->num_ids; k++) {
-                        item = GetDlgItem(hwnd, c->base_id + k);
-                        if (item)
-                            DestroyWindow(item);
-                    }
-                    winctrl_rem_shortcuts(pds->dp, c);
-                    winctrl_remove(&pds->ctrltrees[TREE_PANEL], c);
-                    sfree(c->data);
-                    sfree(c);
-                }
-            }
-            pds_create_controls(pds, TREE_PANEL, IDCX_PANELBASE,
-                                100, 3, 13, (char *)item.lParam);
-
-            dlg_refresh(NULL, pds->dp);    /* set up control values */
+            /*
+             * PuTTY-beter: switch the panel. cb_relayout() does the same
+             * destroy-and-rebuild that a resize does, so the new panel is laid
+             * out for the window's current size and the button row stays where
+             * it belongs.
+             */
+            sfree(pds->panel_path);
+            pds->panel_path = dupstr((char *)item.lParam);
+            cb_relayout(pds, hwnd);
 
             SendMessage (hwnd, WM_SETREDRAW, true, 0);
             InvalidateRect (hwnd, NULL, true);
 
             SetFocus(((LPNMHDR) lParam)->hwndFrom);     /* ensure focus stays */
+        }
+        return 0;
+
+      case WM_SIZE:
+        /*
+         * PuTTY-beter: the box is resizable now, so lay it out again for the
+         * new size. Explorer likes to maximise dialogs, which we do not want,
+         * so catch that first; and ignore the messages that arrive before the
+         * dialog has finished setting itself up.
+         */
+        if (wParam == SIZE_MAXIMIZED) {
+            force_normal(hwnd);
+        } else if (wParam != SIZE_MINIMIZED && pds->initialised) {
+            cb_relayout(pds, hwnd);
+            /*
+             * WM_GETMINMAXINFO keeps a user's drag from going below the
+             * minimum, but a programmatic resize does not consult it. If the
+             * window has ended up too short for the panel, put it back, or the
+             * panel's controls would cover the buttons again.
+             */
+            if (cb_client_h_du(hwnd) < pds->min_client_h)
+                cb_set_client_height(hwnd, pds->min_client_h);
+        }
+        return 0;
+
+      case WM_GETMINMAXINFO:
+        /*
+         * PuTTY-beter: never let the window be shrunk so small that the panel
+         * on display would run over the buttons at the bottom, or so narrow
+         * that the panel column would be squeezed out of existence.
+         */
+        if (pds->initialised && pds->min_client_h > 0) {
+            MINMAXINFO *mmi = (MINMAXINFO *)lParam;
+            RECT du, wr, cr;
+
+            du.left = du.top = 0;
+            du.right = 4;
+            du.bottom = 8;
+            if (MapDialogRect(hwnd, &du) && du.right > 0 && du.bottom > 0) {
+                int framew, frameh, minw, minh;
+
+                GetWindowRect(hwnd, &wr);
+                GetClientRect(hwnd, &cr);
+                framew = (wr.right - wr.left) - cr.right;
+                frameh = (wr.bottom - wr.top) - cr.bottom;
+
+                minw = (CB_MINWIDTH * du.right) / 4 + framew;
+                minh = (pds->min_client_h * du.bottom) / 8 + frameh;
+
+                if (mmi->ptMinTrackSize.x < minw)
+                    mmi->ptMinTrackSize.x = minw;
+                if (mmi->ptMinTrackSize.y < minh)
+                    mmi->ptMinTrackSize.y = minh;
+            }
+        }
+        return 0;
+
+      case WM_DESTROY:
+        /*
+         * PuTTY-beter: remember the size the box was left at, so the next one
+         * opens the same way (tech_detail.md section 4). The guard is the same
+         * as the GTK front end's: a box that was never really shown, or one
+         * that has been collapsed to nothing, is not worth remembering.
+         */
+        if (pds->initialised) {
+            int w = cb_client_w_du(hwnd);
+            int h = cb_client_h_du(hwnd);
+
+            if (w > 200 && h > 200) {
+                config_state_set_int(CONFIG_BOX_STATE_FILE, "width", w);
+                config_state_set_int(CONFIG_BOX_STATE_FILE, "height", h);
+            }
         }
         return 0;
 
@@ -756,10 +1180,28 @@ void defuse_showwindow(void)
 bool do_config(Conf *conf)
 {
     bool ret;
+    int protocol;
     PortableDialogStuff *pds = pds_new(2);
 
-    setup_config_box(pds->ctrlbox, false, 0, 0);
-    win_setup_config_box(pds->ctrlbox, &pds->dp->hwnd, has_help(), false, 0);
+    /*
+     * PuTTY-beter: pass the session's real protocol, not upstream's 0.
+     *
+     * The shared configuration box uses this argument to decide whether to
+     * offer protocol-specific settings, and the fork added one: the
+     * saved-session password field on Connection/Data, which config.c guards
+     * with `protocol == PROT_SSH`. Upstream's 0 means PROT_RAW, so that field
+     * never appeared in the Windows box at all - the mac front end has always
+     * passed the real value (unix/dialog.c), which is why it is there.
+     *
+     * Nothing else in the box depends on the value: the two `midsession &&`
+     * tests are false here, backend_vt_from_proto() only feeds
+     * resize_forbidden, which `!midsession` neutralises, and the Connection
+     * panel's own test is `protocol >= 0`.
+     */
+    protocol = conf_get_int(conf, CONF_protocol);
+    setup_config_box(pds->ctrlbox, false, protocol, 0);
+    win_setup_config_box(pds->ctrlbox, &pds->dp->hwnd, has_help(), false,
+                         protocol);
 
     pds->dp->wintitle = dupprintf("%s Configuration", appname);
     pds->dp->data = conf;
@@ -1349,8 +1791,8 @@ static INT_PTR CAConfigProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
 
         centre_window(hwnd);
 
-        pds_create_controls(pds, 0, IDCX_PANELBASE, 3, 3, 3, "Main");
-        pds_create_controls(pds, 0, IDCX_STDBASE, 3, 3, 243, "");
+        pds_create_controls(pds, 0, IDCX_PANELBASE, 3, 3, 3, "Main", NULL);
+        pds_create_controls(pds, 0, IDCX_STDBASE, 3, 3, 243, "", NULL);
         dlg_refresh(NULL, pds->dp);    /* and set up control values */
 
         pds_initdialog_finish(pds);

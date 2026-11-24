@@ -108,6 +108,40 @@ Returns a JSON array of:
 |---|---|
 | `id` | the session id to pass to every other tool. Stable for the life of the session. Large numbers are normal — the leading digits are the PuTTY process id. |
 | `name` | a human label — the host name, or the serial line. Two sessions to the same host share a name, so **always use the id**. |
+| `writable` | `true` when the human allowed typing into this session; `false` means `send`, `key` and `run` will be refused |
+| `needs_human` | `true` while the **window** is asking the person at the keyboard something — see below |
+| `prompt` | what it is asking, when `needs_human` is `true`; empty otherwise |
+
+`needs_human` is the one that changes what you do next: that session is waiting
+for a *person*, and nothing you send will help.
+
+#### When the window is waiting for the human
+
+Some prompts are not the device's. PuTTY itself asks for a **login password**, a
+**private-key passphrase** or a **login name** by drawing the prompt in the
+session's own window, and the person at the keyboard answers it there. You will
+see the words in `read` — `login as: `, `Password: ` — but the words alone do
+not tell you who is being asked.
+
+When that is happening:
+
+* `sessions` reports `needs_human: true` and `prompt` for that session;
+* `read` returns `needs_human` on every reply until it is answered;
+* `run` stops at once with `completed_by: "needs_human"` and
+  `needs_human: {reason, prompt}`.
+
+**Do not answer it.** A password is the human's to give. Tell them what the
+window is asking for, wait, and then carry on — the field simply stops
+appearing when they have typed it. Note that it also stops appearing if the
+*connection* ends instead: an unanswered login prompt is dropped by the server
+(OpenSSH gives it two minutes by default), and the session then reports nothing
+while the window is still open behind the error. "It cleared" means "answered,
+or gone", so check the session is still there before assuming the human replied.
+
+A prompt the *saved session* already answers never reaches the window and is
+never reported: if a session connects without asking, there is nothing to wait
+for. This is also why `needs_human` is a state rather than a guess at the
+output: `Password: ` looks the same either way.
 
 ### `read`
 
@@ -126,11 +160,15 @@ Returns:
 | `omitted` | lines after `cursor` that are held but did not fit the budget — read again to get them |
 | `gap` | present only when lines were lost: `{missing_from, missing_to}` |
 | `lines` | `[{id, author, text}]` |
+| `needs_human` | present only while the **window** is asking the human something — see above |
 
 `read` **pages** rather than truncates: it returns as many whole lines as fit
 and tells you how many are left. Only a single line bigger than the whole
 budget is cut, in which case you get its head and its tail with a
 `[line truncated]` marker between them.
+
+`needs_human` is not part of the transcript — it is the *state of the window*.
+See "When the window is waiting for the human", above.
 
 ### `screen`
 
@@ -203,6 +241,7 @@ tracks; you want to know *that*, not read them.
 | `quiet` | the device stopped talking, but the last line is not prompt-shaped. Probably finished — check the output. |
 | `timeout` | still talking when the timeout expired. The output is partial and the command may still be running. |
 | `needs_input` | see below. **Do not send the next command.** |
+| `needs_human` | the *window* is asking the person at the keyboard. **Do not answer it** — see below. |
 | `cancelled` | a human typed into the window. Stop and ask. |
 | `pager_limit` | too many pages. Raise `pager_patterns`/answer settings or use a command that does not page. |
 
@@ -219,8 +258,18 @@ destructive. `needs_input` gives you `{reason, prompt}`.
 * For anything else, decide deliberately, then `send` the answer yourself (or
   ask the human).
 
+**`needs_human` means a person is being asked, and not by the device.** PuTTY
+itself is presenting a password, a key passphrase or a login name in the
+window, and the words you can see are only half the story. `run` stops with
+`completed_by: "needs_human"` and `needs_human: {reason, prompt}`; `sessions`
+and `read` report it too. **Nothing you can send is an answer** — a password is
+not yours to give. Tell the human what the window is asking for, wait, and
+continue when the field goes away.
+
 **A human typing cancels the run** and it returns `completed_by: "cancelled"`,
-so you do not send the next command on top of whatever they are doing.
+so you do not send the next command on top of whatever they are doing. (A
+password they type *at a PuTTY prompt* does not read as a cancellation — that
+is `needs_human`, which is why the two are separate.)
 
 **A slow command is waited for.** `sleep 1; echo done` prints nothing for a
 second; `run` does not call that finished. If a command takes longer than
@@ -355,10 +404,11 @@ for the bridge too and it prints the raw socket fields.
 * **No session opening.** Only sessions the human already has open.
 * **No ZMODEM.** Not exposed yet, and `send` is refused while a transfer is
   running.
-* **Human keystrokes are not yet tagged.** What *you* send is tagged `m`, and
-  device output is `d`, but text typed by the human is still reported as `d`.
-  So a line you did not send and did not cause may be the human typing. (A
-  human typing *during a `run`* is noticed, and cancels it — that part works.)
+* **The human's own words are not in the transcript.** A human's line *is*
+  tagged `h` — but what is recorded is the **device's echo** of it, not what was
+  typed, and that is deliberate: it is what keeps a password out. So on a device
+  that echoes nothing you get an empty `h` line: enough to know the human typed,
+  not what they typed.
 * **The human always wins.** They can type at any moment, and nothing stops
   them. If you are driving a session and the output stops making sense, stop and
   ask — you may be racing the person at the keyboard.
